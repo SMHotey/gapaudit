@@ -25,6 +25,7 @@ __all__ = [
     "adoption_raw",
     "npm_downloads_url",
     "npm_raw",
+    "npm_search_full_raw",
     "npm_search_raw",
     "npm_search_url",
     "npm_url",
@@ -46,6 +47,8 @@ NPM_SEARCH_API = "https://registry.npmjs.org/-/v1/search?size={size}&text={text}
 SUMMARY_LIMIT = 70
 HOME_LIMIT = 80
 DATE_LIMIT = 10
+#: Обрезка описания в строках каталога — как в legacy ``catalog_build``.
+DESC_LIMIT = 200
 
 
 def pypi_url(name: str) -> str:
@@ -144,6 +147,50 @@ def npm_search_raw(search_json: dict | None) -> list[str]:
     return names
 
 
+def npm_search_full_raw(search_json: dict | None, query: str) -> list[dict]:
+    """Разобрать ответ ``/-/v1/search`` в строки каталога (шаг 1d).
+
+    Порт legacy ``catalog_build.npm_search()``: тот же набор полей, что у GitHub, —
+    чтобы ``catalog.dedupe()`` склеивал npm-пакет с репозиторием без спецобработки.
+    Звёзд у npm нет (``None``), язык — ``js``, дата — ``package.date[:10]``.
+
+    Отличие от :func:`npm_search_raw`: тот отдаёт только имена (нужны
+    ``similar_names()``), этот — полные строки. Записи без ``package`` пропускаются,
+    как и в :func:`npm_search_raw`; пакет без имени остаётся строкой с ``id=None``
+    (в legacy он тоже попадал в каталог), отсеет его ``dedupe()``.
+    """
+    if not isinstance(search_json, dict):
+        return []
+    objects = search_json.get("objects")
+    if not isinstance(objects, list):
+        return []
+    rows: list[dict] = []
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        package = obj.get("package")
+        if not isinstance(package, dict):
+            continue
+        links = package.get("links")
+        if not isinstance(links, dict):
+            links = {}
+        name = package.get("name")
+        rows.append(
+            {
+                "source": "npm",
+                "id": name if isinstance(name, str) and name else None,
+                "url": str(links.get("npm") or ""),
+                "desc": _text(package.get("description"), DESC_LIMIT),
+                "stars": None,
+                "lang": "js",
+                "pushed": _text(package.get("date"), DATE_LIMIT),
+                "topics": package.get("keywords") or [],
+                "query": query,
+            }
+        )
+    return rows
+
+
 def adoption_raw(
     pypistats_json: dict | None,
     npm_last_week: int | None,
@@ -201,6 +248,18 @@ class RegistryClient:
         if status != 200:
             return []
         return npm_search_raw(data)
+
+    def npm_search_full(self, query: str, *, size: int = 250) -> list[dict]:
+        """Строки каталога из npm search по фразе; ошибка или ``None`` — ``[]``.
+
+        Отдельно от :meth:`npm_search`, который отдаёт только имена для
+        ``similar_names()``: здесь нужен полный набор полей (описание, ссылка,
+        дата, ключевые слова) — из них собирается каталог по фразе.
+        """
+        status, data = self.http.get(npm_search_url(query, size))
+        if status != 200:
+            return []
+        return npm_search_full_raw(data, query)
 
     def adoption(self, name: str) -> tuple[int | None, int | None]:
         """(за месяц, за неделю): сначала pypistats, при отсутствии — npm last-week."""

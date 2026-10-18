@@ -1,0 +1,356 @@
+{
+ "servers": [
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.CSOAI-ORG/iso-42005-impact-mcp",
+    "description": "ISO/IEC 42005:2025 AI Impact Assessment MCP — first international standard for AI impact",
+    "repository": {
+     "url": "https://github.com/CSOAI-ORG/iso-42005-impact-mcp",
+     "source": "github"
+    },
+    "version": "1.0.4",
+    "packages": [
+     {
+      "registryType": "pypi",
+      "identifier": "iso-42005-impact-mcp",
+      "version": "1.0.4",
+      "runtimeHint": "python",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ],
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://api.meok.ai/v1/governance/iso-42005-impact"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "deprecated",
+     "statusChangedAt": "2026-09-29T15:50:50.727726Z",
+     "statusMessage": "Remote endpoint https://api.meok.ai/v1/governance/iso-42005-impact is not live: api.meok.ai has no public DNS answer (checked via 1.1.1.1, 2026-09-29). Deprecated by the publisher until a live endpoint exists. The PyPI package iso-42005-impact-mcp still installs and runs locally over stdio.",
+     "publishedAt": "2026-06-10T04:30:52.79204Z",
+     "updatedAt": "2026-09-29T15:50:50.727726Z",
+     "isLatest": false
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.CSOAI-ORG/iso-42005-impact-mcp",
+    "description": "ISO/IEC 42005:2025 AI Impact Assessment MCP — first international standard for AI impact",
+    "repository": {
+     "url": "https://github.com/CSOAI-ORG/iso-42005-impact-mcp",
+     "source": "github"
+    },
+    "version": "1.0.5",
+    "packages": [
+     {
+      "registryType": "pypi",
+      "identifier": "iso-42005-impact-mcp",
+      "version": "1.0.5",
+      "runtimeHint": "python",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ],
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://api.meok.ai/v1/governance/iso-42005-impact"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "deprecated",
+     "statusChangedAt": "2026-09-29T15:50:50.727726Z",
+     "statusMessage": "Remote endpoint https://api.meok.ai/v1/governance/iso-42005-impact is not live: api.meok.ai has no public DNS answer (checked via 1.1.1.1, 2026-09-29). Deprecated by the publisher until a live endpoint exists. The PyPI package iso-42005-impact-mcp still installs and runs locally over stdio.",
+     "publishedAt": "2026-06-13T06:21:40.543767Z",
+     "updatedAt": "2026-09-29T15:50:50.727726Z",
+     "isLatest": false
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.CSOAI-ORG/iso-42005-impact-mcp",
+    "description": "ISO/IEC 42005:2025 AI Impact Assessment MCP — first international standard for AI impact",
+    "repository": {
+     "url": "https://github.com/CSOAI-ORG/iso-42005-impact-mcp",
+     "source": "github"
+    },
+    "version": "1.0.7",
+    "packages": [
+     {
+      "registryType": "pypi",
+      "identifier": "iso-42005-impact-mcp",
+      "version": "1.0.7",
+      "runtimeHint": "python",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ],
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://api.meok.ai/v1/governance/iso-42005-impact"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "deprecated",
+     "statusChangedAt": "2026-09-29T15:50:50.727726Z",
+     "statusMessage": "Remote endpoint https://api.meok.ai/v1/governance/iso-42005-impact is not live: api.meok.ai has no public DNS answer (checked via 1.1.1.1, 2026-09-29). Deprecated by the publisher until a live endpoint exists. The PyPI package iso-42005-impact-mcp still installs and runs locally over stdio.",
+     "publishedAt": "2026-08-19T15:20:39.11641Z",
+     "updatedAt": "2026-09-29T15:50:50.727726Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.CSOAI-ORG/meok-annex-iii-impact-mcp",
+    "description": "Automated EU AI Act Annex III risk classification and impact assessment engine",
+    "title": "meok-annex-iii-impact-mcp",
+    "repository": {
+     "url": "https://github.com/meok-ai-labs/meok-annex-iii-impact-mcp",
+     "source": "github"
+    },
+    "version": "0.1.2",
+    "packages": [
+     {
+      "registryType": "pypi",
+      "identifier": "meok-annex-iii-impact-mcp",
+      "version": "0.1.2",
+      "runtimeHint": "uvx",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-09-06T04:11:12.988555Z",
+     "publishedAt": "2026-09-06T04:11:12.988555Z",
+     "updatedAt": "2026-09-06T04:11:12.988555Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.YeetDisDude/impactor-mcp",
+    "description": "Sign, install and manage sideloaded iOS apps with the Impactor sideloader.",
+    "title": "Impactor",
+    "repository": {
+     "url": "https://github.com/YeetDisDude/impactor-mcp",
+     "source": "github"
+    },
+    "version": "2.6.5",
+    "packages": [
+     {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/YeetDisDude/impactor-mcp/releases/download/v2.6.5-2/impactor-mcp.mcpb",
+      "fileSha256": "7f0bc0dcb0483010236a5f0a984be17f0794810107858656dd1f19886ee8fce5",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-13T16:03:43.392791Z",
+     "publishedAt": "2026-10-13T16:03:43.392791Z",
+     "updatedAt": "2026-10-13T16:03:43.392791Z",
+     "isLatest": false
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.YeetDisDude/impactor-mcp",
+    "description": "Sign, install and manage sideloaded iOS apps with the Impactor sideloader.",
+    "title": "Impactor",
+    "repository": {
+     "url": "https://github.com/YeetDisDude/impactor-mcp",
+     "source": "github"
+    },
+    "version": "2.7.0",
+    "packages": [
+     {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/YeetDisDude/impactor-mcp/releases/download/v2.7.0/impactor-mcp.mcpb",
+      "fileSha256": "9b6aacc00bf5016c65cdb44c6551cad2282a3514b9405e751c939aca85719f7b",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-17T12:05:48.829665Z",
+     "publishedAt": "2026-10-17T12:05:48.829665Z",
+     "updatedAt": "2026-10-17T12:05:48.829665Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.agent-polis/impact-preview",
+    "description": "Impact preview for AI agents - see what changes before any action executes.",
+    "repository": {
+     "url": "https://github.com/agent-polis/impact-preview",
+     "source": "github"
+    },
+    "version": "0.2.1",
+    "packages": [
+     {
+      "registryType": "pypi",
+      "identifier": "impact-preview",
+      "version": "0.2.1",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-02-01T07:44:52.686908Z",
+     "publishedAt": "2026-02-01T07:44:52.686908Z",
+     "updatedAt": "2026-02-01T07:44:52.686908Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.himanshufound/aimpact",
+    "description": "Real nonprofit tasks your agent can claim and finish. A person at the nonprofit reviews the work.",
+    "title": "AImpact",
+    "version": "1.0.0",
+    "websiteUrl": "https://aimpact.himanshufr.me",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://aimpact.himanshufr.me/api/mcp",
+      "headers": [
+       {
+        "description": "Bearer sk_live_... — create a free key at https://aimpact.himanshufr.me/dashboard",
+        "isRequired": true,
+        "isSecret": true,
+        "name": "Authorization"
+       }
+      ]
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-09-22T06:20:45.327791Z",
+     "publishedAt": "2026-09-22T06:20:45.327791Z",
+     "updatedAt": "2026-09-22T06:20:45.327791Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.shashwatgtm/impact-mcp",
+    "description": "Hypothesis-Driven B2B Positioning Engine - 8 strategic positioning tools",
+    "repository": {
+     "url": "https://github.com/shashwatgtm/impact-mcp",
+     "source": "github"
+    },
+    "version": "2.0.0",
+    "packages": [
+     {
+      "registryType": "npm",
+      "identifier": "@shashwatgtmalpha/impact-mcp",
+      "version": "2.0.0",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "deprecated",
+     "statusChangedAt": "2026-10-17T16:20:13.143746Z",
+     "statusMessage": "Outdated: use the latest version",
+     "publishedAt": "2026-01-17T12:09:28.091169Z",
+     "updatedAt": "2026-10-17T16:20:13.143746Z",
+     "isLatest": false
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.shashwatgtm/impact-mcp",
+    "description": "IMPACT: 8 B2B positioning and messaging tools by Helix GTM Consulting",
+    "repository": {
+     "url": "https://github.com/shashwatgtm/impact-mcp",
+     "source": "github"
+    },
+    "version": "2.2.27",
+    "websiteUrl": "https://tools.gtmhelix.com/connectors/",
+    "packages": [
+     {
+      "registryType": "npm",
+      "identifier": "@shashwatgtmalpha/impact-mcp",
+      "version": "2.2.27",
+      "transport": {
+       "type": "stdio"
+      }
+     }
+    ],
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://impact.gtmhelix.com/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-17T16:07:56.184096Z",
+     "publishedAt": "2026-10-17T16:07:56.184096Z",
+     "updatedAt": "2026-10-17T16:07:56.184096Z",
+     "isLatest": true
+    }
+   }
+  }
+ ],
+ "metadata": {
+  "nextCursor": "io.github.shashwatgtm/impact-mcp:2.2.27",
+  "count": 10
+ }
+}

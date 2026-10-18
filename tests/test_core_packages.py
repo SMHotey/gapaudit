@@ -401,7 +401,7 @@ def test_popular_names_empty_on_unexpected_payload() -> None:
 
 
 def test_similar_names_finds_popular_typosquat() -> None:
-    client, _ = make_client({SEARCH_REQEUSTS: (200, (FIXTURES / "npm_search_reqeusts.json").read_bytes())})
+    client, _ = make_client({SEARCH_REQEUSTS: (200, (FIXTURES / "npm_search_requests.json").read_bytes())})
 
     hits = similar_names("reqeusts", client, popular=["requests", "flask"])
 

@@ -19,6 +19,7 @@ from core.github import (
     org_candidates,
     relevant_items,
 )
+from core.http import Throttle
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures" / "github"
 
@@ -352,7 +353,20 @@ def test_org_candidates_can_exclude_the_tool_itself() -> None:
     assert [repo["full_name"] for repo in found] == ["grafana/mcp-grafana"]
 
 
-def test_org_candidates_empty_when_gh_fails() -> None:
+def test_org_candidates_empty_when_gh_fails(monkeypatch) -> None:
+    """Обе точки org_repos падают; троттл подменён, иначе тест ждал бы 1 с (60/мин).
+
+    Скорость GhClient выставляет себе сам (``DEFAULT_PER_MINUTE`` для обычных точек),
+    поэтому подменяется не лимит, а часы: с нулевым временем ``Throttle.wait`` считает
+    интервал, но реально не спит.
+    """
+    import core.github as github_module
+
+    monkeypatch.setattr(
+        github_module,
+        "default_throttle",
+        lambda: Throttle(clock=lambda: 0.0, sleep=lambda _seconds: None),
+    )
     runner = FakeGh((1, "", "404"))
 
     assert org_candidates("nobody", "mcp", runner) == []  # type: ignore[arg-type]

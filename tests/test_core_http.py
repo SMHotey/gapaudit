@@ -1,13 +1,11 @@
 """Тесты HTTP-слоя: кэш, повторы, троттлинг, разбор тела (шаг 1a).
 
 Никакой сети: транспорт подменяется фейком, ``sleep`` — заглушкой, кэш — DictCache.
-Единственное реальное ожидание — в тестах троттлинга (кейс 6), и оно ограничено
-одной секундой.
+Реальные ожидания сведены к одному тесту на 0.1 с (`test_throttle_wait_returns_positive_actual_wait`);
+всё остальное время в тестах троттлинга идёт по виртуальным часам (:class:`VirtualClock`).
 """
 
 from __future__ import annotations
-
-import time
 
 import pytest
 
@@ -50,6 +48,25 @@ class RecordingSleep:
 
     def __call__(self, seconds: float) -> None:
         self.delays.append(seconds)
+
+
+class VirtualClock:
+    """Виртуальные часы: ``sleep`` двигает время, реального ожидания нет.
+
+    Тесты троттлинга не должны платить секундами за проверку интервала, поэтому
+    и часы, и пауза инжектируются в :class:`Throttle` (``clock``/``sleep``).
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
 
 
 def fast_throttle() -> Throttle:
@@ -177,31 +194,35 @@ def test_connection_error_is_retried() -> None:
 # 6-7. Троттлинг ----------------------------------------------------------------------------
 
 
-def test_throttle_600_per_minute_pauses_under_0_2s() -> None:
-    throttle = Throttle(per_minute={"example.test": 600})
+def test_throttle_600_per_minute_interval_is_100ms_on_virtual_clock() -> None:
+    clock = VirtualClock()
+    throttle = Throttle(per_minute={"example.test": 600}, clock=clock, sleep=clock.sleep)
 
-    throttle.wait("example.test")
-    started = time.perf_counter()
-    throttle.wait("example.test")
-    elapsed = time.perf_counter() - started
-
-    assert elapsed < 0.2
-
-
-def test_throttle_60_per_minute_pauses_at_least_0_9s() -> None:
-    throttle = Throttle(per_minute={"example.test": 60})
-
-    throttle.wait("example.test")
-    started = time.perf_counter()
+    assert throttle.wait("example.test") == 0.0
     waited = throttle.wait("example.test")
-    elapsed = time.perf_counter() - started
 
+    # Интервал при 600/мин — 0.1 с; ждём его целиком, но реально не спим.
+    assert waited == pytest.approx(0.1)
+    assert waited < 0.2
+    assert clock.slept == [pytest.approx(0.1)]
+
+
+def test_throttle_60_per_minute_waits_full_second_on_virtual_clock() -> None:
+    clock = VirtualClock()
+    throttle = Throttle(per_minute={"example.test": 60}, clock=clock, sleep=clock.sleep)
+
+    assert throttle.wait("example.test") == 0.0
+    waited = throttle.wait("example.test")
+
+    # Обе границы интервала 60/мин: не меньше 0.9 с и меньше 1.5 с — ровно 1.0 с.
     assert waited >= 0.9
-    assert elapsed >= 0.9
-    assert elapsed < 1.5
+    assert waited < 1.5
+    assert waited == pytest.approx(1.0)
+    assert clock.slept == [pytest.approx(1.0)]
 
 
 def test_throttle_wait_returns_positive_actual_wait() -> None:
+    """Единственное реальное ожидание сюиты — 0.1 с; проверяются обе границы."""
     throttle = Throttle(per_minute={"example.test": 600})
 
     first = throttle.wait("example.test")
@@ -253,6 +274,29 @@ def test_client_calls_throttle_before_each_attempt() -> None:
 
     assert client.get(URL) == (200, {})
     assert hosts == ["example.test", "example.test"]
+
+
+def test_get_calls_throttle_wait() -> None:
+    """§0.3 шага 1d: ``HttpClient.get`` ждёт троттл перед транспортом.
+
+    Часы и пауза виртуальные, поэтому проверяется ровно выдержанный интервал
+    60/мин = 1 с, а не реальное время; кэш выключен, чтобы дошло до транспорта.
+    """
+    clock = VirtualClock()
+    throttle = Throttle(per_minute={"example.test": 60}, clock=clock, sleep=clock.sleep)
+    transport = FakeTransport((200, b"{}"))
+    client = HttpClient(
+        cache=DictCache(), throttle=throttle, transport=transport, sleep=lambda _s: None
+    )
+
+    assert client.get(URL) == (200, {})
+    assert clock.now == 1000.0  # первый запрос лимит не ждёт
+    assert client.get(URL, use_cache=False) == (200, {})
+
+    assert transport.count == 2
+    assert clock.now - 1000.0 >= 1.0
+    assert clock.now - 1000.0 == pytest.approx(1.0)
+    assert clock.slept == [pytest.approx(1.0)]
 
 
 def test_default_throttle_rates() -> None:

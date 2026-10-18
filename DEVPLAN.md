@@ -41,11 +41,12 @@ C:\Users\malik\gapaudit\
   core/                 логика метода: чистые функции, никакого print и никаких путей от cwd
     http.py             GET с повторами, троттлингом по хосту и кэшем
     cache.py            кэш с TTL (по умолчанию 12 ч): DictCache/FileCache, с шага 2 — SqliteCache
-    registry.py         pypi(), npm(), adoption(), downloads()
+    registry.py         pypi(), npm(), adoption(), downloads(), npm_search_full()
     github.py           gh-поиск, репозитории организации, verify_target(), age_days()
                         (для Search API вызывающий ставит throttle.set_rate('api.github.com', GITHUB_SEARCH_PER_MINUTE))
     packages.py         check(), check_many(), verdict(), similar_names(), names_from_file()
     catalog.py          build_catalog(), dedupe(), stats(), to_markdown()
+    mcp_registry.py     реестр MCP: search() по фразе, list_servers() по курсору
     scan.py             потоковый обход каталога с чекпоинтом и отменой
     diffing.py          diff_observations() -> события (релиз, скачок adoption, появился MCP)
     settings.py         конфиг: пороги, ключевые слова, каталог данных, расписание
@@ -82,7 +83,14 @@ C:\Users\malik\gapaudit\
 Известные отклонения от legacy:
 - `org_candidates(exclude_full_name=...)` — исправление мёртвой проверки legacy (`startswith(target+'/')`
   не срабатывала никогда), зафиксировано паритетным тестом;
-- `pypi_raw` при пустом `releases[ver]` возвращает `date='?'` вместо `IndexError`, намеренная устойчивость.
+- `pypi_raw` при пустом `releases[ver]` возвращает `date='?'` вместо `IndexError`, намеренная устойчивость;
+- `names_from_file(fix_toml=False)` — по умолчанию сохраняет legacy-причуду `.toml` (лишние
+  `dependencies`/`name` в списке имён); CLI вызывает с `fix_toml=True` (реализуется в 1f);
+- поле `mcp` в результате `check()` — legacy-алиас для `flag`; будет удалено из CLI JSON в P4,
+  `app/` использует `flag`;
+- `catalog.report()`: свежесть считается без legacy-трюка `(age or 9999)` — push сегодняшнего дня
+  (возраст 0) теперь «свежий», а не «данных нет»; в legacy такой проект сразу считался заброшенным.
+  Паритет остальных полей и всех чистых функций `catalog` держит `tests/test_core_catalog_legacy_contract.py`.
 
 Критерий готовности шага 0: `python cli/check_predecessors.py gerenuk` выдаёт тот же текст, что
 старый скрипт; `core` импортируется без побочных эффектов (никаких сетевых вызовов на импорте);

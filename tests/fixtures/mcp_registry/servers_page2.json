@@ -1,0 +1,303 @@
+{
+ "servers": [
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "academy.apexai/apex-ai-academy",
+    "description": "Co-Learn with your Agent: fact-checked AI lessons with Human and Agent views.",
+    "title": "Apex AI Academy",
+    "repository": {
+     "url": "https://github.com/ApexAI-Academy/sample-agents",
+     "source": "github"
+    },
+    "version": "1.0.2",
+    "websiteUrl": "https://apexai.academy/developers/",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://apexai.academy/mcp",
+      "headers": [
+       {
+        "description": "Optional: Bearer <personal apex_ key> for Premium tools. Public tools need no key.",
+        "isSecret": true,
+        "name": "Authorization"
+       }
+      ]
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-17T03:25:05.205722Z",
+     "publishedAt": "2026-10-17T03:25:05.205722Z",
+     "updatedAt": "2026-10-17T03:25:05.205722Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ad.getle/leads",
+    "description": "Find B2B leads with verified work emails, find and verify emails, and run cold email outreach.",
+    "title": "Getlead",
+    "repository": {
+     "url": "https://github.com/Adgrowofficial/getlead-mcp",
+     "source": "github"
+    },
+    "version": "1.0.0",
+    "websiteUrl": "https://getle.ad/mcp",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://mcp.getle.ad/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-09-26T12:28:37.779048Z",
+     "publishedAt": "2026-09-26T12:28:37.779048Z",
+     "updatedAt": "2026-09-26T12:28:37.779048Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ad.inside/inside-ads",
+    "description": "Telegram ad exchange: estimate reach and cost with no account, then create and run campaigns.",
+    "title": "Inside Ads",
+    "version": "1.0.0",
+    "websiteUrl": "https://inside.ad",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://app.inside.ad/api/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-08-18T20:55:46.452926Z",
+     "publishedAt": "2026-08-18T20:55:46.452926Z",
+     "updatedAt": "2026-08-18T20:55:46.452926Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ae.brainy/grocery-prices",
+    "description": "Compare Dubai grocery lists, observed prices, delivery rules and indicative online offers in AED.",
+    "title": "Dubai Grocery Prices",
+    "version": "1.0.0",
+    "websiteUrl": "https://prices.brainy.ae/developers.html",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://prices.brainy.ae/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-09-30T10:34:55.977998Z",
+     "publishedAt": "2026-09-30T10:34:55.977998Z",
+     "updatedAt": "2026-09-30T10:34:55.977998Z",
+     "isLatest": false
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ae.brainy/grocery-prices",
+    "description": "Dubai cost of living: groceries, schools, fuel, rent, utilities, phone plans, electronics and visas",
+    "title": "Dubai Cost of Living Prices",
+    "version": "1.1.0",
+    "websiteUrl": "https://prices.brainy.ae/developers.html",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://prices.brainy.ae/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-02T04:58:59.331523Z",
+     "publishedAt": "2026-10-02T04:58:59.331523Z",
+     "updatedAt": "2026-10-02T04:58:59.331523Z",
+     "isLatest": false
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ae.brainy/grocery-prices",
+    "description": "Source-backed UAE costs: groceries, schools, housing, transport, utilities, telecom and relocation",
+    "title": "Brainy Prices — UAE Cost of Living",
+    "version": "2.0.0",
+    "websiteUrl": "https://prices.brainy.ae/developers.html",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://prices.brainy.ae/mcp/v2"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-04T02:29:51.000704Z",
+     "publishedAt": "2026-10-04T02:29:51.000704Z",
+     "updatedAt": "2026-10-04T02:29:51.000704Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ae.datadubai/dubai-real-estate",
+    "description": "Dubai property prices, AED/sqft, sales, rents, yields and projects from DLD registered transactions.",
+    "title": "Dubai Data — Dubai real estate statistics",
+    "repository": {
+     "url": "https://github.com/datadubai/dubai-real-estate-dld",
+     "source": "github"
+    },
+    "version": "1.1.0",
+    "websiteUrl": "https://datadubai.ae/mcp/",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://mcp.datadubai.ae/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-09-30T08:30:47.911063Z",
+     "publishedAt": "2026-09-30T08:30:47.911063Z",
+     "updatedAt": "2026-09-30T08:30:47.911063Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ae.easyvoice/tts",
+    "description": "Hosted text-to-speech MCP server: 66 voices in 9 languages, long-form narration, podcasts.",
+    "title": "EasyVoice text to speech",
+    "version": "1.0.0",
+    "websiteUrl": "https://easyvoice.ae/tts-mcp-server",
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://easyvoice.ae/api/mcp",
+      "headers": [
+       {
+        "description": "Bearer <your EasyVoice API key> (free key at https://easyvoice.ae/account/keys)",
+        "isRequired": true,
+        "isSecret": true,
+        "name": "Authorization"
+       }
+      ]
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-11T18:47:52.634428Z",
+     "publishedAt": "2026-10-11T18:47:52.634428Z",
+     "updatedAt": "2026-10-11T18:47:52.634428Z",
+     "isLatest": true
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ae.genosys/genosys",
+    "description": "Shop GENOSYS Korean skincare in the UAE from chat: find products, AED prices, order and pay.",
+    "title": "GENOSYS UAE",
+    "version": "1.1.0",
+    "websiteUrl": "https://genosys.ae/ai",
+    "icons": [
+     {
+      "src": "https://genosys.ae/icon-512x512.png",
+      "mimeType": "image/png",
+      "sizes": [
+       "512x512"
+      ]
+     }
+    ],
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://genosys.ae/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-12T08:52:12.154288Z",
+     "publishedAt": "2026-10-12T08:52:12.154288Z",
+     "updatedAt": "2026-10-12T08:52:12.154288Z",
+     "isLatest": false
+    }
+   }
+  },
+  {
+   "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "ae.genosys/genosys",
+    "description": "Shop GENOSYS Korean skincare in the UAE from chat: find products, AED prices, order and pay.",
+    "title": "GENOSYS UAE",
+    "version": "1.2.0",
+    "websiteUrl": "https://genosys.ae/ai",
+    "icons": [
+     {
+      "src": "https://genosys.ae/icon-512x512.png",
+      "mimeType": "image/png",
+      "sizes": [
+       "512x512"
+      ]
+     }
+    ],
+    "remotes": [
+     {
+      "type": "streamable-http",
+      "url": "https://genosys.ae/mcp"
+     }
+    ]
+   },
+   "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+     "status": "active",
+     "statusChangedAt": "2026-10-12T09:33:58.36606Z",
+     "publishedAt": "2026-10-12T09:33:58.36606Z",
+     "updatedAt": "2026-10-12T09:33:58.36606Z",
+     "isLatest": true
+    }
+   }
+  }
+ ],
+ "metadata": {
+  "nextCursor": "ae.genosys/genosys:1.2.0",
+  "count": 10
+ }
+}

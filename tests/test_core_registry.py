@@ -1,8 +1,8 @@
 """Тесты core/registry.py — на фикстурах, без сети (шаг 1b).
 
 Фикстуры сняты один раз из живых API и лежат в tests/fixtures/http/.
-``npm_search_reqeusts.json`` — ответ ``/-/v1/search?size=5&text=reqeusts``; имя файла с опечаткой
-намеренно: фикстура снята именно на этот запрос (он же ищет типосквоттинг).
+``npm_search_requests.json`` — ответ ``/-/v1/search?size=5&text=reqeusts``: запрос намеренно
+с опечаткой (его же ищет similar_names), файл назван без неё.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from core.registry import (
     adoption_raw,
     npm_downloads_url,
     npm_raw,
+    npm_search_full_raw,
     npm_search_raw,
     npm_search_url,
     npm_url,
@@ -260,7 +261,7 @@ def test_adoption_client_npm_payload_without_downloads_field() -> None:
 
 
 def test_npm_search_raw_from_real_fixture_keeps_response_order() -> None:
-    parsed = npm_search_raw(fixture("npm_search_reqeusts.json"))
+    parsed = npm_search_raw(fixture("npm_search_requests.json"))
 
     assert parsed == [
         "simple-server-request",
@@ -286,7 +287,7 @@ def test_npm_search_url_quotes_query() -> None:
 
 def test_npm_search_client_returns_names() -> None:
     url = npm_search_url("reqeusts", 5)
-    client, transport = make_client({url: (200, json_body(fixture("npm_search_reqeusts.json")))})
+    client, transport = make_client({url: (200, json_body(fixture("npm_search_requests.json")))})
 
     names = client.npm_search("reqeusts", size=5)
 
@@ -306,6 +307,69 @@ def test_npm_search_client_empty_on_404() -> None:
     client, _ = make_client({})
 
     assert client.npm_search("reqeusts") == []
+
+
+# --- npm search (строки каталога, шаг 1d) --------------------------------------------------
+
+
+def test_npm_search_full_raw_from_real_fixture_gives_catalog_rows() -> None:
+    rows = npm_search_full_raw(fixture("npm_search_requests.json"), "reqeusts")
+
+    assert len(rows) == 5
+    assert [row["id"] for row in rows] == [
+        "simple-server-request",
+        "clientside-api-request",
+        "@aximur/guard-hook",
+        "@tutorbot/api-client",
+        "@aximur/package-guard",
+    ]
+    assert all(row["source"] == "npm" and row["query"] == "reqeusts" for row in rows)
+    assert all(row["lang"] == "js" and row["stars"] is None for row in rows)
+    first = rows[0]
+    assert first["url"] == "https://www.npmjs.com/package/simple-server-request"
+    assert first["pushed"] == "2019-06-20"
+    assert first["desc"].startswith("Wrapping requestjs")
+    assert first["topics"] == []
+    # keywords попадают в topics — так их видит каталог (как в legacy).
+    assert "mcp" in rows[2]["topics"]
+
+
+def test_npm_search_full_raw_truncates_description_to_200() -> None:
+    payload = {"objects": [{"package": {"name": "long", "description": "я" * 300}}]}
+
+    rows = npm_search_full_raw(payload, "q")
+
+    assert len(rows[0]["desc"]) == 200
+
+
+def test_npm_search_full_raw_none_and_garbage() -> None:
+    assert npm_search_full_raw(None, "q") == []
+    assert npm_search_full_raw({}, "q") == []
+    assert npm_search_full_raw({"objects": "нет"}, "q") == []
+    # Записи без package и не-словари пропускаются; пакет без имени остаётся строкой
+    # с id=None (в legacy он тоже попадал в каталог) — её отсекает dedupe().
+    rows = npm_search_full_raw(
+        {"objects": ["мусор", {"package": {}}, {"package": {"name": "ok", "description": "d"}}]}, "q"
+    )
+    assert [row["id"] for row in rows] == [None, "ok"]
+
+
+def test_npm_search_full_client_returns_rows() -> None:
+    url = npm_search_url("reqeusts", 250)
+    client, transport = make_client({url: (200, json_body(fixture("npm_search_requests.json")))})
+
+    rows = client.npm_search_full("reqeusts", size=250)
+
+    assert len(rows) == 5
+    assert rows[0]["id"] == "simple-server-request"
+    assert transport.calls == [url]
+
+
+def test_npm_search_full_client_empty_on_500() -> None:
+    client, transport = make_client({npm_search_url("reqeusts", 250): (500, b"oops")})
+
+    assert client.npm_search_full("reqeusts", size=250) == []
+    assert len(transport.calls) == 3  # три попытки, как в DEFAULT_TRIES
 
 
 # --- адреса --------------------------------------------------------------------------------

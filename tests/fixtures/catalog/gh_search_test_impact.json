@@ -1,0 +1,193 @@
+{
+ "total_count": 21,
+ "incomplete_results": false,
+ "items": [
+  {
+   "full_name": "ai-boost/awesome-prompts",
+   "html_url": "https://github.com/ai-boost/awesome-prompts",
+   "description": "Curated list of chatgpt prompts from the top-rated GPTs in the GPTs Store. Prompt Engineering, prompt attack & prompt protect. Advanced Prompt Engineering papers.",
+   "stargazers_count": 9094,
+   "language": null,
+   "pushed_at": "2026-10-18T08:33:35Z",
+   "topics": [
+    "awesome",
+    "awesome-list",
+    "chatgpt",
+    "gpt4",
+    "gpts",
+    "gptstore",
+    "papers",
+    "prompt",
+    "prompt-engineering"
+   ]
+  },
+  {
+   "full_name": "testableapple/how-they-automate-on-mobile",
+   "html_url": "https://github.com/testableapple/how-they-automate-on-mobile",
+   "description": "A curated collection of publicly available resources on how software companies implement automation on iOS and Android platforms 📱🚢",
+   "stargazers_count": 530,
+   "language": null,
+   "pushed_at": "2026-05-13T10:33:10Z",
+   "topics": [
+    "mobile-automation",
+    "mobile-cicd",
+    "mobile-testing"
+   ]
+  },
+  {
+   "full_name": "sderosiaux/every-single-day-i-tldr",
+   "html_url": "https://github.com/sderosiaux/every-single-day-i-tldr",
+   "description": "A daily digest of the articles or videos I've found interesting, that I want to share with you.",
+   "stargazers_count": 328,
+   "language": null,
+   "pushed_at": "2026-09-02T03:50:40Z",
+   "topics": [
+    "akka",
+    "architecture",
+    "bigdata",
+    "category-theory",
+    "data-engineering",
+    "ddd",
+    "googlecloudplatform",
+    "java",
+    "javascript",
+    "kafka",
+    "kubernetes",
+    "microservices",
+    "reactjs",
+    "scala",
+    "spark",
+    "technology",
+    "watch"
+   ]
+  },
+  {
+   "full_name": "naodeng/awesome-qa-skills",
+   "html_url": "https://github.com/naodeng/awesome-qa-skills",
+   "description": "Awesome QA Skills is an open-source AI-native Quality Engineering skill system that helps engineering teams reason about, design, execute, evaluate, and continuously improve software quality across the entire SDLC.",
+   "stargazers_count": 266,
+   "language": "Python",
+   "pushed_at": "2026-10-16T08:49:06Z",
+   "topics": [
+    "agent-skills",
+    "ai-qa",
+    "ai-skills",
+    "ai-testing",
+    "ai-tools",
+    "awesome-list",
+    "prompt-engineering",
+    "qa",
+    "qa-skills",
+    "skills"
+   ]
+  },
+  {
+   "full_name": "swingerman/engineer",
+   "html_url": "https://github.com/swingerman/engineer",
+   "description": "Disciplined Agentic Engineering — a methodology kit for Claude Code: acceptance-test-first specs, explicit checkpoints, and autonomy you can actually leave running. The engineer, atdd and crap-analyzer plugins.",
+   "stargazers_count": 157,
+   "language": "Python",
+   "pushed_at": "2026-09-23T08:12:35Z",
+   "topics": [
+    "acceptance-testing",
+    "agentic-ai",
+    "ai-development",
+    "atdd",
+    "bdd",
+    "claude-code",
+    "claude-code-plugin",
+    "dae",
+    "given-when-then",
+    "methodology",
+    "spec-driven-design",
+    "tdd",
+    "uncle-bob"
+   ]
+  },
+  {
+   "full_name": "Drill4J/drill4j",
+   "html_url": "https://github.com/Drill4J/drill4j",
+   "description": "Tool to identify testing gaps and reduce time spent on regression testing. Java/JVM, .NET, JavaScript in WEB",
+   "stargazers_count": 108,
+   "language": null,
+   "pushed_at": "2024-09-02T09:25:01Z",
+   "topics": [
+    "drill",
+    "drill4j",
+    "jvmti",
+    "kotlin",
+    "kotlin-multiplatform",
+    "profiler",
+    "profiler-framework"
+   ]
+  },
+  {
+   "full_name": "AppitStudio/awesome-jev",
+   "html_url": "https://github.com/AppitStudio/awesome-jev",
+   "description": "Curated Jev resources and runnable examples for typed AI decisions.",
+   "stargazers_count": 107,
+   "language": "Python",
+   "pushed_at": "2026-10-18T21:31:22Z",
+   "topics": [
+    "ai",
+    "awesome",
+    "awesome-list",
+    "decision-making",
+    "jev",
+    "system-one",
+    "typesafe-ai"
+   ]
+  },
+  {
+   "full_name": "optave/ops-codegraph-tool",
+   "html_url": "https://github.com/optave/ops-codegraph-tool",
+   "description": "Code intelligence CLI — function-level dependency graph across 34 languages, 34-tool MCP server for AI agents, complexity metrics, architecture boundary enforcement, CI quality gates, git diff impact with co-change analysis, hybrid semantic search. Fully local, zero API keys required.",
+   "stargazers_count": 99,
+   "language": "TypeScript",
+   "pushed_at": "2026-10-18T11:35:28Z",
+   "topics": [
+    "ai-agents",
+    "architecture",
+    "ci-cd",
+    "cli",
+    "code-analysis",
+    "code-quality",
+    "code-search",
+    "codeowners",
+    "complexity-metrics",
+    "dependency-graph",
+    "developer-tools",
+    "impact-analysis",
+    "incremental-builds",
+    "mcp-server",
+    "rust",
+    "semantic-search",
+    "sqlite",
+    "static-analysis",
+    "tree-sitter",
+    "typescript"
+   ]
+  },
+  {
+   "full_name": "ComparetheMarket/fettle",
+   "html_url": "https://github.com/ComparetheMarket/fettle",
+   "description": "An experimental mutation testing tool for C# code :bug::mag:",
+   "stargazers_count": 66,
+   "language": "C#",
+   "pushed_at": "2021-03-23T11:24:41Z",
+   "topics": [
+    "csharp",
+    "mutation-testing"
+   ]
+  },
+  {
+   "full_name": "RyanCardin15/AzureDevOps-MCP",
+   "html_url": "https://github.com/RyanCardin15/AzureDevOps-MCP",
+   "description": null,
+   "stargazers_count": 60,
+   "language": "TypeScript",
+   "pushed_at": "2026-06-30T16:44:33Z",
+   "topics": []
+  }
+ ]
+}
