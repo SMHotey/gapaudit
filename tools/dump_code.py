@@ -4,8 +4,11 @@
 номерами строк-ориентирами и контрольными суммами.
 
 Запуск:
-  python tools/dump_code.py                 # cli/ -> CLI-CODE.md
-  python tools/dump_code.py core --out CORE-CODE.md
+  python tools/dump_code.py core --out docs/CORE-CODE.md   # core/ -> docs/CORE-CODE.md
+  python tools/dump_code.py cli                            # cli/  -> CLI-CODE.md
+
+Внимание: вызов без аргументов пересоберёт `CLI-CODE.md` — этот документ удалён 18.10.2026
+как дубль кода (сам код живёт в `legacy/`, cli/ и в git). Не создавайте его заново без нужды.
 """
 import argparse
 import hashlib
