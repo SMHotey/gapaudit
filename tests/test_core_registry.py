@@ -1,6 +1,8 @@
 """Тесты core/registry.py — на фикстурах, без сети (шаг 1b).
 
 Фикстуры сняты один раз из живых API и лежат в tests/fixtures/http/.
+``npm_search_reqeusts.json`` — ответ ``/-/v1/search?size=5&text=reqeusts``; имя файла с опечаткой
+намеренно: фикстура снята именно на этот запрос (он же ищет типосквоттинг).
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from core.registry import (
     adoption_raw,
     npm_downloads_url,
     npm_raw,
+    npm_search_raw,
+    npm_search_url,
     npm_url,
     pypi_raw,
     pypi_url,
@@ -250,6 +254,58 @@ def test_adoption_client_npm_payload_without_downloads_field() -> None:
     client, _ = make_client({NPM_DOWNLOADS_URL: (200, json_body({"package": "requests"}))})
 
     assert client.adoption("requests") == (None, None)
+
+
+# --- npm search ----------------------------------------------------------------------------
+
+
+def test_npm_search_raw_from_real_fixture_keeps_response_order() -> None:
+    parsed = npm_search_raw(fixture("npm_search_reqeusts.json"))
+
+    assert parsed == [
+        "simple-server-request",
+        "clientside-api-request",
+        "@aximur/guard-hook",
+        "@tutorbot/api-client",
+        "@aximur/package-guard",
+    ]
+
+
+def test_npm_search_raw_none_and_garbage() -> None:
+    assert npm_search_raw(None) == []
+    assert npm_search_raw({}) == []
+    assert npm_search_raw({"objects": "нет"}) == []
+    # Записи без имени и не-словари пропускаем, а не падаем.
+    assert npm_search_raw({"objects": [{"package": {}}, "мусор", {"package": {"name": "ok"}}]}) == ["ok"]
+
+
+def test_npm_search_url_quotes_query() -> None:
+    assert npm_search_url("requests", 5) == "https://registry.npmjs.org/-/v1/search?size=5&text=requests"
+    assert npm_search_url("some name", 25).endswith("&text=some%20name")
+
+
+def test_npm_search_client_returns_names() -> None:
+    url = npm_search_url("reqeusts", 5)
+    client, transport = make_client({url: (200, json_body(fixture("npm_search_reqeusts.json")))})
+
+    names = client.npm_search("reqeusts", size=5)
+
+    assert names[0] == "simple-server-request"
+    assert transport.calls == [url]
+
+
+def test_npm_search_client_empty_on_500() -> None:
+    """Ошибка сервера после всех попыток -> пустой список, без исключения."""
+    client, transport = make_client({npm_search_url("reqeusts", 5): (500, b"oops")})
+
+    assert client.npm_search("reqeusts", size=5) == []
+    assert len(transport.calls) == 3  # три попытки, как в DEFAULT_TRIES
+
+
+def test_npm_search_client_empty_on_404() -> None:
+    client, _ = make_client({})
+
+    assert client.npm_search("reqeusts") == []
 
 
 # --- адреса --------------------------------------------------------------------------------

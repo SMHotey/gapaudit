@@ -25,6 +25,8 @@ __all__ = [
     "adoption_raw",
     "npm_downloads_url",
     "npm_raw",
+    "npm_search_raw",
+    "npm_search_url",
     "npm_url",
     "pypi_raw",
     "pypi_url",
@@ -38,6 +40,8 @@ PYPI_API = "https://pypi.org/pypi/{name}/json"
 NPM_API = "https://registry.npmjs.org/{name}"
 PYPISTATS_API = "https://pypistats.org/api/packages/{name}/recent"
 NPM_DOWNLOADS_API = "https://api.npmjs.org/downloads/point/last-week/{name}"
+NPM_SEARCH_API = "https://registry.npmjs.org/-/v1/search?size={size}&text={text}"
+
 
 SUMMARY_LIMIT = 70
 HOME_LIMIT = 80
@@ -58,6 +62,11 @@ def pypistats_url(name: str) -> str:
 
 def npm_downloads_url(name: str) -> str:
     return NPM_DOWNLOADS_API.format(name=urllib.parse.quote(name, safe="@/"))
+
+
+def npm_search_url(query: str, size: int = 25) -> str:
+    """Поиск по реестру npm по подстроке (как legacy ``similar_names()``)."""
+    return NPM_SEARCH_API.format(size=int(size), text=urllib.parse.quote(query))
 
 
 def _text(value: Any, limit: int) -> str:
@@ -111,6 +120,30 @@ def npm_raw(npm_json: dict | None) -> dict | None:
     }
 
 
+def npm_search_raw(search_json: dict | None) -> list[str]:
+    """Разобрать ответ ``/-/v1/search`` в список имён пакетов (в порядке ответа).
+
+    Чистая функция: ни сети, ни кэша. Мусор, ``None`` и записи без имени пропускаются —
+    имя пакета приходит из ``objects[].package.name`` и только строкой.
+    """
+    if not isinstance(search_json, dict):
+        return []
+    objects = search_json.get("objects")
+    if not isinstance(objects, list):
+        return []
+    names: list[str] = []
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        package = obj.get("package")
+        if not isinstance(package, dict):
+            continue
+        name = package.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
 def adoption_raw(
     pypistats_json: dict | None,
     npm_last_week: int | None,
@@ -157,6 +190,17 @@ class RegistryClient:
         if parsed is None:
             return None
         return {**parsed, "raw": data}
+
+    def npm_search(self, query: str, *, size: int = 25) -> list[str]:
+        """Имена пакетов из npm search по подстроке; ошибка или ``None`` — ``[]``.
+
+        Нужен для ``similar_names()`` (защита от типосквоттинга): популярные имена даёт
+        датасет PyPI, а свежие/редкие — поиск по реестру npm.
+        """
+        status, data = self.http.get(npm_search_url(query, size))
+        if status != 200:
+            return []
+        return npm_search_raw(data)
 
     def adoption(self, name: str) -> tuple[int | None, int | None]:
         """(за месяц, за неделю): сначала pypistats, при отсутствии — npm last-week."""

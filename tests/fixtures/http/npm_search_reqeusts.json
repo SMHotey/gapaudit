@@ -1,0 +1,282 @@
+{
+ "objects": [
+  {
+   "downloads": {
+    "monthly": 27,
+    "weekly": 1
+   },
+   "dependents": "2",
+   "updated": "2026-10-14T11:41:15.956Z",
+   "searchScore": 106.03863,
+   "package": {
+    "name": "simple-server-request",
+    "keywords": [],
+    "version": "2.1.0",
+    "description": "Wrapping requestjs for simple crud server side reqeusts",
+    "sanitized_name": "simple-server-request",
+    "publisher": {
+     "email": "shmilkykup@gmail.com",
+     "username": "shmilky"
+    },
+    "maintainers": [
+     {
+      "email": "shmilkykup@gmail.com",
+      "username": "shmilky"
+     }
+    ],
+    "date": "2019-06-20T10:41:26.355Z",
+    "links": {
+     "npm": "https://www.npmjs.com/package/simple-server-request"
+    }
+   },
+   "score": {
+    "final": 106.03863,
+    "detail": {
+     "popularity": 1,
+     "quality": 1,
+     "maintenance": 1
+    }
+   },
+   "flags": {
+    "insecure": 0
+   }
+  },
+  {
+   "downloads": {
+    "monthly": 18,
+    "weekly": 3
+   },
+   "dependents": 0,
+   "updated": "2026-10-13T14:11:42.344Z",
+   "searchScore": 69.468254,
+   "package": {
+    "name": "clientside-api-request",
+    "keywords": [
+     "clientside",
+     "browser",
+     "request",
+     "api",
+     "rest",
+     "api-request",
+     "ajax"
+    ],
+    "version": "1.2.4",
+    "description": "simplifies making reqeusts to REST APIs in clientside applications ",
+    "sanitized_name": "clientside-api-request",
+    "publisher": {
+     "email": "UladKasach@gmail.com",
+     "username": "uladkasach"
+    },
+    "maintainers": [
+     {
+      "email": "UladKasach@gmail.com",
+      "username": "uladkasach"
+     }
+    ],
+    "license": "ISC",
+    "date": "2018-07-02T04:40:51.720Z",
+    "links": {
+     "homepage": "https://github.com/uladkasach/clientside-api-request#readme",
+     "repository": "git+https://github.com/uladkasach/clientside-api-request.git",
+     "bugs": "https://github.com/uladkasach/clientside-api-request/issues",
+     "npm": "https://www.npmjs.com/package/clientside-api-request"
+    }
+   },
+   "score": {
+    "final": 69.468254,
+    "detail": {
+     "popularity": 1,
+     "quality": 1,
+     "maintenance": 1
+    }
+   },
+   "flags": {
+    "insecure": 0
+   }
+  },
+  {
+   "downloads": {
+    "monthly": 72,
+    "weekly": 2
+   },
+   "dependents": 0,
+   "updated": "2026-10-15T16:51:19.489Z",
+   "searchScore": 24.330418,
+   "package": {
+    "name": "@aximur/guard-hook",
+    "keywords": [
+     "ai",
+     "coding-agents",
+     "claude-code",
+     "cursor",
+     "copilot",
+     "mcp",
+     "npm",
+     "pypi",
+     "supply-chain",
+     "security",
+     "typosquatting",
+     "slopsquatting",
+     "hallucinated-dependencies",
+     "preinstall",
+     "dependency-security"
+    ],
+    "version": "0.1.4",
+    "description": "Pre-install hook for blocking hallucinated and slopsquatted npm/PyPI packages before AI coding agents install fake dependencies.",
+    "sanitized_name": "@aximur/guard-hook",
+    "publisher": {
+     "email": "contact@aximur.com",
+     "username": "aximur"
+    },
+    "maintainers": [
+     {
+      "email": "contact@aximur.com",
+      "username": "aximur"
+     }
+    ],
+    "license": "MIT",
+    "date": "2026-07-02T15:35:02.471Z",
+    "links": {
+     "npm": "https://www.npmjs.com/package/@aximur/guard-hook"
+    }
+   },
+   "score": {
+    "final": 24.330418,
+    "detail": {
+     "popularity": 1,
+     "quality": 1,
+     "maintenance": 1
+    }
+   },
+   "flags": {
+    "insecure": 0
+   }
+  },
+  {
+   "downloads": {
+    "monthly": 427,
+    "weekly": 35
+   },
+   "dependents": 0,
+   "updated": "2026-10-15T13:51:14.880Z",
+   "searchScore": 23.599112,
+   "package": {
+    "name": "@tutorbot/api-client",
+    "keywords": [],
+    "version": "2.6.7",
+    "description": "The API client for requests in tutorbot's services",
+    "sanitized_name": "@tutorbot/api-client",
+    "publisher": {
+     "email": "npm-oidc-no-reply@github.com",
+     "actor": {
+      "name": "hovhannes.babayan",
+      "type": "user",
+      "email": "hovhannes@tutor-platform.com"
+     },
+     "trustedPublisher": {
+      "oidcConfigId": "oidc:61aeb812-516b-44de-90b6-fee2904ae495",
+      "id": "circleci"
+     },
+     "username": "CircleCI"
+    },
+    "maintainers": [
+     {
+      "email": "aram@of.am",
+      "username": "aramkarapetian"
+     },
+     {
+      "email": "gevorgmargaryan@yahoo.com",
+      "username": "gevorgmargaryan"
+     },
+     {
+      "email": "hovhannes@tutor-platform.com",
+      "username": "hovhannes.babayan"
+     },
+     {
+      "email": "d.davtyan27@gmail.com",
+      "username": "dav_yan_it"
+     }
+    ],
+    "license": "ISC",
+    "date": "2026-09-03T13:22:44.533Z",
+    "links": {
+     "npm": "https://www.npmjs.com/package/@tutorbot/api-client"
+    }
+   },
+   "score": {
+    "final": 23.599112,
+    "detail": {
+     "popularity": 1,
+     "quality": 1,
+     "maintenance": 1
+    }
+   },
+   "flags": {
+    "insecure": 0
+   }
+  },
+  {
+   "downloads": {
+    "monthly": 50,
+    "weekly": 0
+   },
+   "dependents": 0,
+   "updated": "2026-10-15T17:01:11.976Z",
+   "searchScore": 20.222242,
+   "package": {
+    "name": "@aximur/package-guard",
+    "keywords": [
+     "ai",
+     "ai-agents",
+     "coding-agents",
+     "claude-code",
+     "cursor",
+     "copilot",
+     "mcp",
+     "package-guard",
+     "hallucinated-packages",
+     "slopsquatting",
+     "typosquatting",
+     "npm",
+     "pypi",
+     "supply-chain-security",
+     "dependency-security",
+     "preinstall",
+     "security"
+    ],
+    "version": "0.1.0",
+    "description": "Stop AI coding agents from installing hallucinated, nonexistent, typo-close, or slopsquatted npm/PyPI packages before install.",
+    "sanitized_name": "@aximur/package-guard",
+    "publisher": {
+     "email": "contact@aximur.com",
+     "username": "aximur"
+    },
+    "maintainers": [
+     {
+      "email": "contact@aximur.com",
+      "username": "aximur"
+     }
+    ],
+    "license": "MIT",
+    "date": "2026-07-02T15:46:35.500Z",
+    "links": {
+     "homepage": "https://www.npmjs.com/package/@aximur/package-guard",
+     "npm": "https://www.npmjs.com/package/@aximur/package-guard"
+    }
+   },
+   "score": {
+    "final": 20.222242,
+    "detail": {
+     "popularity": 1,
+     "quality": 1,
+     "maintenance": 1
+    }
+   },
+   "flags": {
+    "insecure": 0
+   }
+  }
+ ],
+ "total": 16,
+ "time": "2026-10-18T21:13:10.908Z"
+}
