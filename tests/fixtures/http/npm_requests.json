@@ -1,0 +1,128 @@
+{
+ "name": "requests",
+ "description": "An streaming XHR abstraction that works in browsers and node.js",
+ "dist-tags": {
+  "latest": "0.3.0"
+ },
+ "versions": {
+  "0.3.0": {
+   "name": "requests",
+   "version": "0.3.0",
+   "description": "An streaming XHR abstraction that works in browsers and node.js",
+   "main": "index.js",
+   "scripts": {
+    "100%": "istanbul check-coverage --statements 100 --functions 100 --lines 100 --branches 100",
+    "wd": "node test/index.js --wd",
+    "test": "node test/index.js",
+    "static": "node test/static.js",
+    "node": "mocha test/requests.test.js",
+    "watch": "mocha --watch ./test/requests.test.js",
+    "all": "npm run test && npm run node",
+    "coverage": "istanbul cover ./node_modules/.bin/_mocha -- test/requests.test.js",
+    "test-node": "istanbul cover node_modules/.bin/_mocha --report lcovonly -- test/requests.test.js",
+    "compile": "mkdir -p dist && browserify browser.js -o dist/requests.js --standalone Requests",
+    "pre-publish": "npm run compile",
+    "start": "node test/development.js"
+   },
+   "repository": {
+    "type": "git",
+    "url": "git+https://github.com/unshiftio/requests.git"
+   },
+   "keywords": [
+    "request",
+    "xhr",
+    "requests",
+    "http",
+    "xml",
+    "xmlhttp",
+    "xmlhttprequest"
+   ],
+   "author": {
+    "name": "Arnout Kazemier"
+   },
+   "license": "MIT",
+   "bugs": {
+    "url": "https://github.com/unshiftio/requests/issues"
+   },
+   "homepage": "https://github.com/unshiftio/requests",
+   "dependencies": {
+    "axo": "0.0.x",
+    "eventemitter3": "~4.0.0",
+    "extendible": "0.1.x",
+    "hang": "1.0.x",
+    "loads": "0.0.x",
+    "node-http-xhr": "~1.3.0",
+    "xhr-send": "1.0.x"
+   },
+   "devDependencies": {
+    "argh": "0.1.x",
+    "assume": "~2.0.0",
+    "async-each": "~1.0.1",
+    "browserify": "^16.0.0",
+    "http-proxy": "~1.17.0",
+    "istanbul": "~0.4.5",
+    "mocha": "~3.5.0",
+    "mochify": "~2.18.1",
+    "pre-commit": "~1.2.0",
+    "setheader": "~1.0.0"
+   },
+   "testling": {
+    "files": "test/*.browser.js",
+    "harness": "mocha-bdd",
+    "browsers": [
+     "ie/6..latest",
+     "chrome/22..latest",
+     "firefox/16..latest",
+     "safari/latest",
+     "opera/11.0..latest",
+     "iphone/latest",
+     "ipad/latest",
+     "android-browser/latest"
+    ]
+   },
+   "gitHead": "e82d63419f3102a61bd187ee1c582979ffd6d08f",
+   "_id": "requests@0.3.0",
+   "_nodeVersion": "10.13.0",
+   "_npmVersion": "6.6.0",
+   "dist": {
+    "integrity": "sha512-1B6nkiHjC1O1cSgFhEwkc+xd8vuj04h7xSmCg5yI8nmhCIKbPkX47od8erQ2pokBt5qxUO7dwP4jplXD6k6ISA==",
+    "shasum": "484913c1648beac3092a2324d8bc296a4bd76c5d",
+    "tarball": "https://registry.npmjs.org/requests/-/requests-0.3.0.tgz",
+    "fileCount": 15,
+    "unpackedSize": 2158876,
+    "npm-signature": "-----BEGIN PGP SIGNATURE-----\r\nVersion: OpenPGP.js v3.0.4\r\nComment: https://openpgpjs.org\r\n\r\nwsFcBAEBCAAQBQJdSW/rCRA9TVsSAnZWagAASF4P/1kzah1McxobNEswM4sR\nqhLvtEZjn7r0NQoDUYYYj+T2xnaT6wZCnGMe1gwY3tT9ovPb5n7KMpw890n7\n0fa1luvsXlBj7vi2xbHn7mKaK2fuiedOXLF484EWjcnd76JZvotN78blSeYF\nSPj+92gxkbw3YSIBofxxk+erzR8IbA0bGgoUO7b9vqako6RTWYu0iN7o3gYe\nu5K5dAO6pyPTGh6/C1nBwqtE76VrpP63TlZRhR8qxj757nMFrfiN1XGbCPsD\n9Jhgw6Qfn+o5EQzQUM13aMWYY2ttIdAdzCbZu+yOCOwypQgtu0doq4PvI3VJ\nxXTaXe1SsA9cgGb9w9QT9kLRHc66tpsI/MY3EG92tp2CMHPrvxTG0Sg+Av96\nZpzPwEJHhrt95jUQL77/csDwc/+flqyRFnfBM4ZwN+lFRfU+qfb0JxeMCfsb\nVuu+JSB3OsUZSYpdI4H5pON/mTmuACmFMsZH83GunLqcrKwS+XgsZqvBSPuO\n8ofnMWZjtlHAHartuCaFTBNKC0NZfE9uuOgdyJO0nsZGUpBiOJLLJ0xpEisj\nbKEm4MeO93oK+bguJpOjxDTbdPhY72H/Yx1p0TjksMe9sq7Up2Elww5WXOnn\ndEZzuu76zVILI+nCUR3MUSP/49Jle1twrxDqb7ZxNTexrCRKkl900hXKNksW\nZ9vt\r\n=iM0e\r\n-----END PGP SIGNATURE-----\r\n",
+    "signatures": [
+     {
+      "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+      "sig": "MEUCIQC77Um9boD3jlmo5r6k6mpPZylp+fxSa1vSwe1XCW3w2wIgAaj7kRuH9+LUrFZfRyE+glJHq2Z6g3JeJifnDEqDNIE="
+     }
+    ]
+   },
+   "maintainers": [
+    {
+     "email": "npm@3rd-Eden.com",
+     "name": "3rdeden"
+    },
+    {
+     "email": "info@martijnswaagman.nl",
+     "name": "swaagie"
+    }
+   ],
+   "_npmUser": {
+    "name": "swaagie",
+    "email": "martijn@swaagman.online"
+   },
+   "directories": {},
+   "_npmOperationalInternal": {
+    "host": "s3://npm-registry-packages",
+    "tmp": "tmp/requests_0.3.0_1565093866964_0.1443446262723298"
+   },
+   "_hasShrinkwrap": false
+  }
+ },
+ "time": {
+  "modified": "2022-06-26T11:35:03.610Z",
+  "created": "2014-03-29T05:49:07.412Z",
+  "0.3.0": "2019-08-06T12:17:47.116Z"
+ }
+}
