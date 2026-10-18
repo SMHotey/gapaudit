@@ -1,0 +1,51 @@
+{
+ "total_count": 500,
+ "incomplete_results": false,
+ "items": [
+  {
+   "full_name": "netdata/netdata",
+   "description": "The fastest path to AI-powered full stack observability, even for lean teams.",
+   "stargazers_count": 80999,
+   "pushed_at": "2026-10-18T10:51:34Z",
+   "html_url": "https://github.com/netdata/netdata",
+   "language": "Go",
+   "archived": false
+  },
+  {
+   "full_name": "grafana/mcp-grafana",
+   "description": "MCP server for Grafana",
+   "stargazers_count": 3571,
+   "pushed_at": "2026-10-18T14:12:10Z",
+   "html_url": "https://github.com/grafana/mcp-grafana",
+   "language": "Go",
+   "archived": false
+  },
+  {
+   "full_name": "pawurb/hotpath-rs",
+   "description": "Rust profiler for CPU, memory, SQL, HTTP, and async performance, with Prometheus and Grafana support.",
+   "stargazers_count": 1895,
+   "pushed_at": "2026-10-18T20:36:26Z",
+   "html_url": "https://github.com/pawurb/hotpath-rs",
+   "language": "Rust",
+   "archived": false
+  },
+  {
+   "full_name": "ongridio/ongrid",
+   "description": "An ops AI Agent that understands your infrastructure, finds the root cause, and fixes it — right from Slack, Telegram, Lark or DingTalk.",
+   "stargazers_count": 1189,
+   "pushed_at": "2026-10-18T06:48:30Z",
+   "html_url": "https://github.com/ongridio/ongrid",
+   "language": "Go",
+   "archived": false
+  },
+  {
+   "full_name": "ASCIT31/Dark-Moon",
+   "description": "Open-source autonomous AI penetration testing. 50 specialist agents across web, API, cloud, Active Directory, Kubernetes, CI/CD and AI/LLM (OWASP LLM Top 10). Runs on a local LLM behind a Privacy Gate",
+   "stargazers_count": 1049,
+   "pushed_at": "2026-10-01T08:22:45Z",
+   "html_url": "https://github.com/ASCIT31/Dark-Moon",
+   "language": "Python",
+   "archived": false
+  }
+ ]
+}

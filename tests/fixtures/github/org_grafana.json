@@ -1,0 +1,37 @@
+[
+ {
+  "full_name": "grafana/k6",
+  "description": "A modern load testing tool, using Go and JavaScript",
+  "stargazers_count": 31973,
+  "pushed_at": "2026-10-18T15:02:30Z",
+  "html_url": "https://github.com/grafana/k6"
+ },
+ {
+  "full_name": "grafana/promql-anomaly-detection",
+  "description": "A framework for anomaly detection using Prometheus and PromQL",
+  "stargazers_count": 427,
+  "pushed_at": "2026-10-16T23:04:02Z",
+  "html_url": "https://github.com/grafana/promql-anomaly-detection"
+ },
+ {
+  "full_name": "grafana/grafana",
+  "description": "The open and composable observability and data visualization platform. Visualize metrics, logs, and traces from multiple sources like Prometheus, Loki, Elasticsearch, InfluxDB, Postgres and many more.",
+  "stargazers_count": 77349,
+  "pushed_at": "2026-10-18T20:37:21Z",
+  "html_url": "https://github.com/grafana/grafana"
+ },
+ {
+  "full_name": "grafana/loki",
+  "description": "Like Prometheus, but for logs.",
+  "stargazers_count": 29037,
+  "pushed_at": "2026-10-18T18:51:52Z",
+  "html_url": "https://github.com/grafana/loki"
+ },
+ {
+  "full_name": "grafana/grafana-foundation-sdk",
+  "description": "A set of tools, types and libraries for building and manipulating Grafana objects.",
+  "stargazers_count": 265,
+  "pushed_at": "2026-10-18T18:06:17Z",
+  "html_url": "https://github.com/grafana/grafana-foundation-sdk"
+ }
+]

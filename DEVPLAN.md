@@ -43,6 +43,7 @@ C:\Users\malik\gapaudit\
     cache.py            кэш с TTL (по умолчанию 12 ч): DictCache/FileCache, с шага 2 — SqliteCache
     registry.py         pypi(), npm(), adoption(), downloads()
     github.py           gh-поиск, репозитории организации, verify_target(), age_days()
+                        (для Search API вызывающий ставит throttle.set_rate('api.github.com', GITHUB_SEARCH_PER_MINUTE))
     packages.py         check(), check_many(), verdict(), similar_names(), names_from_file()
     catalog.py          build_catalog(), dedupe(), stats(), to_markdown()
     scan.py             потоковый обход каталога с чекпоинтом и отменой
@@ -108,6 +109,10 @@ schedules(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, params TEXT, cron TEXT,
 «сколько всего уникальных пакетов в поле зрения» — из `packages`.
 
 Правило: схема версионируется в `meta.schema_version`, миграции — маленькие функции `migrate_N()`.
+
+Соглашение о кэше (шаг 1a): `FileCache.put` пишет только в память; `save()` — атомарная запись на диск
+(tmp + `os.replace`); CLI вызывает `save()` в конце прогона, приложение — на закрытии задачи.
+`SqliteCache` (шаг 2) пишет в таблицу `cache` сразу, поэтому `save()` у него — no-op.
 
 ## 6. Задачи: контракты и поведение
 
