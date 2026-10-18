@@ -175,6 +175,13 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     в автотестах окна ждать инициализации (проверено: пауза 6 с — лог чистый).
 11. Автотесты окна: искать строго по точному заголовку `GapAudit` И классу `WindowsForms10.*`;
     по подстроке — никогда: чужие окна (проводник, IDE, браузер) реагируют на `WM_CLOSE`.
+12. Все текстовые файлы в репозитории — LF (`.gitattributes`: `* text=auto eol=lf`; `core.autocrlf=true`
+    в системе). Для сверки sha256 `legacy/` читать блоб, а не рабочее дерево:
+    `git cat-file -p HEAD:legacy/<файл> | sha256sum`.
+13. `core.github.org_candidates` исправлен относительно legacy (`exclude_full_name` вместо мёртвой
+    проверки `startswith(target+'/')`) — осознанное отклонение, зафиксировано паритетным тестом.
+14. `core.registry.pypi_raw` устойчив к пустому `releases[ver]`: возвращает `date='?'`, а не `IndexError`
+    (в legacy падало) — намеренная устойчивость.
 
 ---
 
