@@ -46,7 +46,8 @@ C:\Users\malik\gapaudit\
                         (для Search API вызывающий ставит throttle.set_rate('api.github.com', GITHUB_SEARCH_PER_MINUTE))
     packages.py         check(), check_many(), verdict(), similar_names(), names_from_file()
     catalog.py          build_catalog(), dedupe(), stats(), to_markdown()
-    mcp_registry.py     реестр MCP: search() по фразе, list_servers() по курсору
+    mcp_registry.py     реестр MCP: search() по фразе, servers_page()/list_servers_raw()
+                        (сырая страница и её разновидности), list_servers() по курсору
     scan.py             потоковый обход каталога с чекпоинтом и отменой
     diffing.py          diff_observations() -> события (релиз, скачок adoption, появился MCP)
     settings.py         конфиг: пороги, ключевые слова, каталог данных, расписание
@@ -90,7 +91,14 @@ C:\Users\malik\gapaudit\
   `app/` использует `flag`;
 - `catalog.report()`: свежесть считается без legacy-трюка `(age or 9999)` — push сегодняшнего дня
   (возраст 0) теперь «свежий», а не «данных нет»; в legacy такой проект сразу считался заброшенным.
-  Паритет остальных полей и всех чистых функций `catalog` держит `tests/test_core_catalog_legacy_contract.py`.
+  Паритет остальных полей и всех чистых функций `catalog` держит `tests/test_core_catalog_legacy_contract.py`;
+- `scan`: чекпоинт шире legacy (пишутся `base_url`, `finished`, `started_at`, `elapsed`, а `ns`
+  называется `namespaces`) — обход должен продолжаться после перезапуска окна, а не только после
+  Ctrl+C; старый файл чекпоинта читается (`from_checkpoint` понимает `ns`);
+- `scan`: не полученная страница реестра больше не значит «каталог кончился» — legacy на сбое сети
+  молча завершал обход; здесь сбой оставляет `finished=False` и курсор для продолжения, а пустая
+  страница закрывает обход. Различие даёт `mcp_registry.servers_page()` (`([], None)` против
+  `(None, None)`), потому что в legacy-форме ответа `([], None)` эти два исхода неразличимы.
 
 Критерий готовности шага 0: `python cli/check_predecessors.py gerenuk` выдаёт тот же текст, что
 старый скрипт; `core` импортируется без побочных эффектов (никаких сетевых вызовов на импорте);

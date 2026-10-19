@@ -23,9 +23,11 @@ from core.mcp_registry import (
     MCP_SEARCH_URL,
     extract_cursor,
     list_servers,
+    list_servers_raw,
     next_url,
     normalize_server,
     search,
+    servers_page,
 )
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures" / "mcp_registry"
@@ -284,3 +286,57 @@ def test_search_quotes_query_and_limit() -> None:
 
     assert transport.calls == [url]
     assert transport.calls[0].startswith("https://" + MCP_HOST)
+
+
+# --- list_servers_raw / servers_page (шаг 1e) ----------------------------------------------
+
+
+def test_list_servers_raw_first_page_keeps_raw_fields() -> None:
+    """Сырая страница: объекты серверов как есть — с ``remotes``/``packages``."""
+    payload = fixture(PAGE1)
+    http, transport = make_http({list_url(None, 10): (200, body(payload))})
+
+    servers, cursor = list_servers_raw(http, limit=10)
+
+    assert len(servers) == 10
+    assert servers[0] == payload["servers"][0]["server"]  # без нормализации
+    assert "remotes" in servers[0]
+    assert cursor == PAGE1_CURSOR
+    assert transport.calls == [list_url(None, 10)]
+
+
+def test_list_servers_raw_second_page_uses_cursor() -> None:
+    payload = fixture(PAGE2)
+    url = list_url(PAGE1_CURSOR, 10)
+    http, transport = make_http({url: (200, body(payload))})
+
+    servers, cursor = list_servers_raw(http, cursor=PAGE1_CURSOR, limit=10)
+
+    assert len(servers) == 10
+    assert servers[-1] == payload["servers"][-1]["server"]
+    assert cursor == payload["metadata"]["nextCursor"]
+    assert transport.calls == [url]
+
+
+def test_list_servers_raw_error_is_empty_page() -> None:
+    """Контракт 1d не изменился: сбой сети — ``([], None)``, а не исключение."""
+    http, transport = make_http({list_url(None, 10): (500, b"boom")})
+
+    assert list_servers_raw(http, limit=10) == ([], None)
+    assert len(transport.calls) == 3
+
+
+def test_servers_page_distinguishes_empty_catalog_from_failed_page() -> None:
+    """Пустая страница — ``([], None)``, не полученная — ``(None, None)``.
+
+    Различие принципиальное: обходчик каталога (шаг 1e) по пустой странице объявляет
+    обход законченным, а по не полученной — сохраняет курсор и продолжает позже.
+    """
+    empty = {"servers": [], "metadata": {"count": 0}}
+    ok, _ = make_http({list_url(None, 10): (200, body(empty))})
+    boom, _ = make_http({list_url(None, 10): (500, b"boom")})
+    missing, _ = make_http({})  # 404
+
+    assert servers_page(ok, limit=10) == ([], None)
+    assert servers_page(boom, limit=10) == (None, None)
+    assert servers_page(missing, limit=10) == (None, None)

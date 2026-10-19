@@ -30,9 +30,11 @@ __all__ = [
     "WRONG_CURSOR_KEY",
     "extract_cursor",
     "list_servers",
+    "list_servers_raw",
     "next_url",
     "normalize_server",
     "search",
+    "servers_page",
 ]
 
 MCP_HOST = "registry.modelcontextprotocol.io"
@@ -141,11 +143,48 @@ def list_servers(
     Ошибка сети или статуса — ``([], None)``: обход завершается, вызывающий код
     (шаг 1e) решает, повторять ли попытку. Ничего не печатает.
     """
+    servers, next_cursor = list_servers_raw(http, cursor=cursor, limit=limit)
+    return [normalize_server(server) for server in servers], next_cursor
+
+
+def servers_page(
+    http: HttpClient,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[dict] | None, str | None]:
+    """Сырая страница обхода: ``(объекты серверов, следующий курсор)``.
+
+    Отличие от :func:`list_servers_raw` — в одном случае: не полученная страница
+    отдаёт ``None`` вместо пустого списка. Слить «серверов на странице нет» и
+    «страница не пришла» в ``[]`` нельзя: обходчик (шаг 1e) обязан различать
+    «каталог кончился, ``finished=True``» и «сеть отвалилась, курсор сохранён,
+    продолжаем позже» — а из ``([], None)`` эти два исхода неразличимы.
+    Пустая страница каталога приходит как ``([], ...)``; ``None`` — только сбой.
+    """
     url = next_url(MCP_LIST_URL.format(limit=int(limit)), cursor, limit)
     status, data = http.get(url)
     if status != 200 or not isinstance(data, dict):
+        return None, None
+    return _servers(data), extract_cursor(data)
+
+
+def list_servers_raw(
+    http: HttpClient,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[list[dict], str | None]:
+    """То же, что :func:`list_servers`, но без нормализации строк каталога.
+
+    Нужен там, где важны поля, которых в строке каталога нет: обходчик каталога
+    (шаг 1e) считает тип поставки по ``remotes``/``packages``. Не полученная
+    страница — ``([], None)``, как у :func:`list_servers`.
+    """
+    servers, next_cursor = servers_page(http, cursor=cursor, limit=limit)
+    if servers is None:
         return [], None
-    return [normalize_server(server) for server in _servers(data)], extract_cursor(data)
+    return servers, next_cursor
 
 
 def search(http: HttpClient, query: str, *, limit: int = DEFAULT_LIMIT) -> list[dict]:
