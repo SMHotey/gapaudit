@@ -100,8 +100,12 @@ API-ключи**, вставьте ключ нужного провайдера 
 - **Авторизованный `gh` CLI** (шаг 1e и дальше): без него работает только
   `legacy/check_predecessors.py`, лимиты GitHub Search падают до 60 запросов/час.
   Проверка: `gh auth status`.
-- Сеть — только к публичным API (GitHub, npm, реестр MCP, PyPI). Никаких CDN,
-  Node.js и Docker в этом проекте нет.
+- Сеть: публичные API (GitHub, npm, реестр MCP, PyPI) — всегда. Опционально:
+  Adzuna, PatentsView, SEC EDGAR, Yandex Wordstat, Google Trends — только если
+  пользователь настроил ключи в приложении (Настройки → API-ключи, см.
+  [docs/API-KEYS.md](docs/API-KEYS.md)). Без ключей работают все базовые
+  функции и сигналы momentum / cross-ecosystem. Никаких CDN, Node.js и Docker
+  в этом проекте нет.
 
 ## Режимы запуска
 

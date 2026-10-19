@@ -801,6 +801,7 @@ momentum, cross-ecosystem), из них половина — P0–P1, то ес�
 | EDGAR требует User-Agent с email | Без него — 403 | Хранить в `api_keys.json` → `providers.edgar.meta.user_agent`; подставлять заголовок |
 | Yandex Wordstat требует OAuth-токен и ClientId | Заявка на доступ, квота, `429` с `Time to refill` | Хранить `encrypted_value` = OAuth-токен, `meta.client_id` = ClientId; при 429 ждать указанное время |
 | Google Trends: официальный API — alpha по заявке | Доступ выдают ограниченному числу разработчиков | Альтернатива — Apify (платно): API-токен Apify + `actor_id`; пользователь выбирает сам |
+| PatentsView (NIH/NSF, `search.patentsview.org`) — НЕ USPTO (`api.uspto.gov`) | Это разные API, и ключи у них не взаимозаменяемы | В текущей версии подключён только PatentsView. Ключ — с `patentsview.org/apis/key-request`. Не путать при получении ключа (§18.2, `docs/API-KEYS.md`) |
 | Утечка ключей при копировании БД | БД копируют целиком | Ключи — в отдельном файле `<data_dir>/api_keys.json` (0600), в SQLite их нет; при экспорте БД ключи не утекают |
 | «Шифрование» ключей — base64, а не криптография | Base64 — обратимо без ключа | P4 — base64; P5 — опционально Fernet с ключом, производным от machine-id. Честно документировать: «ключи защищены правами файла, не шифрованием» |
 | Гео (PyPI by country / BigQuery) | Отклонено | Не реализуем; в §16 п. 6 закрыто как «отклонено» |

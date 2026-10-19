@@ -44,6 +44,10 @@
   ``POST /api/matrix/export``, ``POST /api/compare/export`` (шаг 3c: файл в
   ответе, CSV — ``utf-8-sig``), настройки ``GET/PUT /api/settings`` (шаг 2c —
   пороги и ключевые слова, запись в ``<data_dir>/settings.json``),
+  ключи внешних API ``GET/PUT /api/settings/api-keys``,
+  ``POST /api/settings/api-keys/{provider}/check`` (заглушка P4a),
+  ``DELETE /api/settings/api-keys/{provider}`` (шаг P4a — файл
+  ``<data_dir>/api_keys.json``, наружу только статус),
   расширенный ``/api/health``.
 * **восстановление после падения** (шаг 3c): lifespan зовёт
   ``JobQueue.recover_interrupted()`` до ``queue.start()`` — задачи,
@@ -118,6 +122,7 @@ from app.jobs import (
     missing_required,
 )
 from app.store import Store
+from core.api_keys import META_FIELDS, PROVIDERS, ApiKeysStore
 from core.settings import (
     SETTINGS_FILENAME,
     Settings,
@@ -219,6 +224,10 @@ GH_OK_TTL_SECONDS = 60.0
 ROOT = Path(__file__).resolve().parent.parent
 VIEWS_DIR = ROOT / "web" / "views"
 STATIC_DIR = ROOT / "web" / "static"
+#: Документация для окна: ссылка «как получить ключ» в «Настройках → API-ключи»
+#: ведёт на ``docs/API-KEYS.md`` (шаг P4a), а файл лежит не среди шаблонов —
+#: поэтому каталог монтируется отдельно (см. ``create_app``).
+DOCS_DIR = ROOT / "docs"
 
 _ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -548,6 +557,19 @@ def _store(request: Request) -> Store:
     store = getattr(request.app.state, "store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="хранилище не открыто (lifespan)")
+    return store
+
+
+def _api_keys(request: Request) -> ApiKeysStore:
+    """Хранилище ключей из ``app.state`` (шаг P4a, создаётся в lifespan).
+
+    Без lifespan (голый ``create_app`` без ``with TestClient``) хранилища нет —
+    это 503, как у ``Store`` и очереди: молча создавать второе хранилище по
+    каталогу настроек значило бы писать ключи не туда, где читает приложение.
+    """
+    store = getattr(request.app.state, "api_keys", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="хранилище ключей не открыто (lifespan)")
     return store
 
 
@@ -1043,6 +1065,10 @@ def create_app(
         # GET/PUT /api/settings читают и пишут именно это (шаг 2c).
         application.state.settings = active_settings
         application.state.settings_path = settings_path
+        # Ключи внешних API (шаг P4a): свои файл в каталоге данных, НЕ в SQLite
+        # (§16 п. 7). Экземпляр живёт в app.state, потому что файл он читает на
+        # каждый вызов, а «где» известно только здесь, в lifespan.
+        application.state.api_keys = ApiKeysStore(data_dir)
 
         # --- хук завершения задачи (шаги 3d-b, 3b) ---------------------------
         # ``_post_process`` зовётся синхронно из потока воркера под ``_emit``:
@@ -1217,6 +1243,12 @@ def create_app(
     if STATIC_DIR.is_dir():
         # Локальная статика вместо CDN (правило из плана: никаких внешних CDN).
         application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    if DOCS_DIR.is_dir():
+        # ``docs/API-KEYS.md`` — цель ссылки «Инструкции по получению» в
+        # «Настройках → API-ключи» (шаг P4a, §18.6). Без этого монтирования
+        # ссылка вела бы в никуда (404): документация лежит в каталоге проекта,
+        # а не среди шаблонов или статики.
+        application.mount("/docs", StaticFiles(directory=str(DOCS_DIR)), name="docs")
 
     @application.get(HEALTH_PATH)
     async def health(request: Request) -> dict[str, Any]:
@@ -1962,6 +1994,118 @@ def create_app(
         if "max_parallel_jobs" in changed:
             warnings.append(WARNING_RESTART)
         return {"settings": settings_to_dict(new_settings), "warnings": warnings}
+
+    # --- API-ключи внешних провайдеров (шаг P4a) ------------------------------
+
+    @application.get("/api/settings/api-keys")
+    def list_api_keys(request: Request) -> dict[str, Any]:
+        """Провайдеры и их статус. Значения ключей не отдаются никогда.
+
+        Ответ — контракт вкладки «API-ключи»: ``settings.js`` строит по нему
+        карточку провайдера (поля ввода — из ``fields``, вид — ``kind``) и
+        показывает статус. Значения ключей тут отсутствуют по построению: их
+        собирает :meth:`core.api_keys.ApiKeysStore.status_all`, а расшифровка
+        живёт в отдельном методе ``get``, который зовут только коллекторы (P5).
+
+        ``meta_public`` — несекретные метаданные (``user_agent`` у EDGAR,
+        ``client_id`` у Wordstat, ``actor_id`` у Apify, §7): без них после
+        перезапуска окна не видно даже того, что вводить не секрет. Секреты в
+        ``meta`` попасть не могут — ``save`` пускает туда только объявленные
+        несекретные поля. ``meta_fields`` перечисляет эти поля по именам: по ним
+        UI решает, показывать поле как ``text`` (значение вернулось) или как
+        ``password`` (не вернулось и не вернётся).
+        """
+        store = _api_keys(request)
+        statuses = {status.provider: status for status in store.status_all()}
+        providers: list[dict[str, Any]] = []
+        for provider, spec in PROVIDERS.items():
+            status = statuses[provider]
+            providers.append(
+                {
+                    "id": provider,
+                    "label": spec["label"],
+                    "kind": spec["kind"],
+                    "fields": list(spec["fields"]),
+                    "meta_fields": list(META_FIELDS.get(provider, ())),
+                    "docs_anchor": spec["docs_anchor"],
+                    "configured": status.configured,
+                    "last_check": status.last_check,
+                    "last_check_ok": status.last_check_ok,
+                    "meta_public": store.public_meta(provider),
+                }
+            )
+        return {"providers": providers}
+
+    @application.put("/api/settings/api-keys")
+    def save_api_key(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Сохранить ключ провайдера: ``{provider, values, meta?}`` → ``{"ok": true}``.
+
+        Правила «все поля провайдера заполнены» и «в ``meta`` только
+        несекретные поля» живут в :meth:`core.api_keys.ApiKeysStore.save` (один
+        источник правды для UI и будущего CLI), здесь только перевод
+        ``ValueError`` в 400 — как у ``PUT /api/settings``, где половина
+        применённого тела хуже отказа.
+
+        В лог уходит провайдер и число полей, но не значения: §18.5 запрещает
+        логировать ключи, и подпись «полей: 2» отладочной ценности не теряет.
+        """
+        unknown = sorted(set(payload) - {"provider", "values", "meta"})
+        if unknown:
+            raise HTTPException(
+                status_code=400, detail=f"неизвестные поля тела: {', '.join(unknown)}"
+            )
+        provider = payload.get("provider")
+        if not isinstance(provider, str) or not provider:
+            raise HTTPException(status_code=400, detail="provider: ожидалось имя провайдера")
+        # Аннотации ``Any`` — не послабление проверки, а её перенос: форму
+        # ``values``/``meta`` проверяет ``ApiKeysStore.save`` (там же, где
+        # правило «все поля заполнены»), и дублировать формулировки здесь нельзя.
+        values: Any = payload.get("values")
+        meta: Any = payload.get("meta")
+        try:
+            _api_keys(request).save(provider, values, meta)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        logger.info("сохранён ключ провайдера %s (полей: %d)", provider, len(PROVIDERS[provider]["fields"]))
+        return {"ok": True}
+
+    @application.post("/api/settings/api-keys/{provider}/check")
+    def check_api_key(provider: str, request: Request) -> dict[str, Any]:
+        """Проверка ключа — заглушка P4a: ни сети, ни записи статуса.
+
+        Тестовый запрос у каждого провайдера свой (``docs/API-KEYS.md``) и
+        осмыслен только рядом с коллектором сигнала (P5): проверять формат
+        ответа API, к которому ещё нет клиента, нечего. Поэтому эндпоинт честно
+        отвечает «в разработке» и НЕ зовёт ``mark_checked``: статус «проверка
+        пройдена» без проверки — ложь, которую увидит пользователь.
+
+        Коды: 404 — провайдера нет в :data:`core.api_keys.PROVIDERS`, 200 —
+        ответ-заглушка (``ok=False`` и для настроенного, и для пустого: причина
+        разная, и «сначала сохраните ключ» полезнее общего текста).
+        """
+        store = _api_keys(request)
+        if provider not in PROVIDERS:
+            raise HTTPException(status_code=404, detail=f"неизвестный провайдер: {provider}")
+        if not store.status(provider).configured:
+            return {"ok": False, "reason": "проверка будет в P5: сначала сохраните ключ"}
+        return {
+            "ok": False,
+            "reason": "проверка будет в P5 (появится вместе с коллектором сигнала)",
+        }
+
+    @application.delete("/api/settings/api-keys/{provider}")
+    def delete_api_key(provider: str, request: Request) -> dict[str, Any]:
+        """Удалить ключ провайдера: ``{"ok": true}``; удалять нечего — 404.
+
+        Один и тот же 404 на «провайдера не знаю» и «ключа нет»: наружу это
+        одно состояние — «такого ключа у меня нет», и UI (кнопка «Удалить»)
+        обрабатывает их одинаково.
+        """
+        store = _api_keys(request)
+        if provider not in PROVIDERS or not store.delete(provider):
+            raise HTTPException(status_code=404, detail=f"ключ провайдера {provider} не найден")
+        logger.info("удалён ключ провайдера %s", provider)
+        return {"ok": True}
 
     # --- экраны ---------------------------------------------------------------
 
