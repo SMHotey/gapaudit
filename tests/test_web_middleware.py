@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from app.web import TOKEN_QUERY
 from tests.conftest import PORT, TOKEN, auth, cookie_header
 
-VALID_JOB = {"kind": "monitor.diff", "params": {"days": 7}}
+VALID_JOB = {"kind": "monitor.diff", "params": {"diff_from": "raw/predecessors.json"}}
 
 
 # --- GET /api/*: три места для токена ----------------------------------------

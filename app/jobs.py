@@ -739,8 +739,10 @@ _KIND_TO_MODULE: dict[str, str] = {
     "monitor.diff": "cli.check_predecessors",
 }
 
-#: Whitelist ключей ``params`` на каждый kind: всё остальное — ``ValueError``.
-_KIND_PARAM_KEYS: dict[str, frozenset[str]] = {
+#: Whitelist ключей ``params`` на каждый kind — ЕДИНСТВЕННЫЙ источник правды о
+#: том, какая задача валидна. По этой таблице ``app/web.py`` строит 400 на
+#: ``POST /api/jobs`` (fail fast), а :func:`_params_to_argv` — argv подпроцесса.
+KIND_PARAM_KEYS: dict[str, frozenset[str]] = {
     "packages.check": frozenset({"names", "keyword"}),
     "catalog.build": frozenset({"phrases", "min_stars", "pages", "sources"}),
     "registry.scan": frozenset({"base_url", "limit", "max_pages"}),
@@ -748,9 +750,53 @@ _KIND_PARAM_KEYS: dict[str, frozenset[str]] = {
     "monitor.diff": frozenset({"diff_from"}),
 }
 
+#: Обязательные ключи: без них задача бессмысленна. Проверяется и в API (400),
+#: и в runner'е (``ValueError``) — одной функцией :func:`missing_required`.
+KIND_REQUIRED_KEYS: dict[str, frozenset[str]] = {
+    "packages.check": frozenset({"names"}),
+    "catalog.build": frozenset({"phrases"}),
+    "registry.scan": frozenset(),
+    "github.verify": frozenset({"targets"}),
+    "monitor.diff": frozenset({"diff_from"}),
+}
+
+#: Типы значений ``params`` — для той же валидации в API (неизвестный ключ
+#: отбивает :data:`KIND_PARAM_KEYS`, тип — эта таблица). ``list`` — любой
+#: JSON-массив, элементы проверяет сам CLI.
+KIND_PARAM_TYPES: dict[str, dict[str, type | tuple[type, ...]]] = {
+    "packages.check": {"names": list, "keyword": list},
+    "catalog.build": {
+        "phrases": list,
+        "min_stars": int,
+        "pages": int,
+        "sources": list,
+    },
+    "registry.scan": {"base_url": str, "limit": int, "max_pages": int},
+    "github.verify": {"targets": list, "keyword": str},
+    "monitor.diff": {"diff_from": str},
+}
+
 #: Источники каталога по умолчанию: отсутствие в ``params["sources"]`` даёт
 #: ``--no-npm``/``--no-registry`` (CLI включает всё, кроме явно выключенного).
 _DEFAULT_SOURCES: tuple[str, ...] = ("github", "npm", "registry")
+
+
+def missing_required(kind: str, params: dict) -> list[str]:
+    """Какие обязательные ключи отсутствуют или пусты — список имён (пусто — всё есть).
+
+    Пустое значение считается отсутствующим: ``names: []`` или ``diff_from: ""``
+    задачу не запускают, поэтому и API, и runner должны ответить одинаково.
+    """
+    missing: list[str] = []
+    for key in sorted(KIND_REQUIRED_KEYS.get(kind, frozenset())):
+        value = params.get(key)
+        if value is None:
+            missing.append(key)
+        elif isinstance(value, str) and not value.strip():
+            missing.append(key)
+        elif isinstance(value, (list, tuple, dict, set)) and not value:
+            missing.append(key)
+    return missing
 
 
 def _str_list(value: Any) -> list[str]:
@@ -763,7 +809,8 @@ def _str_list(value: Any) -> list[str]:
 def _params_to_argv(kind: str, params: dict) -> list[str]:
     """Whitelist params -> argv. Любой неизвестный ключ — ``ValueError``.
 
-    Таблица соответствия — в DEVPLAN §7 и :data:`_KIND_PARAM_KEYS`:
+    Таблица соответствия — :data:`KIND_PARAM_KEYS` (ключи), :data:`KIND_REQUIRED_KEYS`
+    (обязательные) и :data:`KIND_PARAM_TYPES` (типы для API):
 
     * ``packages.check``: ``names`` (обязателен, позиционные), ``keyword``
       (список -> ``--keyword=``; пусто — CLI возьмёт ``Settings.keywords``);
@@ -774,21 +821,22 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
     * ``monitor.diff``: ``diff_from`` (обязателен -> ``--diff=``).
 
     Ошибки — только ``ValueError`` и только до ``subprocess``: задача,
-    которая заведомо не запустится, не должна создавать процесс.
+    которая заведомо не запустится, не должна создавать процесс. Обязательные
+    ключи проверяет :func:`missing_required` — та же функция, что в API.
     """
     if kind not in _KIND_TO_MODULE:
         raise ValueError(f"неизвестный kind: {kind!r}")
-    schema = _KIND_PARAM_KEYS[kind]
+    schema = KIND_PARAM_KEYS[kind]
     for key in params:
         if key not in schema:
             raise ValueError(f"unknown param for {kind}: {key}")
+    missing = missing_required(kind, params)
+    if missing:
+        raise ValueError(f"missing param for {kind}: {missing[0]}")
 
     def positional(key: str) -> list[str]:
-        """Обязательный список: позиционные аргументы CLI (пустой — ошибка)."""
-        items = _str_list(params.get(key))
-        if not items:
-            raise ValueError(f"missing param for {kind}: {key}")
-        return items
+        """Позиционные аргументы CLI из обязательного списка ``params``."""
+        return _str_list(params.get(key))
 
     if kind == "packages.check":
         argv = positional("names")
@@ -825,10 +873,7 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
         return argv
 
     # monitor.diff — единственный оставшийся kind: сравнение с прошлым прогоном.
-    diff_from = params.get("diff_from")
-    if not diff_from:
-        raise ValueError("missing param for monitor.diff: diff_from")
-    return [f"--diff={diff_from}"]
+    return [f"--diff={params['diff_from']}"]
 
 
 def _default_runner(job: Job, data_dir: Path) -> subprocess.Popen:

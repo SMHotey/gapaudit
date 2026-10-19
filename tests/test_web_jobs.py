@@ -21,7 +21,7 @@ from tests.conftest import app_state, auth
 
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
-VALID_JOB = {"kind": "monitor.diff", "params": {"days": 7}}
+VALID_JOB = {"kind": "monitor.diff", "params": {"diff_from": "raw/predecessors.json"}}
 
 
 # --- lifespan: Store и очередь подключены к FastAPI --------------------------
@@ -79,7 +79,7 @@ def test_post_without_kind_is_422(client: TestClient) -> None:
 def test_post_unknown_param_key_is_400(client: TestClient) -> None:
     response = client.post(
         "/api/jobs",
-        json={"kind": "monitor.diff", "params": {"days": 7, "depth": 3}},
+        json={"kind": "monitor.diff", "params": {"diff_from": "raw/prev.json", "depth": 3}},
         headers=auth(),
     )
 
@@ -87,20 +87,62 @@ def test_post_unknown_param_key_is_400(client: TestClient) -> None:
     assert "depth" in response.json()["detail"]
 
 
-def test_post_param_wrong_type_is_400(client: TestClient) -> None:
+def test_post_unknown_param_days_is_400(client: TestClient) -> None:
+    """Fail fast: ``days`` — не параметр задачи (сравниваются два списка), 400 сразу."""
     response = client.post(
-        "/api/jobs",
-        json={"kind": "monitor.diff", "params": {"days": "семь"}},
+        "/api/jobs", json={"kind": "monitor.diff", "params": {"days": 7}}, headers=auth()
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "days" in detail and "обязательный" in detail
+
+
+def test_post_monitor_diff_without_diff_from_is_400(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs", json={"kind": "monitor.diff", "params": {}}, headers=auth()
+    )
+
+    assert response.status_code == 400
+    assert "diff_from" in response.json()["detail"]
+
+
+def test_post_packages_check_without_names_is_400(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs", json={"kind": "packages.check", "params": {"keyword": ["mcp"]}},
         headers=auth(),
     )
 
     assert response.status_code == 400
-    assert "days" in response.json()["detail"]
+    assert "names" in response.json()["detail"]
+
+
+def test_post_registry_scan_with_classes_is_400(client: TestClient) -> None:
+    """``classes`` — настройка метода (core.scan.DEFAULT_CLASSES), не параметр задачи."""
+    response = client.post(
+        "/api/jobs",
+        json={"kind": "registry.scan", "params": {"classes": ["devtools"]}},
+        headers=auth(),
+    )
+
+    assert response.status_code == 400
+    assert "classes" in response.json()["detail"]
+
+
+def test_post_param_wrong_type_is_400(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs",
+        json={"kind": "monitor.diff", "params": {"diff_from": 7}},
+        headers=auth(),
+    )
+
+    assert response.status_code == 400
+    assert "diff_from" in response.json()["detail"]
 
     # bool — не int для наших целей
     boolean = client.post(
         "/api/jobs",
-        json={"kind": "monitor.diff", "params": {"days": True}},
+        json={"kind": "registry.scan", "params": {"limit": True}},
         headers=auth(),
     )
     assert boolean.status_code == 400
@@ -156,7 +198,7 @@ def test_get_job_with_params_and_404(client: TestClient) -> None:
     assert found.status_code == 200
     payload = found.json()
     assert payload["id"] == job_id
-    assert payload["params"] == {"days": 7}
+    assert payload["params"] == {"diff_from": "raw/predecessors.json"}
     assert "log_path" not in payload and "pid" not in payload
     assert missing.status_code == 404
 
@@ -181,7 +223,7 @@ def test_cancel_finished_job_returns_false(client: TestClient) -> None:
         {
             "id": done_id,
             "kind": "monitor.diff",
-            "params": {"days": 1},
+            "params": {"diff_from": "raw/prev.json"},
             "status": "queued",
             "created_at": "2026-10-19T00:00:00Z",
             "log_path": "",

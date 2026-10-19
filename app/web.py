@@ -67,7 +67,15 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from app.jobs import EventCallback, Job, JobQueue
+from app.jobs import (
+    KIND_PARAM_KEYS,
+    KIND_PARAM_TYPES,
+    KIND_REQUIRED_KEYS,
+    EventCallback,
+    Job,
+    JobQueue,
+    missing_required,
+)
 from app.store import Store
 from core.settings import Settings, from_env, resolve_data_dir
 
@@ -80,7 +88,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "GhOkCache",
-    "JOB_KINDS",
+    "KIND_PARAM_KEYS",
+    "KIND_PARAM_TYPES",
+    "KIND_REQUIRED_KEYS",
     "LOG_TAIL_BYTES",
     "LocalGuardMiddleware",
     "SSE_HEARTBEAT_INTERVAL",
@@ -120,20 +130,11 @@ STATIC_DIR = ROOT / "web" / "static"
 _ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-#: Валидация ``params`` — поверхностная: ключи и типы значений.
-#: Обязательность ключей и глубина проверки (длины, диапазоны) — шаг 3d.
-JOB_KINDS: dict[str, dict[str, type | tuple[type, ...]]] = {
-    "packages.check": {"names": list, "keyword": list},
-    "catalog.build": {
-        "phrases": list,
-        "min_stars": int,
-        "pages": int,
-        "sources": list,
-    },
-    "registry.scan": {"base_url": str, "classes": list},
-    "github.verify": {"targets": list, "keyword": str},
-    "monitor.diff": {"days": int},
-}
+#: Валидация ``params`` строится по таблицам из ``app/jobs.py`` — единый источник
+#: правды: ``KIND_PARAM_KEYS`` (какие ключи допустимы), ``KIND_REQUIRED_KEYS``
+#: (обязательные) и ``KIND_PARAM_TYPES`` (типы значений). Локального списка
+#: kind в этом модуле нет намеренно (шаг 3d-b): два описания «валидной задачи»
+#: расходились — API отвечал 202, а задача падала с ``missing param``.
 
 
 # --- проверки окружения (миддлварь) ------------------------------------------
@@ -283,15 +284,24 @@ def _type_ok(value: Any, expected: type | tuple[type, ...]) -> bool:
 
 
 def _param_errors(kind: str, params: dict[str, Any]) -> list[str]:
-    """Поверхностная валидация: неизвестные ключи и неверные типы значений."""
-    schema = JOB_KINDS[kind]
+    """Валидация ``params`` по таблицам ``app/jobs.py``: ключи, типы, обязательные.
+
+    Fail fast: задача, которая заведомо упадёт в ``_params_to_argv``, не должна
+    получить 202 и умереть в ``failed`` через секунду. Порядок сообщений —
+    стабильный (ключи в порядке запроса, затем недостающие по алфавиту).
+    """
+    allowed = KIND_PARAM_KEYS[kind]
+    types = KIND_PARAM_TYPES[kind]
     errors: list[str] = []
     for key, value in params.items():
-        if key not in schema:
+        if key not in allowed:
             errors.append(f"неизвестный параметр {key!r}")
             continue
-        if not _type_ok(value, schema[key]):
-            errors.append(f"параметр {key!r} должен быть {schema[key]!r}")
+        expected = types.get(key)
+        if expected is not None and not _type_ok(value, expected):
+            errors.append(f"параметр {key!r} должен быть {expected!r}")
+    for key in missing_required(kind, params):
+        errors.append(f"обязательный параметр {key!r} отсутствует или пуст")
     return errors
 
 
@@ -424,7 +434,7 @@ def create_app(
     @application.post("/api/jobs", status_code=202)
     async def submit_job(payload: JobSubmit, request: Request) -> dict[str, str]:
         """Создать задачу: ``{"kind", "params"}`` → ``202 {"job_id", "status"}``."""
-        if payload.kind not in JOB_KINDS:
+        if payload.kind not in KIND_PARAM_KEYS:
             raise HTTPException(
                 status_code=400, detail=f"неизвестный kind: {payload.kind!r}"
             )

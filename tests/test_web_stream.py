@@ -71,7 +71,7 @@ def test_submit_emits_created_event(client: TestClient) -> None:
     def post_job() -> None:
         result["response"] = client.post(
             "/api/jobs",
-            json={"kind": "monitor.diff", "params": {"days": 7}},
+            json={"kind": "monitor.diff", "params": {"diff_from": "raw/predecessors.json"}},
             headers=auth(),
         )
 

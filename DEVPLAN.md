@@ -172,13 +172,18 @@ schedules(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, params TEXT, cron TEXT,
 поля `status` события или из опроса задач.
 
 ```python
-JOB_KINDS = {
-  "packages.check": {"names": [str], "keyword": [str]},
-  "catalog.build":  {"phrases": [str], "min_stars": int, "pages": int, "sources": [str]},
-  "registry.scan":  {"base_url": str, "classes": list},
-  "github.verify":  {"targets": [str], "keyword": str},
-  "monitor.diff":   {"days": int},
-}
+KIND_PARAM_KEYS (app/jobs.py — единственный источник правды; им же валидирует app/web.py):
+  "packages.check": {"names": [str] (обязателен), "keyword": [str]}
+  "catalog.build":  {"phrases": [str] (обязателен), "min_stars": int, "pages": int, "sources": [str]}
+  "registry.scan":  {"base_url": str, "limit": int, "max_pages": int}
+  "github.verify":  {"targets": [str] (обязателен), "keyword": str}
+  "monitor.diff":   {"diff_from": str} (обязателен)
+
+KIND_REQUIRED_KEYS — подмножество обязательных ключей на kind; KIND_PARAM_TYPES — типы
+значений для 400. POST /api/jobs отвечает 400 (fail fast), если kind неизвестен, ключ не
+из whitelist, тип не тот или обязательный ключ отсутствует/пуст — задача НЕ создаётся.
+`classes` (registry.scan) и `days` (monitor.diff) параметрами задачи не являются: классы —
+настройка метода (core.scan.DEFAULT_CLASSES), «за N дней» — фильтр отображения в UI (3d-b).
 ```
 
 Обязательные свойства:
@@ -216,7 +221,10 @@ JOB_KINDS = {
 
 Правила: никакой сетевой работы в обработчиках, кроме чтения из SQLite/кэша; всё долгое — задачей.
 Ответы — JSON со стабильными ключами, пригодные и для CLI, и для UI.
-`params` возвращается как есть; при появлении секретных ключей — whitelist по JOB_KINDS.
+`params` возвращается как есть. Валидация `POST /api/jobs` строится по таблицам
+`app/jobs.py` (`KIND_PARAM_KEYS`/`KIND_REQUIRED_KEYS`/`KIND_PARAM_TYPES`) — локального
+`JOB_KINDS` в `app/web.py` больше нет (шаг 3d-b): два описания «валидной задачи»
+расходились, и API отвечал 202 задаче, которая падала с `missing param`.
 `_default_runner` маппит `kind` в argv по whitelist-таблице `_KIND_TO_MODULE`
 (`packages.check`→`cli.check_predecessors`, `catalog.build`→`cli.catalog_build`,
 `registry.scan`→`cli.catalog_scan`, `github.verify`→`cli.verify`,

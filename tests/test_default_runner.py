@@ -19,13 +19,15 @@ import pytest
 
 from app import jobs as jobs_module
 from app.jobs import (
+    KIND_PARAM_KEYS,
+    KIND_PARAM_TYPES,
+    KIND_REQUIRED_KEYS,
     _KIND_TO_MODULE,
-    _KIND_PARAM_KEYS,
     Job,
     _default_runner,
     _params_to_argv,
+    missing_required,
 )
-from app.web import JOB_KINDS
 
 JOB_ID = "a" * 32
 
@@ -57,10 +59,22 @@ def popen(monkeypatch: pytest.MonkeyPatch) -> PopenRecorder:
 
 
 def test_kind_to_module_is_whitelist_and_covers_job_kinds() -> None:
-    """Таблица модулей покрывает ровно те kind, что принимает API."""
-    assert set(_KIND_TO_MODULE) == set(JOB_KINDS)
-    assert set(_KIND_PARAM_KEYS) == set(_KIND_TO_MODULE)
+    """Таблица модулей покрывает ровно те kind, что описаны таблицами params."""
+    assert set(_KIND_TO_MODULE) == set(KIND_PARAM_KEYS)
+    assert set(KIND_PARAM_TYPES) == set(KIND_PARAM_KEYS)
+    assert set(KIND_REQUIRED_KEYS) == set(KIND_PARAM_KEYS)
+    for kind, required in KIND_REQUIRED_KEYS.items():
+        assert required <= KIND_PARAM_KEYS[kind], kind
     assert all(module.startswith("cli.") for module in _KIND_TO_MODULE.values())
+
+
+def test_missing_required_treats_empty_values_as_absent() -> None:
+    """Пустые names/diff_from — не «передано», а «не передано» (одна правда с API)."""
+    assert missing_required("packages.check", {}) == ["names"]
+    assert missing_required("packages.check", {"names": []}) == ["names"]
+    assert missing_required("packages.check", {"names": ["x"]}) == []
+    assert missing_required("monitor.diff", {"diff_from": "  "}) == ["diff_from"]
+    assert missing_required("registry.scan", {}) == []
 
 
 # --- params -> argv -----------------------------------------------------------
