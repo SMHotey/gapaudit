@@ -77,13 +77,16 @@ def _text(value: Any, limit: int) -> str:
     return str(value or "")[:limit]
 
 
-def _has_keyword(*parts: Any) -> bool:
+def _has_keyword(*parts: Any, keywords: tuple[str, ...] = PRED_KEYWORDS) -> bool:
     haystack = " ".join(str(part or "") for part in parts).lower()
-    return any(keyword in haystack for keyword in PRED_KEYWORDS)
+    return any(keyword in haystack for keyword in keywords)
 
 
-def pypi_raw(pypi_json: dict | None) -> dict | None:
-    """Разобрать JSON PyPI в форму legacy ``pypi()`` (без поля ``raw``)."""
+def pypi_raw(pypi_json: dict | None, *, keywords: tuple[str, ...] = PRED_KEYWORDS) -> dict | None:
+    """Разобрать JSON PyPI в форму legacy ``pypi()`` (без поля ``raw``).
+
+    ``keywords`` — признаки ниши для ``has_mcp`` (по умолчанию :data:`PRED_KEYWORDS`).
+    """
     if not isinstance(pypi_json, dict) or not pypi_json:
         return None
     info = pypi_json.get("info") or {}
@@ -98,12 +101,12 @@ def pypi_raw(pypi_json: dict | None) -> dict | None:
         # В legacy здесь был бы IndexError на пустом releases — теперь "?".
         "date": _text(upload_time, DATE_LIMIT) if upload_time else "?",
         "summary": _text(info.get("summary"), SUMMARY_LIMIT),
-        "has_mcp": _has_keyword(info.get("summary"), info.get("description")),
+        "has_mcp": _has_keyword(info.get("summary"), info.get("description"), keywords=keywords),
         "home": _text(info.get("home_page"), HOME_LIMIT),
     }
 
 
-def npm_raw(npm_json: dict | None) -> dict | None:
+def npm_raw(npm_json: dict | None, *, keywords: tuple[str, ...] = PRED_KEYWORDS) -> dict | None:
     """Разобрать JSON реестра npm в форму legacy ``npm()`` (без поля ``raw``)."""
     if not isinstance(npm_json, dict) or not npm_json or "error" in npm_json:
         return None
@@ -118,7 +121,7 @@ def npm_raw(npm_json: dict | None) -> dict | None:
         "date": _text(released, DATE_LIMIT) if released else "?",
         "summary": _text(vmeta.get("description"), SUMMARY_LIMIT),
         # legacy проверяет всю метаданные версии целиком, а не только описание
-        "has_mcp": _has_keyword(json.dumps(vmeta)),
+        "has_mcp": _has_keyword(json.dumps(vmeta), keywords=keywords),
         "home": _text(vmeta.get("repository") or vmeta.get("homepage"), HOME_LIMIT),
     }
 
@@ -210,10 +213,21 @@ def adoption_raw(
 
 
 class RegistryClient:
-    """Запросы к реестрам через инжектированный :class:`HttpClient`."""
+    """Запросы к реестрам через инжектированный :class:`HttpClient`.
 
-    def __init__(self, http: HttpClient) -> None:
+    ``keywords`` — признаки ниши для ``has_mcp`` в карточках (по умолчанию
+    :data:`PRED_KEYWORDS`); CLI (шаг 1f) передаёт сюда ``Settings.keywords``,
+    поэтому колонка «MCP» в таблице отвечает на то же слово, что и ``--keyword``.
+    """
+
+    def __init__(
+        self,
+        http: HttpClient,
+        *,
+        keywords: tuple[str, ...] = PRED_KEYWORDS,
+    ) -> None:
         self.http = http
+        self.keywords = tuple(keywords)
 
     def pypi(self, name: str) -> dict | None:
         """Карточка пакета PyPI: ``{"ver","date","summary","has_mcp","home","raw"}``.
@@ -223,7 +237,7 @@ class RegistryClient:
         status, data = self.http.get(pypi_url(name))
         if status != 200 or not isinstance(data, dict):
             return None
-        parsed = pypi_raw(data)
+        parsed = pypi_raw(data, keywords=self.keywords)
         if parsed is None:
             return None
         return {**parsed, "raw": data}
@@ -233,7 +247,7 @@ class RegistryClient:
         status, data = self.http.get(npm_url(name))
         if status != 200 or not isinstance(data, dict):
             return None
-        parsed = npm_raw(data)
+        parsed = npm_raw(data, keywords=self.keywords)
         if parsed is None:
             return None
         return {**parsed, "raw": data}

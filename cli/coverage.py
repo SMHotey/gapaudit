@@ -1,23 +1,45 @@
-"""Сопоставление покрытия + фильтр не-инструментов + карта плотности.
-Вход: raw/catalog.json, raw/ecosystem_repos.json, raw/popular.json (см. collect.py)
-Выход: raw/gaps.json, raw/gap_tools.json, raw/saturation.json
+"""Сопоставление покрытия + фильтр не-инструментов + карта плотности — CLI (шаг 1f).
 
-ВАЖНО: матчинг по тексту — это прокси. Кандидатов ОБЯЗАТЕЛЬНО прогонять через verify.py.
+Порт ``legacy/coverage.py``. Вход: ``raw/{catalog,ecosystem_repos,popular}.json``
+(их пишет ``collect.py``); выход: ``raw/{gaps,gap_tools,saturation}.json`` плюс
+сводный ``--json-out``.
+
+ВАЖНО: матчинг по тексту — это прокси. Кандидатов ОБЯЗАТЕЛЬНО прогонять через
+``verify.py``.
+
+Константы метода (``GENERIC``, ``CAPS``, ``BAD_NAME``, ``BAD_DESC``, ``BAD_LANG``,
+``TOOLISH``) и чистые функции (``norm``/``build_corpus``/``covered``/``is_tool``)
+живут здесь, а не в ``core``: это методология аудита, а не настройки пользователя
+(DEVPLAN §14); в ``core`` переедут, если понадобятся приложению (шаг 5).
 """
-import json, os, re, collections
 
-RAW = "raw"
-L = lambda n: json.load(open(os.path.join(RAW, n), encoding="utf-8"))
+from __future__ import annotations
 
-# родовые имена: дают ложное «покрыто», выбрасываем
-GENERIC = {"api", "core", "cli", "app", "web", "docs", "test", "ui", "sdk", "lib",
-           "tool", "server", "client", "code", "data", "dev", "lab", "labs", "team",
-           "cloud", "go", "now", "next", "node", "rust", "open", "src", "main", "base",
-           "kit", "free", "pro", "nextjs"}
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any
 
-# классы задач для карты плотности — правь под экосистему
-CAPS = {
-    "флаки-тесты": ["flaky"], "выбор тестов по диффу": ["test impact", "test selection"],
+from cli._common import build_argparser, load_runtime, print_table, write_json
+from core.settings import resolve_data_dir
+
+__all__ = ["build_corpus", "covered", "is_tool", "main", "norm"]
+
+#: Родовые имена: дают ложное «покрыто», выбрасываем (как в legacy).
+GENERIC = {
+    "api", "core", "cli", "app", "web", "docs", "test", "ui", "sdk", "lib",
+    "tool", "server", "client", "code", "data", "dev", "lab", "labs", "team",
+    "cloud", "go", "now", "next", "node", "rust", "open", "src", "main", "base",
+    "kit", "free", "pro", "nextjs",
+}
+
+#: Классы задач для карты плотности — методология, правится под экосистему.
+CAPS: dict[str, list[str]] = {
+    "флаки-тесты": ["flaky"],
+    "выбор тестов по диффу": ["test impact", "test selection"],
     "план запроса/индексы": ["query plan", "explain analyze", "slow query", "index advisor"],
     "безопасность миграций": ["schema migration", "migration plan", "migration rollback"],
     "профайлер": ["flamegraph", "profiler", "cpu profile", "pprof", "py-spy"],
@@ -42,86 +64,176 @@ CAPS = {
     "SQL-аналитика": ["sql", "warehouse", "analytics"],
 }
 
-BAD_NAME = re.compile(r"awesome|course|book|interview|tutorial|learn|guide|cheatsheet|papers|"
-                      r"exercise|\bdays\b|\bnotes\b|roadmap|resources|from-scratch|beginners|"
-                      r"dotfiles|-zh$|samples?$|curriculum|bootcamp|collection|examples?$", re.I)
-BAD_DESC = re.compile(r"a (collective|curated|list|collection) of|curated list|awesome |list of |"
-                      r"course|learn |learning |tutorial|curriculum|cheat ?sheet|\d+ (weeks|days)|"
-                      r"study|roadmap|resources for|papers|textbook|for beginners|interview", re.I)
-BAD_LANG = {"", "markdown", "jupyter notebook", "tex", "html", "css", "scss", "viml",
-            "vim script", "emacs lisp", "restructuredtext"}
-TOOLISH = re.compile(r"cli|command.line|server|api|self.hosted|automation|devops|infra|kubernetes|"
-                     r"docker|database|monitoring|observability|deploy|proxy|gateway|cms|backend|"
-                     r"search|browser|editor|testing|ci\b|tool|platform|engine|runtime|"
-                     r"scheduler|messaging|queue|storage|network|security|terminal|shell|package", re.I)
+BAD_NAME = re.compile(
+    r"awesome|course|book|interview|tutorial|learn|guide|cheatsheet|papers|"
+    r"exercise|\bdays\b|\bnotes\b|roadmap|resources|from-scratch|beginners|"
+    r"dotfiles|-zh$|samples?$|curriculum|bootcamp|collection|examples?$",
+    re.I,
+)
+BAD_DESC = re.compile(
+    r"a (collective|curated|list|collection) of|curated list|awesome |list of |"
+    r"course|learn |learning |tutorial|curriculum|cheat ?sheet|\d+ (weeks|days)|"
+    r"study|roadmap|resources for|papers|textbook|for beginners|interview",
+    re.I,
+)
+BAD_LANG = {
+    "", "markdown", "jupyter notebook", "tex", "html", "css", "scss", "viml",
+    "vim script", "emacs lisp", "restructuredtext",
+}
+TOOLISH = re.compile(
+    r"cli|command.line|server|api|self.hosted|automation|devops|infra|kubernetes|"
+    r"docker|database|monitoring|observability|deploy|proxy|gateway|cms|backend|"
+    r"search|browser|editor|testing|ci\b|tool|platform|engine|runtime|"
+    r"scheduler|messaging|queue|storage|network|security|terminal|shell|package",
+    re.I,
+)
+
+#: Входные файлы — как в legacy (относительно --raw-dir).
+CATALOG_FILE = "catalog.json"
+ECOSYSTEM_FILE = "ecosystem_repos.json"
+POPULAR_FILE = "popular.json"
+GAPS_FILE = "gaps.json"
+GAP_TOOLS_FILE = "gap_tools.json"
+SATURATION_FILE = "saturation.json"
 
 
-def norm(s):
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", s.lower())).strip()
+def norm(text: str) -> str:
+    """Нормализация текста для матчинга: только строчные латинские слова."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text.lower())).strip()
 
 
-def build_corpus(cat, eco):
+def build_corpus(cat: list, eco: dict) -> str:
+    """Один текстовый корпус из каталога и репозиториев экосистемы."""
     parts = []
-    for e in cat:
-        s = e.get("server", e)
-        parts.append(" ".join(str(s.get(k, "")) for k in ("name", "description", "title")))
-    for r in eco.values():
-        parts.append(r["full_name"] + " " + r["desc"] + " " + " ".join(r.get("topics", [])))
+    for entry in cat:
+        server = entry.get("server", entry) if isinstance(entry, dict) else {}
+        parts.append(" ".join(str(server.get(key, "")) for key in ("name", "description", "title")))
+    for repo in eco.values():
+        parts.append(repo["full_name"] + " " + (repo.get("desc") or "") + " " + " ".join(repo.get("topics", [])))
     return " " + norm(" ".join(parts)) + " "
 
 
-def covered(word, blob):
-    w = re.sub(r"[^a-z0-9]+", "", word.lower())
-    if len(w) < 4 or w in GENERIC:
+def covered(word: str, blob: str) -> bool | None:
+    """Есть ли слово в корпусе; ``None`` — слово слишком родовое, чтобы судить."""
+    cleaned = re.sub(r"[^a-z0-9]+", "", word.lower())
+    if len(cleaned) < 4 or cleaned in GENERIC:
         return None
-    return re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", blob) is not None
+    return re.search(r"(?<![a-z0-9])" + re.escape(cleaned) + r"(?![a-z0-9])", blob) is not None
 
 
-def is_tool(r):
-    if BAD_NAME.search(r["full_name"]):
+def is_tool(repo: dict) -> bool:
+    """Репозиторий — инструмент, а не курс/подборка/учебные материалы."""
+    if BAD_NAME.search(repo["full_name"]):
         return False
-    if BAD_DESC.search(r["desc"] or ""):
+    if BAD_DESC.search(repo.get("desc") or ""):
         return False
-    if (r["lang"] or "").lower() in BAD_LANG and not TOOLISH.search(r["desc"] or ""):
+    if (repo.get("lang") or "").lower() in BAD_LANG and not TOOLISH.search(repo.get("desc") or ""):
         return False
-    if not TOOLISH.search((r["desc"] or "") + " " + " ".join(r.get("topics", []))):
+    if not TOOLISH.search((repo.get("desc") or "") + " " + " ".join(repo.get("topics", []))):
         return False
     return True
 
 
-def main():
-    cat = L("catalog.json")
-    eco = L("ecosystem_repos.json")
-    pop = L("popular.json")
-    blob = build_corpus(cat, eco)
-    print("catalog:", len(cat), "ecosystem repos:", len(eco), "popular:", len(pop))
+def main(argv: list[str] | None = None) -> int:
+    parser = build_argparser(
+        prog="coverage.py",
+        description="Сопоставление покрытия, фильтр не-инструментов, карта плотности",
+    )
+    parser.add_argument("--raw-dir", metavar="DIR",
+                        help="каталог с входными JSON (по умолчанию <data_dir>/raw)")
+    parser.add_argument("--top", type=int, default=40, help="сколько кандидатов печатать")
+    args = parser.parse_args(argv)
 
-    gaps, cov = [], []
-    for r in pop.values():
-        hit = covered(r["full_name"].split("/")[1], blob)
+    try:
+        settings, http = load_runtime(args)
+        data_dir = resolve_data_dir(settings)
+    except ValueError as error:
+        print(f"[gapaudit] {error}", file=sys.stderr)
+        return 2
+
+    raw_dir = args.raw_dir or str(Path(data_dir) / "raw")
+    cat, cat_ok = _load(os.path.join(raw_dir, CATALOG_FILE))
+    eco, eco_ok = _load(os.path.join(raw_dir, ECOSYSTEM_FILE))
+    pop, pop_ok = _load(os.path.join(raw_dir, POPULAR_FILE))
+    if not (cat_ok or eco_ok or pop_ok):
+        print(f"[gapaudit] нет входных файлов в {raw_dir}: нужен collect.py", file=sys.stderr)
+        return 1
+
+    cat_list = list(cat) if isinstance(cat, (list, dict)) else []
+    eco_dict = dict(eco) if isinstance(eco, dict) else {}
+    pop_dict = dict(pop) if isinstance(pop, dict) else {}
+
+    blob = build_corpus(cat_list, eco_dict)
+    print(f"catalog: {len(cat_list)} ecosystem repos: {len(eco_dict)} popular: {len(pop_dict)}")
+
+    gaps: list[dict] = []
+    covered_rows: list[dict] = []
+    for repo in pop_dict.values():
+        full_name = str(repo.get("full_name") or "")
+        tail = full_name.split("/")[1] if "/" in full_name else full_name
+        hit = covered(tail, blob)
         if hit is None:
             continue
-        (cov if hit else gaps).append(r)
-    gaps.sort(key=lambda r: -r["stars"])
-    print(f"покрыто:{len(cov)}  возможно пусто:{len(gaps)}")
+        (covered_rows if hit else gaps).append(repo)
+    gaps.sort(key=lambda repo: -(repo.get("stars") or 0))
+    print(f"покрыто:{len(covered_rows)}  возможно пусто:{len(gaps)}")
 
-    tools = [r for r in gaps if is_tool(r)]
-    print("после фильтра не-инструментов:", len(tools))
-    json.dump({"gaps": gaps, "covered": cov}, open(os.path.join(RAW, "gaps.json"), "w", encoding="utf-8"), ensure_ascii=False)
-    json.dump(tools, open(os.path.join(RAW, "gap_tools.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    tools = [repo for repo in gaps if is_tool(repo)]
+    print(f"после фильтра не-инструментов: {len(tools)}")
 
-    bodies = [norm(" ".join(str(e.get("server", e).get(k, "")) for k in ("name", "description", "title"))) for e in cat]
-    dens = {}
-    for k, kws in CAPS.items():
-        dens[k] = sum(1 for t in bodies if any(kw in t for kw in kws))
-    json.dump(dens, open(os.path.join(RAW, "saturation.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    write_json(os.path.join(raw_dir, GAPS_FILE), {"gaps": gaps, "covered": covered_rows})
+    write_json(os.path.join(raw_dir, GAP_TOOLS_FILE), tools)
+
+    bodies = [
+        norm(" ".join(
+            str(entry.get("server", entry).get(key, "")) for key in ("name", "description", "title")
+        ))
+        for entry in cat_list
+    ]
+    density = {
+        name: sum(1 for body in bodies if any(word in body for word in words))
+        for name, words in CAPS.items()
+    }
+    write_json(os.path.join(raw_dir, SATURATION_FILE), density)
+
     print("\n=== ПЛОТНОСТЬ КЛАССОВ ЗАДАЧ (пустые — вверх) ===")
-    for k, n in sorted(dens.items(), key=lambda x: x[1]):
-        print(f"{n:>5}  {k}")
+    for name, count in sorted(density.items(), key=lambda item: item[1]):
+        print(f"{count:>5}  {name}")
+
     print("\n=== ТОП КАНДИДАТОВ (проверить verify.py) ===")
-    for r in tools[:40]:
-        print(f'{r["stars"]:>7} {r["full_name"][:45]:<46} {r["desc"][:70]}')
+    print_table(
+        ["★", "репозиторий", "описание"],
+        [
+            [str(repo["stars"]), str(repo["full_name"])[:45], (repo.get("desc") or "")[:70]]
+            for repo in tools[: args.top]
+        ],
+        aligns=["r", "l", "l"],
+    )
+
+    if args.json_out:
+        write_json(
+            args.json_out,
+            {
+                "gaps_n": len(gaps),
+                "covered_n": len(covered_rows),
+                "tools_n": len(tools),
+                "density": density,
+            },
+        )
+    if http.cache is not None:
+        http.cache.save()
+    return 0
+
+
+def _load(path: str) -> tuple[Any, bool]:
+    """Прочитать входной JSON; отсутствие/мусор — (пустое значение, False)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle), True
+    except (OSError, ValueError):
+        print(f"[gapaudit] нет файла: {path} (принимаю как пустой)", file=sys.stderr)
+        return {}, False
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Protocol
 
 from core.diffing import VerdictConfig, apply_stale, days_since, verdict
-from core.registry import RegistryClient
+from core.registry import PRED_KEYWORDS, RegistryClient
 
 __all__ = [
     "POPULAR_URL",
@@ -56,6 +56,16 @@ POPULAR_TRIES = 2
 _TOML_NAME_RE = re.compile(r'^\s*["\']?([A-Za-z0-9_.\-]+)["\']?\s*[=>~!\[]')
 _REQ_NAME_RE = re.compile(r"^([A-Za-z0-9_.\-]+)")
 
+#: Блоки TOML, где значения — зависимости (fix_toml=True): (таблица, ключ массива).
+_TOML_DEP_BLOCKS = (
+    ("project", "dependencies"),
+    ("tool.poetry", "dependencies"),
+    ("build-system", "requires"),
+)
+_TOML_SECTION_RE = re.compile(r"^\[([A-Za-z0-9_.\-]+)\]\s*$")
+_TOML_ARRAY_KEY_RE = re.compile(r"^([A-Za-z0-9_.\-]+)\s*=\s*\[")
+_TOML_ITEM_RE = re.compile(r"^[\s\"']*([A-Za-z0-9_.\-]+)[\"']?\s*([=>~!<\[\s,]|$)")
+
 
 class Executor(Protocol):
     """Минимум от ``ThreadPoolExecutor``, нужный ``check_many()`` (в тестах — синхронный)."""
@@ -66,13 +76,16 @@ class Executor(Protocol):
 
 @dataclass(frozen=True)
 class PackageCheckConfig:
-    """Настройки проверки: пороги вердикта, метка признака и параллелизм."""
+    """Настройки проверки: пороги вердикта, метка признака, признаки ниши, параллелизм."""
 
     verdict: VerdictConfig = VerdictConfig()
     #: Метка признака для колонки CLI (legacy ``--keyword``); разбор от неё не зависит.
     keyword_label: str = "MCP"
     #: Сколько имён проверять параллельно в check_many() (legacy WORKERS = 6).
     workers: int = 6
+    #: Признаки ниши (§0.8): CLI передаёт их в ``RegistryClient(keywords=...)`` при
+    #: создании клиента; сам check() работает с переданным клиентом как есть.
+    keywords: tuple[str, ...] = PRED_KEYWORDS
 
 
 def check(
@@ -147,7 +160,7 @@ def check_many(
     return list(executor.map(run, tasks))
 
 
-def names_from_file(path: str) -> list[str]:
+def names_from_file(path: str, *, fix_toml: bool = False) -> list[str]:
     """Имена зависимостей из ``requirements.txt`` / ``package.json`` / ``*.toml``.
 
     Порт legacy ``names_from_file()``: без внешних парсеров, разбор построчный.
@@ -156,8 +169,10 @@ def names_from_file(path: str) -> list[str]:
     (legacy отдавал порядок файла; в CLI это компенсировалось общим
     ``sorted(dict.fromkeys(names))``, так что итог тот же).
 
-    Legacy-причуды сохранены намеренно: в ``*.toml`` строки вида ``dependencies = [``
-    и ``name = "x"`` тоже дают «имена» — иначе паритетный тест с legacy не сойдётся.
+    Legacy-причуды сохранены при ``fix_toml=False`` (дефолт, паритетный тест 1c):
+    в ``*.toml`` строки вида ``dependencies = [`` и ``name = "x"`` тоже дают «имена».
+    ``fix_toml=True`` (его включает CLI-обёртка, шаг 1f) оставляет только имена
+    пакетов внутри массивов зависимостей — см. :func:`_toml_dep_names`.
     """
     try:
         text = pathlib.Path(path).read_text(encoding="utf-8")
@@ -173,6 +188,8 @@ def names_from_file(path: str) -> list[str]:
             return []
 
     if str(path).endswith(".toml"):
+        if fix_toml:
+            return sorted(set(_toml_dep_names(text)))
         found = []
         for line in text.splitlines():
             stripped = line.strip()
@@ -190,6 +207,48 @@ def names_from_file(path: str) -> list[str]:
         if match:
             found.append(match.group(1))
     return sorted(set(found))
+
+
+def _toml_dep_names(text: str) -> list[str]:
+    """Имена пакетов только из массивов зависимостей TOML (``fix_toml=True``).
+
+    Строго по секциям: массивы ``dependencies`` в ``[project]``/``[tool.poetry]``
+    и ``requires`` в ``[build-system]``. Строки ``dependencies = [``, ``name = "..."``
+    и прочие ``<слово> = [`` вне этих секций пропускаются — legacy-регексп принимал
+    их за «имена», и в каталог проверки попадал мусор.
+    """
+    names: list[str] = []
+    section = ""
+    in_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        section_match = _TOML_SECTION_RE.match(stripped)
+        if section_match:
+            section = section_match.group(1)
+            in_block = False
+            continue
+        if in_block:
+            body = stripped
+            closes = body.endswith("]")
+            if closes:
+                body = body[:-1].rstrip().rstrip(",")
+            item = _TOML_ITEM_RE.match(body)
+            if item:
+                names.append(item.group(1))
+            if closes:
+                in_block = False
+            continue
+        array_match = _TOML_ARRAY_KEY_RE.match(stripped)
+        if array_match:
+            if (section, array_match.group(1)) in _TOML_DEP_BLOCKS:
+                inline = stripped[stripped.index("[") + 1 :]
+                for chunk in inline.split("]")[0].split(","):
+                    item = _TOML_ITEM_RE.match(chunk.strip())
+                    if item:
+                        names.append(item.group(1))
+                if "]" not in inline:
+                    in_block = True
+    return names
 
 
 def lev(a: str, b: str, cap: int = 3) -> int:

@@ -1,158 +1,137 @@
-"""Точечная проверка кандидатов: НЕТ / МЁРТВАЯ ЗАГЛУШКА / СЛАБЫЙ / ЖИВОЙ.
+"""Точечная проверка кандидатов — CLI-обёртка (шаг 1f).
+
+Порт ``legacy/verify.py``: те же вердикты (НЕТ / ЗАГЛУШКА / СЛАБЫЙ / ЖИВОЙ) и та же
+механика (поиск по имени инструмента + репозитории организации вендора), но вызовы
+идут через ``core.github`` (``GhClient``, ``relevant_items``, ``org_candidates``).
+
+Пороги вердикта (``STUB_STARS``/``LIVE_STARS`` и дни) — константы метода, а не
+настройки (DEVPLAN §14): они описывают методологию проверки, а не вкус пользователя.
+Пауза ``time.sleep(2.5)`` legacy заменена троттлингом ``GhClient`` (Search — 30/мин).
 
 Запуск:
-  python verify.py                # возьмёт raw/gap_tools.json (топ-KEYWORD)
-  python verify.py owner/repo ... # или явный список
-  python verify.py --keyword "helm chart" traefik/traefik   # другая экосистема
-
-Ключевое слово задаёт вопрос, на который отвечает проверка: «mcp», «vscode extension»,
-«helm chart», «terraform provider», «plugin» — всё равно, механика та же. Проверка
-перестаёт быть про MCP и становится про “есть ли у инструмента что-то из класса X”.
-
-Вердикты: только по ней, где имя инструмента реально в имени/описании найденного
-репозитория — иначе поиск возвращает чужие проекты и ниша ложно «закрыта».
+  python -m cli.verify                # возьмёт raw/gap_tools.json (топ-25)
+  python -m cli.verify owner/repo ... # или явный список
+  python -m cli.verify --keyword helm traefik/traefik
 """
-import json, os, re, subprocess, sys, time, datetime
 
-KEYWORD = "mcp"           # ключевое слово экосистемы
-STUB_STARS = 25           # < — заглушка
-STUB_DAYS = 365           # push старше — заглушка
-LIVE_STARS = 100          # >= вместе с LIVE_DAYS — живой
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+from cli._common import build_argparser, load_runtime, setup_gh_or_warn, write_json
+from core.github import GhClient, age_days, org_candidates, relevant_items
+
+__all__ = ["main", "verdict"]
+
+#: Пороги вердикта — константы метода (DEVPLAN §14), не Settings.
+STUB_STARS = 25  # < — заглушка
+STUB_DAYS = 365  # push старше — заглушка
+LIVE_STARS = 100  # >= вместе с LIVE_DAYS — живой
 LIVE_DAYS = 180
-TOP_K = 25                # сколько брать из gap_tools.json
-RAW = "raw"
+TOP_K = 25  # сколько брать из gap_tools.json по умолчанию
+SEARCH_PER_PAGE = 8
+
+#: Файлы, как в legacy (относительно cwd).
+GAP_TOOLS = "raw/gap_tools.json"
+DEFAULT_JSON = "raw/verify.json"
 
 
-def age_days(pushed):
-    if not pushed:
-        return 9999
-    try:
-        d = datetime.datetime.fromisoformat(pushed.replace("Z", "+00:00"))
-        return (datetime.datetime.now(datetime.timezone.utc) - d).days
-    except Exception:
-        return 9999
-
-
-def search(q, per_page=8):
-    for _ in range(3):
-        p = subprocess.run(["gh", "api", "-X", "GET", "search/repositories",
-                            "-f", f"q={q}", "-f", "sort=stars", "-f", "order=desc",
-                            "-f", f"per_page={per_page}"],
-                           capture_output=True, text=True, encoding="utf-8")
-        if p.returncode == 0:
-            try:
-                d = json.loads(p.stdout)
-                return d.get("total_count", 0), d.get("items", [])
-            except Exception:
-                pass
-        time.sleep(5)
-    return None, []
-
-
-def org_candidates(owner, target):
-    """Репозитории самой организации вендора с ключевым словом в имени/описании.
-
-    Нужны потому, что у крупных проектов репозиторий часто назван по назначению, а не по
-    продукту (`grafana/helm-charts`, `Dokploy/mcp`) — поиск по имени продукта их теряет.
-    """
-    for endpoint in (f"orgs/{owner}/repos", f"users/{owner}/repos"):
-        p = subprocess.run(["gh", "api", "-X", "GET", endpoint,
-                            "-f", "per_page=100", "-f", "sort=updated"],
-                           capture_output=True, text=True, encoding="utf-8")
-        if p.returncode == 0:
-            try:
-                repos = json.loads(p.stdout)
-            except Exception:
-                continue
-            out = []
-            for r in repos if isinstance(repos, list) else []:
-                full = r.get("full_name", "")
-                if full.lower().startswith(target.lower() + "/"):
-                    continue
-                hay = (full + " " + (r.get("description") or "")).lower()
-                if KEYWORD in hay:
-                    out.append(r)
-            return out
-        time.sleep(1)
-    return []
-
-
-def relevant(items, name, target=None):
-    pat = r"(?<![a-z0-9])" + re.escape(name.lower()) + r"(?![a-z0-9])"
-    out = []
-    for i in items:
-        # сам инструмент не является сервером для себя — иначе ложный «ЖИВОЙ»
-        if target and i["full_name"].lower() == target.lower():
-            continue
-        hay = (i["full_name"] + " " + (i.get("description") or "")).lower()
-        if re.search(pat, hay) and KEYWORD in hay:
-            out.append(i)
-    # свой сервер важнее: при равенстве звёзд берём тот, где ключевое слово в имени
-    out.sort(key=lambda i: (KEYWORD in i["full_name"].lower(), i["stargazers_count"]), reverse=True)
-    return out
-
-
-def verdict(best):
+def verdict(best: dict | None) -> str:
+    """Вердикт по лучшей находке — порт legacy ``verdict()``."""
     if not best:
         return "НЕТ"
-    st, d = best["stargazers_count"], age_days(best.get("pushed_at"))
-    if st < STUB_STARS or d > STUB_DAYS:
+    stars, age = best["stargazers_count"], age_days(best.get("pushed_at"))
+    if stars < STUB_STARS or age > STUB_DAYS:
         return "ЗАГЛУШКА"
-    if st >= LIVE_STARS and d <= LIVE_DAYS:
+    if stars >= LIVE_STARS and age <= LIVE_DAYS:
         return "ЖИВОЙ"
     return "СЛАБЫЙ"
 
 
-def main():
-    global KEYWORD
-    argv = sys.argv[1:]
-    if "--keyword" in argv:
-        i = argv.index("--keyword")
-        if i + 1 < len(argv):
-            KEYWORD = argv[i + 1].lower()
-            del argv[i:i + 2]
-    if argv:
-        targets = argv
-        base = {}
-    else:
-        gt = json.load(open(os.path.join(RAW, "gap_tools.json"), encoding="utf-8"))
-        gt.sort(key=lambda r: -r["stars"])
-        targets = [r["full_name"] for r in gt[:TOP_K]]
-        base = {r["full_name"]: r for r in gt}
+def main(argv: list[str] | None = None) -> int:
+    parser = build_argparser(
+        prog="verify.py",
+        description="Точечная проверка кандидатов: НЕТ / МЁРТВАЯ ЗАГЛУШКА / СЛАБЫЙ / ЖИВОЙ",
+    )
+    parser.add_argument("targets", nargs="*", help="цели owner/repo; без них — топ из gap_tools.json")
+    parser.add_argument("--top", type=int, default=TOP_K, help="сколько брать из gap_tools.json")
+    args = parser.parse_args(argv)
 
-    res = {}
-    for t in targets:
-        name = t.split("/")[1].lower()
-        total, items = search(f"{name} {KEYWORD}")
-        hits = relevant(items, name, target=t)
-        # плюс репозитории организации вендора: там сервер может называться по назначению
-        org_hits = org_candidates(t.split("/")[0], target=t)
-        for r in org_hits:
-            r["full_name"] += "  «org»"
+    try:
+        settings, http = load_runtime(args)
+    except ValueError as error:
+        print(f"[gapaudit] {error}", file=sys.stderr)
+        return 2
+
+    keyword = (args.keyword[0] if args.keyword else "mcp").lower()
+    # Без gh verify не работает: предупреждаем, но не блокируем — пустая выдача тоже ответ.
+    setup_gh_or_warn()
+
+    if args.targets:
+        targets = list(args.targets)
+        base: dict[str, dict] = {}
+    else:
+        try:
+            with open(GAP_TOOLS, encoding="utf-8") as handle:
+                gap_tools = json.load(handle)
+        except (OSError, ValueError) as error:
+            print(f"[gapaudit] не удалось прочитать {GAP_TOOLS}: {error}", file=sys.stderr)
+            return 1
+        gap_tools.sort(key=lambda row: -(row.get("stars") or 0))
+        targets = [row["full_name"] for row in gap_tools[: args.top]]
+        base = {row["full_name"]: row for row in gap_tools}
+
+    gh = GhClient()
+    res: dict[str, dict] = {}
+    for target in targets:
+        name = target.split("/")[1].lower()
+        total, items = gh.search_repositories(f"{name} {keyword}", per_page=SEARCH_PER_PAGE)
+        hits = relevant_items(items, name, keyword, exclude_full_name=target)
+        # плюс репозитории организации вендора: сервер может называться по назначению
+        org_hits = org_candidates(target.split("/")[0], keyword, gh.runner, exclude_full_name=target)
+        for repo in org_hits:
+            repo["full_name"] += "  «org»"
         merged = org_hits + hits
-        merged.sort(key=lambda i: (KEYWORD in i["full_name"].lower(),
-                                   i["stargazers_count"]), reverse=True)
+        merged.sort(
+            key=lambda repo: (
+                keyword in str(repo.get("full_name") or "").lower(),
+                repo.get("stargazers_count") or 0,
+            ),
+            reverse=True,
+        )
         best = merged[0] if merged else None
-        v = verdict(best)
-        res[t] = {"stars": base.get(t, {}).get("stars"), "desc": base.get(t, {}).get("desc", ""),
-                  "search_total": total, "verdict": v,
-                  "best": None if not best else {"full_name": best["full_name"],
-                            "stars": best["stargazers_count"], "pushed": best.get("pushed_at"),
-                            "age_days": age_days(best.get("pushed_at"))}}
+        found = verdict(best)
+        res[target] = {
+            "stars": base.get(target, {}).get("stars"),
+            "desc": base.get(target, {}).get("desc", ""),
+            "search_total": total,
+            "verdict": found,
+            "best": None if not best else {
+                "full_name": best["full_name"],
+                "stars": best["stargazers_count"],
+                "pushed": best.get("pushed_at"),
+                "age_days": age_days(best.get("pushed_at")),
+            },
+        }
         if best:
-            print(f'{t[:40]:<41} {v:<10} -> {best["full_name"][:38]:<39} '
+            print(f'{target[:40]:<41} {found:<10} -> {best["full_name"][:38]:<39} '
                   f'{best["stargazers_count"]:>5}★ {age_days(best.get("pushed_at")):>5}д')
         else:
-            print(f'{t[:40]:<41} {v:<10} -> (найдено {total} результатов, релевантных {KEYWORD} нет)')
-        time.sleep(2.5)
+            print(f'{target[:40]:<41} {found:<10} -> (найдено {total} результатов, '
+                  f'релевантных {keyword} нет)')
 
-    json.dump(res, open(os.path.join(RAW, "verify.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    cnt = {}
-    for v in res.values():
-        cnt[v["verdict"]] = cnt.get(v["verdict"], 0) + 1
-    print("\nитог:", cnt)
+    json_path = args.json_out or DEFAULT_JSON
+    write_json(json_path, res)
+
+    counts: dict[str, int] = {}
+    for item in res.values():
+        counts[item["verdict"]] = counts.get(item["verdict"], 0) + 1
+    print("\nитог:", counts)
     print("ЗАГЛУШКА и НЕТ — это пустые ниши; ЖИВОЙ — не лезь без причины.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

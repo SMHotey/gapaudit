@@ -332,6 +332,54 @@ def test_names_from_file_pyproject_toml(tmp_path: pathlib.Path) -> None:
     assert result == legacy_names_from_file(str(path))
 
 
+def test_names_from_file_toml_fix_true(tmp_path: pathlib.Path) -> None:
+    """fix_toml=True: только имена пакетов из массива зависимостей (§0.7)."""
+    path = tmp_path / "pyproject.toml"
+    path.write_text(
+        "[project]\n"
+        'name = "myproj"\n'
+        "dependencies = [\n"
+        '  "fastapi>=0.100",\n'
+        '  "uvicorn[standard]>=0.20",\n'
+        "]\n"
+        "[build-system]\n"
+        'requires = ["setuptools>=68"]\n'
+        "build-backend = \"setuptools.build_meta\"\n"
+        "[tool.poetry.dependencies]\n"
+        'python = "^3.11"\n',
+        encoding="utf-8",
+    )
+
+    result = names_from_file(str(path), fix_toml=True)
+
+    assert result == ["fastapi", "setuptools", "uvicorn"]
+    assert "dependencies" not in result
+    assert "name" not in result
+    assert "build-backend" not in result
+    assert "python" not in result
+
+
+def test_names_from_file_toml_fix_false_keeps_legacy(tmp_path: pathlib.Path) -> None:
+    """fix_toml=False (дефолт): legacy-причуда цела — паритетный гейт 1c не тронут."""
+    path = tmp_path / "pyproject.toml"
+    path.write_text(
+        "[project]\n"
+        'name = "myproj"\n'
+        "dependencies = [\n"
+        '  "fastapi>=0.100",\n'
+        '  "uvicorn[standard]>=0.20",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    result = names_from_file(str(path))
+
+    assert "dependencies" in result
+    assert "name" in result
+    assert "fastapi" in result and "uvicorn" in result
+    assert result == legacy_names_from_file(str(path))
+
+
 def test_names_from_file_missing_or_broken(tmp_path: pathlib.Path) -> None:
     broken_json = tmp_path / "package.json"
     broken_json.write_text("{не json", encoding="utf-8")

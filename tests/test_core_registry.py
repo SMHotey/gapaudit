@@ -89,6 +89,38 @@ def test_pypi_raw_detects_mcp_in_description() -> None:
     assert parsed["has_mcp"] is True
 
 
+def test_registry_client_custom_keywords() -> None:
+    """Клиент с чужими keywords решает has_mcp по ним, а не по PRED_KEYWORDS (§0.6)."""
+    payload = {
+        "info": {"version": "1.0.0", "summary": "Grafana tools", "description": "An MCP server for Grafana"},
+        "releases": {"1.0.0": [{"upload_time": "2024-05-01T10:00:00"}]},
+    }
+    body = json.dumps(payload).encode("utf-8")
+    mapping = {pypi_url("grafana"): (200, body)}
+
+    _, transport = make_client(mapping)
+    http_mcp = HttpClient(
+        cache=DictCache(),
+        throttle=Throttle(per_minute={"pypi.org": 6000}),
+        transport=transport,
+        sleep=lambda _seconds: None,
+    )
+    http_otel = HttpClient(
+        cache=DictCache(),
+        throttle=Throttle(per_minute={"pypi.org": 6000}),
+        transport=transport,
+        sleep=lambda _seconds: None,
+    )
+
+    card_mcp = RegistryClient(http_mcp, keywords=("mcp",)).pypi("grafana")
+    card_otel = RegistryClient(http_otel, keywords=("otel",)).pypi("grafana")
+    assert card_mcp is not None and card_otel is not None
+    assert card_mcp["has_mcp"] is True
+    assert card_otel["has_mcp"] is False
+    # Дефолт не изменился: без keywords — PRED_KEYWORDS.
+    assert RegistryClient(http_mcp).keywords == ("mcp", "model context protocol")
+
+
 def test_pypi_raw_survives_empty_description() -> None:
     payload = {"info": {"version": "2.0"}, "releases": {"2.0": [{"upload_time": "2024-01-02T03:04:05"}]}}
 

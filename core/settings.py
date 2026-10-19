@@ -47,13 +47,15 @@ __all__ = [
     "Settings",
     "from_env",
     "load",
+    "project_root",
     "resolve_data_dir",
     "save",
     "to_dict",
 ]
 
 #: Каталог данных по умолчанию — рядом с пользователем (DEVPLAN §12, п. 6).
-DATA_DIR_NAME = "GapAudit"
+#: Суффикс ``-data`` отличает его от одноимённого каталога проекта (DEVPLAN §16, п. 1).
+DATA_DIR_NAME = "GapAudit-data"
 #: Имя файла настроек внутри каталога данных.
 SETTINGS_FILENAME = "settings.json"
 
@@ -120,17 +122,48 @@ class Settings:
         )
 
 
+def project_root() -> Path:
+    """Корень проекта — родитель каталога ``core``, где лежит этот модуль.
+
+    Нужен guard'у :func:`resolve_data_dir`: данные не должны писаться в корень
+    проекта (DEVPLAN §16, п. 1). Считается от ``__file__``, а не от cwd — запуск
+    из чужого каталога не меняет определение.
+    """
+    return Path(__file__).resolve().parents[1]
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    """Равенство путей с учётом ОС: на Windows — без регистра (``os.path.normcase``).
+
+    ``normcase`` заодно сводит слэши (``C:/x`` == ``C:\\x``), поэтому ``--data-dir``
+    с любым написанием пути guard поймает. Эмуляция ОС в тестах — через
+    ``monkeypatch.setattr(os, "name", ...)``: ветка выбирается по ``os.name``.
+    """
+    left_text, right_text = str(left), str(right)
+    if os.name == "nt":
+        return os.path.normcase(left_text) == os.path.normcase(right_text)
+    return left_text == right_text
+
+
 def resolve_data_dir(settings: Settings) -> Path:
-    """Каталог данных: из настроек, иначе ``~/GapAudit`` рядом с пользователем.
+    """Каталог данных: из настроек, иначе ``~/GapAudit-data`` рядом с пользователем.
+
+    Guard (DEVPLAN §16, п. 1): путь, совпадающий с корнем проекта, отклоняется —
+    ``ValueError``: данные в корне проекта путают git и резервные копии. Сравнение
+    на Windows идёт без регистра (см. :func:`_same_path`).
 
     Каталог НЕ создаётся: его создаёт :func:`save` (или слой хранилища шага 2),
     иначе обычное чтение настроек оставляло бы мусор на диске.
     """
     configured = (settings.data_dir or "").strip()
     if configured:
-        return Path(configured).expanduser()
-    home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home())
-    return Path(home) / DATA_DIR_NAME
+        resolved = Path(configured).expanduser()
+    else:
+        home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home())
+        resolved = Path(home) / DATA_DIR_NAME
+    if _same_path(resolved, project_root()):
+        raise ValueError("data_dir совпадает с каталогом проекта; используйте --data-dir")
+    return resolved
 
 
 def to_dict(settings: Settings) -> dict[str, Any]:

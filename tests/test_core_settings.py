@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import pathlib
+
+import pytest
 
 import core.settings as settings_module
 from core.diffing import VerdictConfig
@@ -263,6 +266,70 @@ def test_resolve_data_dir_expands_home(tmp_path: pathlib.Path, monkeypatch) -> N
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     assert resolve_data_dir(Settings(data_dir="~/GapAudit")) == tmp_path / "GapAudit"
+
+
+def test_resolve_data_dir_default_is_gapaudit_data(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Дефолт — GapAudit-data, чтобы не совпадать с каталогом проекта (§16, п. 1)."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    resolved = resolve_data_dir(Settings())
+
+    assert DATA_DIR_NAME == "GapAudit-data"
+    assert resolved == tmp_path / "GapAudit-data"
+
+
+def test_resolve_data_dir_rejects_project_root() -> None:
+    """Guard: data_dir, совпавший с корнем проекта, — ValueError, а не молчаливый отказ."""
+    root = settings_module.project_root()
+
+    with pytest.raises(ValueError, match="--data-dir"):
+        resolve_data_dir(Settings(data_dir=str(root)))
+    # С завершающим слэшем и в другом написании separators — тот же путь.
+    with pytest.raises(ValueError, match="--data-dir"):
+        resolve_data_dir(Settings(data_dir=str(root) + os.sep))
+
+
+def test_resolve_data_dir_allows_other(tmp_path: pathlib.Path) -> None:
+    """Любой другой путь — обычный каталог данных, guard не мешает."""
+    other = tmp_path / "my-data"
+
+    resolved = resolve_data_dir(Settings(data_dir=str(other)))
+
+    assert resolved == other
+    # Сосед проекта тоже можно: guard ловит только сам корень.
+    neighbour = settings_module.project_root().parent / (settings_module.project_root().name + "-data")
+    assert resolve_data_dir(Settings(data_dir=str(neighbour))) == neighbour
+
+
+def test_resolve_data_dir_allows_env(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """GAPAUDIT_DATA_DIR проходит через from_env и не роняет guard'ом."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    target = tmp_path / "env-data"
+
+    settings = from_env({ENV_DATA_DIR: str(target)})
+
+    assert resolve_data_dir(settings) == target
+
+
+def test_resolve_data_dir_windows_case_insensitive(monkeypatch) -> None:
+    """На Windows сравнение без регистра: другой регистр — тот же корень проекта.
+
+    ОС эмулируется monkeypatch'ем ``os.name``, а не реальной платформой: ветка
+    ``_same_path`` выбирается по ``os.name``, ``os.path.normcase`` на этой машине
+    и так windows-стиль. POSIX-ветка проверяется через ``_same_path`` напрямую:
+    при ``os.name="posix"`` ``pathlib.Path`` на Windows не инстанцируется.
+    """
+    root_path = settings_module.project_root()
+    swapped = pathlib.Path(str(root_path).swapcase())
+
+    monkeypatch.setattr(os, "name", "nt")
+    with pytest.raises(ValueError, match="--data-dir"):
+        resolve_data_dir(Settings(data_dir=str(root_path).swapcase()))
+    assert settings_module._same_path(swapped, root_path) is True
+
+    monkeypatch.setattr(os, "name", "posix")
+    # На POSIX другой регистр — другой путь: guard его пропускает.
+    assert settings_module._same_path(swapped, root_path) is False
 
 
 # --- чистота импорта -------------------------------------------------------------------------

@@ -1,125 +1,138 @@
-"""ШАБЛОН потокового обхода каталога одним проходом: размер, уникальные имена, плотность
-классов задач по описаниям, тип поставки, концентрация неймспейсов.
+"""Потоковый обход каталога реестра MCP — CLI-обёртка (шаг 1f).
 
-Правь под свою экосистему: BASE (URL каталога с пагинацией), CLASSES (список
-подстрока -> ярлык), ключ курсора в ответе и место сохранения результата.
-Требует сети. Запускать с `python -u` и перенаправлять вывод в лог: обход длится десятки минут,
-прогресс печатается каждые 25 страниц, и без `-u` буферизация съедает промежуточные строки.
+Порт ``legacy/catalog_scan.py``: тот же обход по курсору одним проходом
+(``core.scan``), те же коды выхода (0 — каталог пройден, 1 — обрыв, 130 — Ctrl+C),
+но чекпоинт и итоговый JSON пишутся в каталог данных, а прогресс идёт в stderr.
 
-Зачем одним проходом: замер размера отдельно от плотности дважды гонять десятки минут
-бессмысленно, а `search`-параметр реестра для плотности не годится (возвращает 0-1 почти
-на всё — проверено). Продолжает с курсора чекпоинта, пишет прогресс каждые 25 страниц.
+Запуск (обход занимает десятки минут — с ``PYTHONUNBUFFERED=1`` и в лог):
+  python -m cli.catalog_scan --limit 100
+  python -m cli.catalog_scan --checkpoint ck.json --json-out out.json --no-sleep
 """
-import json, os, re, time, urllib.request, urllib.error, urllib.parse
 
-WORK = os.path.dirname(os.path.abspath(__file__))
-RAW = os.path.join(WORK, "raw")
-os.makedirs(RAW, exist_ok=True)
-BASE = "https://registry.modelcontextprotocol.io/v0/servers?limit=100"
+from __future__ import annotations
 
-# классы задач: подстрока -> человекочитаемый ярлык (порядок как в плане)
-CLASSES = [
-    ("kubernetes", "kubernetes"), ("code search", "поиск/индексация кода"),
-    ("sql", "SQL/аналитика"), ("memory", "память агента"),
-    ("payment", "платежи/финансы"), ("prompt", "промпты/скиллы"),
-    ("eval", "eval агентов"), ("pdf", "PDF/office"), ("schema", "схемы БД"),
-    ("observability", "observability"), ("trace", "трассировка"),
-    ("sbom", "SBOM/supply chain"), ("accessibility", "доступность"),
-    ("i18n", "i18n"), ("flaky", "флаки-тесты"), ("incident", "инциденты"),
-    ("postmortem", "постмортемы"), ("terraform", "Terraform/IaC"),
-    ("cloud cost", "стоимость облака"), ("finops", "FinOps"),
-    ("monorepo", "монорепа"), ("dead code", "мёртвый код"),
-    ("codemod", "codemod"), ("flamegraph", "фламеграфы"),
-    ("profiler", "профилировщик"), ("heap", "heap/утечки"),
-    ("stack trace", "стектрейсы"), ("code review", "код-ревью"),
-    ("pull request review", "ревью PR"), ("design token", "дизайн-токены"),
-    ("impact analysis", "влияние зависимостей"), ("context budget", "контекстный бюджет"),
-    ("token budget", "бюджет токенов"), ("documentation", "документация"),
-    ("e2e", "e2e-тесты"), ("test generation", "генерация тестов"),
-    ("migration", "миграции"), ("query plan", "план запроса"),
-    ("secret", "секреты"), ("dbt", "dbt/ETL"), ("browser", "браузер/скрейпинг"),
-]
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+from cli._common import build_argparser, load_runtime, print_table, write_json
+from core.scan import DEFAULT_BASE_URL, DEFAULT_CLASSES, ScanConfig, ScanState, scan
+from core.mcp_registry import DEFAULT_LIMIT, MCP_LIST_URL
+from core.settings import resolve_data_dir
+
+__all__ = ["main"]
+
+#: Имена файлов по умолчанию — в каталоге данных (не в cwd, не в ../data).
+CHECKPOINT_NAME = "registry_scan_ckpt.json"
+JSON_NAME = "registry_scan.json"
 
 
-def fetch(url, tries=7):
-    delay = 4
-    for a in range(tries):
-        try:
-            r = urllib.request.urlopen(urllib.request.Request(
-                url, headers={"User-Agent": "gap-audit"}), timeout=45)
-            return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code < 500 and e.code != 429:
-                raise
-        except Exception:
-            pass
-        if a < tries - 1:
-            print(f"    сбой, повтор через {delay}с ({a+1}/{tries})", flush=True)
-            time.sleep(delay)
-            delay = min(delay * 2, 30)
-    return None
+def main(argv: list[str] | None = None) -> int:
+    parser = build_argparser(
+        prog="catalog_scan.py",
+        description="Потоковый обход каталога реестра MCP: размер, классы задач, тип поставки",
+    )
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL,
+                        help="URL каталога с пагинацией (фиксируется в чекпоинте)")
+    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="серверов на страницу")
+    parser.add_argument("--max-pages", type=int, default=400, help="предохранитель от бесконечного обхода")
+    parser.add_argument("--checkpoint-every", type=int, default=25, help="как часто писать чекпоинт (страниц)")
+    parser.add_argument("--checkpoint", metavar="FILE",
+                        help="файл чекпоинта (по умолчанию <data_dir>/registry_scan_ckpt.json)")
+    parser.add_argument("--hide-zero", action="store_true", help="не печатать классы с count=0")
+    parser.add_argument("--no-sleep", action="store_true", help="спать 0 с между страницами (для тестов)")
+    args = parser.parse_args(argv)
+
+    try:
+        settings, http = load_runtime(args)
+        data_dir = resolve_data_dir(settings)
+    except ValueError as error:
+        print(f"[gapaudit] {error}", file=sys.stderr)
+        return 2
+
+    checkpoint_path = args.checkpoint or str(Path(data_dir) / CHECKPOINT_NAME)
+    json_path = args.json_out or str(Path(data_dir) / JSON_NAME)
+
+    config = ScanConfig(
+        base_url=args.base_url,
+        classes=DEFAULT_CLASSES,
+        limit=args.limit,
+        checkpoint_every=args.checkpoint_every,
+        max_pages=args.max_pages,
+        sleep_between_pages=0.0 if args.no_sleep else 0.05,
+    )
+    state = _load_checkpoint(checkpoint_path)
+    if state is None:
+        state = ScanState(base_url=config.base_url)
+
+    started = time.monotonic()
+    try:
+        state = scan(
+            http,
+            config=config,
+            state=state,
+            on_progress=lambda current: _print_progress(current, started),
+            on_checkpoint=lambda current: write_json(checkpoint_path, current.as_checkpoint()),
+            cancel=None,
+        )
+    except KeyboardInterrupt:
+        # Ctrl+C: чекпоинт сохранён — следующий запуск продолжит с той же страницы.
+        write_json(checkpoint_path, state.as_checkpoint())
+        print("\nпрервано пользователем — чекпоинт сохранён", file=sys.stderr)
+        return 130
+
+    # След для продолжения остаётся и после успешного обхода — как в legacy.
+    write_json(checkpoint_path, state.as_checkpoint())
+    write_json(json_path, state.summary())
+
+    _print_classes(state, hide_zero=args.hide_zero)
+    if state.finished:
+        print("КУРСОР КОНЧИЛСЯ — каталог пройден полностью")
+    else:
+        print(f"СТОП: обрыв на стр.{state.pages} — курсор сохранён в {checkpoint_path}")
+    print(f"ИТОГ: записей={state.entries}, уникальных имён={len(state.names)}, "
+          f"неймспейсов={len(state.namespaces)}")
+    print(f"СОХРАНЕНО: {json_path}")
+    if http.cache is not None:
+        http.cache.save()
+    return 0 if state.finished else 1
 
 
-ck_path = os.path.join(RAW, "registry_scan_ckpt.json")
-if os.path.exists(ck_path):
-    ck = json.load(open(ck_path, encoding="utf-8"))
-    cursor = ck["cursor"]; entries = ck["entries"]; pages = ck["pages"]
-    names = set(ck["names"]); counts = ck["counts"]; kinds = ck["kinds"]
-    print(f"резюме с чекпоинта: стр.{pages}, записей {entries}", flush=True)
-else:
-    cursor, entries, pages = None, 0, 0
-    names, counts, kinds = set(), {lab: 0 for _, lab in CLASSES}, {}
-    kinds = {"remote": 0, "package": 0, "both": 0, "none": 0}
+def _load_checkpoint(path: str) -> ScanState | None:
+    """Чекпоинт с прошлого запуска; отсутствие или мусор — свежий обход."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    state = ScanState.from_checkpoint(payload if isinstance(payload, dict) else None)
+    print(f"резюме с чекпоинта: стр.{state.pages}, записей {state.entries}")
+    return state
 
-ns = {}
-t0 = time.time()
-while True:
-    url = BASE + (f"&cursor={urllib.parse.quote(cursor)}" if cursor else "")
-    d = fetch(url)
-    if not d or not d.get("servers"):
-        print("СТОП: нет данных или курсор кончился", flush=True)
-        break
-    for item in d["servers"]:
-        s = item.get("server") or {}
-        entries += 1
-        nm = s.get("name") or ""
-        names.add(nm)
-        if "/" in nm:
-            nsp = nm.split("/")[0]
-            ns[nsp] = ns.get(nsp, 0) + 1
-        hay = " ".join([nm, s.get("title") or "", s.get("description") or ""]).lower()
-        for needle, label in CLASSES:
-            if needle in hay:
-                counts[label] += 1
-        has_r = bool(s.get("remotes"))
-        has_p = bool(s.get("packages"))
-        if has_r and has_p:
-            kinds["both"] += 1
-        elif has_r:
-            kinds["remote"] += 1
-        elif has_p:
-            kinds["package"] += 1
-        else:
-            kinds["none"] += 1
-    pages += 1
-    nc = (d.get("metadata") or {}).get("nextCursor")
-    if pages % 25 == 0:
-        print(f"  стр.{pages} записей={entries} имён={len(names)} "
-              f"скорость={entries/(time.time()-t0):.0f} зап/с", flush=True)
-        json.dump({"cursor": nc, "entries": entries, "pages": pages, "names": sorted(names),
-                   "counts": counts, "kinds": kinds, "ns": ns},
-                  open(ck_path, "w", encoding="utf-8"), ensure_ascii=False)
-    if not nc:
-        print("КУРСОР КОНЧИЛСЯ — каталог пройден полностью", flush=True)
-        cursor = None
-        break
-    cursor = nc
-    time.sleep(0.05)
 
-out = {"entries": entries, "pages": pages, "unique_names": len(names),
-       "namespaces": len(ns), "top_namespaces": sorted(ns.items(), key=lambda x: -x[1])[:20],
-       "class_counts": counts, "delivery_kinds": kinds,
-       "seconds": round(time.time() - t0), "finished": cursor is None}
-json.dump(out, open(os.path.join(WORK, "..", "data", "registry_full_scan.json"), "w",
-                    encoding="utf-8"), ensure_ascii=False, indent=1)
-print(f"ИТОГ: записей={entries}, уникальных имён={len(names)}, неймспейсов={len(ns)}", flush=True)
+def _print_progress(state: ScanState, started: float) -> None:
+    """Строка прогресса каждые 25 страниц — как в legacy."""
+    if not state.pages or state.pages % 25:
+        return
+    rate = state.entries / max(time.monotonic() - started, 1e-6)
+    print(f"[gapaudit] стр.{state.pages} записей={state.entries} "
+          f"имён={len(state.names)} скорость={rate:.0f}зап/с", flush=True)
+
+
+def _print_classes(state: ScanState, *, hide_zero: bool) -> None:
+    """Плотность классов задач: печать всех ярлыков, как в итоговом JSON legacy."""
+    rows = [
+        [label, str(count)]
+        for label, count in sorted(state.counts.items(), key=lambda item: -item[1])
+        if not (hide_zero and count == 0)
+    ]
+    if not rows:
+        return
+    print("\n=== КЛАССЫ ЗАДАЧ (по описаниям серверов) ===")
+    print_table(["класс", "записей"], rows, aligns=["l", "r"])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
