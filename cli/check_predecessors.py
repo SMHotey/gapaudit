@@ -197,8 +197,22 @@ def _run(
         _print_table(rows, label)
         _print_summary(rows, label)
 
+    # Сравнение считается ДО записи JSON (шаг 3b): под --job-json в result.json
+    # должны уехать события, а не наблюдения — очередь задач читает файл и
+    # пишет его в таблицу events. Без --job-json файл остаётся прежним
+    # (наблюдения), потому что он же служит baseline для следующего --diff.
+    diff_events: list[dict] | None = None
+    diff_error: str | None = None
+    if args.diff and os.path.exists(args.diff):
+        diff_events, diff_error = _diff_events(args.diff, rows, settings)
+
     json_path = args.json_file or args.json_out or DEFAULT_JSON
-    write_json(json_path, rows)
+    payload: Any = rows
+    if args.job_json and args.diff:
+        payload = {"events": diff_events or [], "observations": rows}
+        if diff_error is not None:
+            payload["error"] = diff_error
+    write_json(json_path, payload)
     _say(args, f"\nСОХРАНЕНО: {json_path}  (пригоден для --diff в следующий раз)")
 
     if args.csv:
@@ -209,7 +223,7 @@ def _run(
         _say(args, f"CSV: {args.csv}")
 
     if args.diff and os.path.exists(args.diff) and not args.job_json:
-        _print_diff(args.diff, rows, settings)
+        _print_events(diff_events or [], args.diff, diff_error)
 
     has_live = any(row["verdict"] == VERDICT_ALIVE for row in rows)
     has_flag = any(row["mcp"] for row in rows)
@@ -307,17 +321,38 @@ def _print_summary(rows: list[dict], label: str) -> None:
     print("и adoption, а не в новизне. Признак задаётся флагом --keyword (mcp, helm, otel, deprecated).")
 
 
-def _print_diff(path: str, rows: list[dict], settings: Any) -> None:
-    """Сравнение с прошлым прогоном — события ``core.diffing`` с legacy-подписями."""
+def _diff_events(
+    path: str, rows: list[dict], settings: Any
+) -> tuple[list[dict] | None, str | None]:
+    """События сравнения с прошлым прогоном: ``(events, None)`` или ``(None, причина)``.
+
+    Вынесено из печати (шаг 3b): тем же списком событий теперь отвечает
+    ``--json-out`` под ``--job-json`` — очередь задач читает файл результата и
+    пишет события в таблицу ``events``.
+
+    Ошибка чтения прошлого файла — причина строкой, а не исключение: прогон из
+    битого baseline не валится (поведение legacy). Baseline, записанный
+    result.json задачи (шаг 3b) — объект ``{"events", "observations"}``:
+    сравнивать с ним можно, поэтому наблюдения достаются из ``observations``.
+    """
     try:
         with open(path, encoding="utf-8") as handle:
             prev = json.load(handle)
+        if isinstance(prev, dict):
+            prev = prev.get("observations") or []
         events = diff_observations(
             [observation(row) for row in prev],
             [observation(row) for row in rows],
             cfg=settings.to_verdict_config(),
         )
     except Exception as error:  # битый прошлый файл не должен валить прогон
+        return None, str(error)
+    return events, None
+
+
+def _print_events(events: list[dict], path: str, error: str | None) -> None:
+    """Сравнение с прошлым прогоном — события ``core.diffing`` с legacy-подписями."""
+    if error is not None:
         print(f"не удалось сравнить с {path}: {error}")
         return
     print(f"\nИЗМЕНЕНИЯ с {path} ({len(events)}):")

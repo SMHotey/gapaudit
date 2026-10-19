@@ -27,9 +27,11 @@ def test_index_renders_base_layout(client: TestClient) -> None:
     # 3a: «Пакеты» и «Мониторинг» стали живыми ссылками
     assert '<a href="/packages">Пакеты</a>' in response.text
     assert '<a href="/monitor">Мониторинг</a>' in response.text
-    # будущий экран: ссылка есть, но выключена (aria-disabled + title)
-    assert 'class="disabled" title="P3: каталоги"' in response.text
-    assert "Каталоги" in response.text
+    # 3b: «Каталоги» тоже стала живой ссылкой
+    assert '<a href="/catalogs">Каталоги</a>' in response.text
+    # выключенным остался только «Сравнение» (3c): ссылки нет, есть aria-disabled
+    assert 'class="disabled" title="P3: сравнение"' in response.text
+    assert "Сравнение" in response.text
 
 
 def test_index_nav_marks_current_page(client: TestClient) -> None:
@@ -186,7 +188,8 @@ def test_f5_refresh_hook_is_wired_on_every_screen(client: TestClient) -> None:
 
     for script_path in ("/static/jobs.js", "/static/matrix.js",
                         "/static/settings.js", "/static/packages.js",
-                        "/static/monitor.js"):
+                        "/static/monitor.js", "/static/catalogs.js",
+                        "/static/catalog_detail.js"):
         script = client.get(script_path).text
         assert "window.__gapauditRefresh = load" in script, script_path
 
@@ -266,4 +269,67 @@ def test_token_survives_navigation_between_screens(client: TestClient) -> None:
     assert "resolveToken" in script
     # токен из query приоритетнее: новый запуск окна приносит новый токен
     assert script.index("location.search") < script.index("sessionStorage.getItem")
+
+
+# --- экраны «Каталоги» (шаг 3b) ---------------------------------------------
+
+
+def test_catalogs_screen_renders_list_and_form(client: TestClient) -> None:
+    """GET /catalogs: форма сборки, таблица списка, скрипт экрана."""
+    response = client.get("/catalogs")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<a href="/catalogs" class="active">Каталоги</a>' in response.text
+    assert response.text.count('class="active"') == 1
+    for element_id in ("new-catalog", "new-catalog-form", "catalog-form",
+                       "catalogs-body", "catalog-msg", "refresh"):
+        assert f'id="{element_id}"' in response.text, element_id
+    # поля формы ищутся по name из catalogs.js — переименование дало бы
+    # форму, которая молча отправляет пустое тело
+    for name in ("phrases", "min_stars", "pages"):
+        assert f'name="{name}"' in response.text, name
+    assert "/static/catalogs.js" in response.text
+    # форма скрыта до «Новый каталог» — иначе она занимает весь экран списка
+    assert 'id="new-catalog-form" class="new-catalog-form" hidden' in response.text
+
+
+def test_catalog_detail_screen_renders_filters(client: TestClient) -> None:
+    """GET /catalogs/{id}: фильтры, таблица элементов, пагинация, экспорт."""
+    response = client.get("/catalogs/abc123")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    # пункт навигации жив и на детальном экране — id каталога не должен
+    # превращать шапку в «ни один экран не активен»
+    assert '<a href="/catalogs" class="active">Каталоги</a>' in response.text
+    assert response.text.count('class="active"') == 1  # чипс — class="chip active"
+    for element_id in ("catalog-title", "alive-filter", "filter-stars",
+                       "filter-q", "items-body", "items-pagination",
+                       "items-counter", "export-csv", "export-md"):
+        assert f'id="{element_id}"' in response.text, element_id
+    for alive in ("", "true", "false"):
+        assert f'data-alive="{alive}"' in response.text, alive
+    assert 'href="/catalogs"' in response.text  # «← К списку»
+    assert "/static/catalog_detail.js" in response.text
+    assert response.text.count("/static/card.js") == 1
+
+
+def test_catalogs_js_uses_dom_not_innerhtml_for_data(client: TestClient) -> None:
+    """Скрипты каталогов собирают строки DOM-методами (gotcha 37)."""
+    for path in ("/static/catalogs.js", "/static/catalog_detail.js"):
+        script = client.get(path).text
+        assert "createElement" in script, path
+        assert "textContent" in script, path
+        # innerHTML встречается только как очистка контейнера
+        assert "innerHTML = ''" in script, path
+        assert "innerHTML =" in script, path
+
+    detail = client.get("/static/catalog_detail.js").text
+    assert "/api/catalogs/" in detail
+    assert "/export?format=" in detail
+    assert "X-GapAudit-Token" in detail
+    assert "URL.createObjectURL" in detail
+    # каталога может ещё не быть: экран смотрит статус задачи с тем же id
+    assert "/api/jobs/" in detail
 

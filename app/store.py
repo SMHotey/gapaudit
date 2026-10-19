@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 __all__ = [
+    "CATALOG_ALIVE_DAYS",
     "SCHEMA_VERSION",
     "Store",
     "SqliteCache",
@@ -38,6 +39,11 @@ __all__ = [
     "migrate_1",
     "utcnow_iso",
 ]
+
+#: Горизонт «живого» проекта в каталоге: push не старше стольких дней.
+#: Тот же смысл, что у ``core.catalog.FRESH_DAYS`` (там — отчёт по свежести),
+#: но граница живёт здесь: фильтр ``alive`` экрана «Каталоги» — это SQL.
+CATALOG_ALIVE_DAYS = 90
 
 #: Текущая версия схемы. Больше, чем в meta.schema_version, — БД новее кода.
 SCHEMA_VERSION = 1
@@ -86,6 +92,33 @@ def utcnow_iso() -> str:
     хронологическая сортировка: на ней построены выборки `measured_at DESC`.
     """
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _days_ago_date(days: int) -> str:
+    """Дата ``YYYY-MM-DD`` ровно ``days`` дней назад (UTC).
+
+    Граница фильтра ``alive`` каталога: ``catalog_items.pushed`` хранится
+    датой без времени (так его отдаёт GitHub), поэтому сравнивать надо с такой
+    же датой — ISO-метка времени в этой колонке дала бы ложные сравнения.
+    """
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() - days * 86400))
+
+
+def _decode_json_field(raw: Any, default: Any) -> Any:
+    """JSON-поле из TEXT-колонки; битая строка — ``default``.
+
+    Чтение каталога не должно падать из-за чужой/испорченной строки: экран
+    списка лучше покажет пустые фразы, чем «500» на всю страницу.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, type(default)):
+        return raw
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+    return decoded if isinstance(decoded, type(default)) else default
 
 
 def _like_escape(text: str) -> str:
@@ -828,6 +861,244 @@ class Store:
             {**dict(row), "params": _decode_params(dict(row).get("params"))}
             for row in rows
         ]
+
+    # --- каталоги (таблицы catalogs/catalog_items, шаг 3b) -----------------
+
+    def record_catalog(
+        self,
+        *,
+        catalog_id: str,
+        queries: list[str],
+        stats: dict,
+        path: str | None = None,
+    ) -> None:
+        """UPSERT строки ``catalogs``: фразы и сводка — JSON-текстом.
+
+        ``created_at`` — момент записи, а не момент создания задачи: каталог
+        появляется в БД, когда задача завершилась (пишет хук lifespan, а не
+        обработчик HTTP). Повторная запись того же ``id`` (перезапуск хука,
+        повторное завершение задачи) обновляет строку: таблица описывает
+        каталог, а не историю его сборок.
+
+        ``path`` — файл результата задачи; ``None`` его не затирает, иначе
+        повторная запись без аргумента стёрла бы путь к исходнику.
+        """
+        moment = utcnow_iso()
+        with self._lock:
+            conn = self._require_conn()
+            conn.execute(
+                """INSERT INTO catalogs(id, queries, created_at, stats, path)
+                   VALUES(?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       queries = excluded.queries,
+                       created_at = excluded.created_at,
+                       stats = excluded.stats,
+                       path = COALESCE(excluded.path, catalogs.path)""",
+                (
+                    catalog_id,
+                    json.dumps(list(queries), ensure_ascii=False),
+                    moment,
+                    json.dumps(stats, ensure_ascii=False),
+                    path,
+                ),
+            )
+
+    def record_catalog_items(self, catalog_id: str, items: list[dict]) -> int:
+        """Батч ``INSERT OR REPLACE`` в ``catalog_items``: вернуть число строк.
+
+        Имя строки берётся из ``name``, а при его отсутствии — из ``id``:
+        CLI каталога кладёт проект в ``id`` (``owner/repo`` у GitHub), и
+        переименовывать поле ради БД значило бы расходиться с ``build_catalog``.
+        Строки без имени пропускаются — PK таблицы ``(catalog_id, name)``,
+        безымянная строка не стыкуется ни с фильтром, ни с экспортом.
+
+        ``sources`` (список источников после склейки дублей в
+        ``core.catalog.dedupe``) важнее одиночного ``source``: один проект
+        живёт и на GitHub, и в npm, а колонка одна — она хранит их через
+        запятую, и экран «Источники» показывает всё найденное.
+        """
+        written = 0
+        with self._lock, self._tx() as conn:
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name") or item.get("id")
+                if not name:
+                    continue
+                sources = [str(source) for source in (item.get("sources") or []) if source]
+                source = ",".join(sources) if sources else item.get("source")
+                conn.execute(
+                    """INSERT OR REPLACE INTO catalog_items(
+                           catalog_id, name, source, stars, lang, pushed, desc
+                       ) VALUES(?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        catalog_id,
+                        str(name),
+                        source,
+                        item.get("stars"),
+                        item.get("lang"),
+                        item.get("pushed"),
+                        item.get("desc"),
+                    ),
+                )
+                written += 1
+        return written
+
+    @staticmethod
+    def _catalog_record(row: sqlite3.Row) -> dict:
+        """Строка ``catalogs`` с ``queries``/``stats``, развёрнутыми из JSON."""
+        record = dict(row)
+        record["queries"] = _decode_json_field(record.get("queries"), [])
+        record["stats"] = _decode_json_field(record.get("stats"), {})
+        return record
+
+    def get_catalog(self, catalog_id: str) -> dict | None:
+        """Один каталог (id, queries, created_at, stats, path) или ``None``."""
+        with self._lock:
+            conn = self._require_conn()
+            row = conn.execute(
+                "SELECT * FROM catalogs WHERE id = ?", (catalog_id,)
+            ).fetchone()
+        return self._catalog_record(row) if row is not None else None
+
+    def list_catalogs(self, *, limit: int = 100) -> list[dict]:
+        """Каталоги по ``created_at DESC`` (tie-breaker ``id``) + ``items_count``.
+
+        Счётчик элементов считается подзапросом в том же SELECT: экран
+        «Каталоги» рисует список целиком, и отдельный COUNT на каждый каталог
+        превратил бы один запрос в сотню.
+        """
+        with self._lock:
+            conn = self._require_conn()
+            rows = conn.execute(
+                """SELECT c.id, c.queries, c.created_at, c.stats, c.path,
+                          (SELECT COUNT(*) FROM catalog_items i
+                            WHERE i.catalog_id = c.id) AS items_count
+                     FROM catalogs c
+                    ORDER BY c.created_at DESC, c.id
+                    LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [self._catalog_record(row) for row in rows]
+
+    @staticmethod
+    def _catalog_items_where(
+        catalog_id: str,
+        *,
+        alive: bool | None = None,
+        lang: str | None = None,
+        min_stars: int | None = None,
+        q: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        """WHERE элементов каталога — один текст на страницу и на счёт.
+
+        Общий построитель, а не две копии: ``GET /api/catalogs/{id}/items``
+        отдаёт страницу и ``total``, и разошедшиеся фильтры дали бы «5
+        элементов», из которых на экране три.
+
+        ``alive=True`` — push не старше :data:`CATALOG_ALIVE_DAYS` дней,
+        ``alive=False`` — старше. Строка без ``pushed`` (npm/реестр его не
+        отдают) не попадает ни в одну из этих групп: сравнение с NULL в SQL
+        ложно, и «живой» — это подтверждённая свежесть, а не её отсутствие.
+        Видна такая строка под фильтром «Все».
+
+        ``min_stars`` сравнивается с ``COALESCE(stars, 0)``: у строк без
+        звёзд «звёзд меньше порога» неизвестно, и ``min_stars=0`` на экране
+        означает «без ограничения», а не «только строки со звёздами»
+        (``stars >= 0`` отбросил бы NULL-ы).
+        """
+        where = ["catalog_id = ?"]
+        params: list[Any] = [catalog_id]
+        if alive is True:
+            where.append("pushed >= ?")
+            params.append(_days_ago_date(CATALOG_ALIVE_DAYS))
+        elif alive is False:
+            where.append("pushed < ?")
+            params.append(_days_ago_date(CATALOG_ALIVE_DAYS))
+        if lang:
+            where.append("lang = ?")
+            params.append(lang)
+        if min_stars is not None:
+            where.append("COALESCE(stars, 0) >= ?")
+            params.append(min_stars)
+        text = (q or "").strip()
+        if text:
+            pattern = "%" + _like_escape(text.lower()) + "%"
+            where.append(
+                "(LOWER(name) LIKE ? ESCAPE '\\'"
+                " OR LOWER(COALESCE(desc, '')) LIKE ? ESCAPE '\\')"
+            )
+            params.extend([pattern, pattern])
+        return " WHERE " + " AND ".join(where), params
+
+    def get_catalog_items(
+        self,
+        catalog_id: str,
+        *,
+        alive: bool | None = None,
+        lang: str | None = None,
+        min_stars: int | None = None,
+        q: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Элементы каталога с фильтрами: ``stars DESC`` (без звёзд — в конце).
+
+        ``ORDER BY … NULLS LAST`` поддерживается SQLite 3.30+ (здесь 3.39.4);
+        ``name`` вторым ключом делает страницы стабильными: без него две
+        строки с одинаковыми звёздами могли меняться местами между запросами,
+        и пагинация показывала бы дубль вместо второй страницы.
+        """
+        with self._lock:
+            conn = self._require_conn()
+            clause, params = self._catalog_items_where(
+                catalog_id, alive=alive, lang=lang, min_stars=min_stars, q=q
+            )
+            sql = (
+                "SELECT name, source, stars, lang, pushed, desc FROM catalog_items"
+                f"{clause} ORDER BY stars DESC NULLS LAST, name LIMIT ? OFFSET ?"
+            )
+            params.extend([limit, offset])
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_catalog_items(
+        self,
+        catalog_id: str,
+        *,
+        alive: bool | None = None,
+        lang: str | None = None,
+        min_stars: int | None = None,
+        q: str | None = None,
+    ) -> int:
+        """Сколько элементов под теми же фильтрами — ``total`` для пагинации.
+
+        Ключевые аргументы явные (а не ``**filters``): опечатка в имени
+        фильтра тогда падает ``TypeError`` в тесте, а не тихо считает всё
+        подряд, пока страница отдаёт отфильтрованное.
+        """
+        with self._lock:
+            conn = self._require_conn()
+            clause, params = self._catalog_items_where(
+                catalog_id, alive=alive, lang=lang, min_stars=min_stars, q=q
+            )
+            return int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM catalog_items{clause}", params
+                ).fetchone()[0]
+            )
+
+    def delete_catalog(self, catalog_id: str) -> None:
+        """Удалить каталог и его элементы одной транзакцией.
+
+        Элементы — первыми: без внешнего ключа (схема §5 его не задаёт)
+        обратный порядок оставил бы их сиротами навсегда.
+        """
+        with self._lock, self._tx() as conn:
+            conn.execute(
+                "DELETE FROM catalog_items WHERE catalog_id = ?", (catalog_id,)
+            )
+            conn.execute("DELETE FROM catalogs WHERE id = ?", (catalog_id,))
 
 
 class SqliteCache:

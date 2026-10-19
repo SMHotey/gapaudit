@@ -177,6 +177,16 @@ schedules(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, params TEXT, cron TEXT,
 `flag_value`) и `flag_label: str` (из `flag`). Не путать при чтении из Store:
 `bool("MCP") == True` всегда.
 
+Важно (follow-up 3b): `_upsert_package` пишет только пакеты с `source != '-'`
+(пакеты, отсутствующие в реестрах, попадают только в `observations`, без записи
+в `packages`). Это осознанное решение: `packages` — справочник известных
+пакетов, `observations` — история замеров (включая отрицательные).
+
+Уточнение 3b по `catalog_items`: `source` хранит источники склейки через
+запятую (`github,npm`) — колонка одна, а после `core.catalog.dedupe` у находки
+их несколько; `url` в схеме нет, поэтому экран строит ссылку на GitHub из
+`name` (`owner/repo`), а для одиночного имени — поиском GitHub.
+
 Что это даёт сразу: «покажи, у кого за 30 дней вырос adoption и при этом не появился MCP» —
 один запрос; «когда впервые появился сервер у инструмента из моего эшелона» — из `events`;
 «сколько всего уникальных пакетов в поле зрения» — из `packages`.
@@ -239,13 +249,38 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | POST | `/api/packages/check` | прогон имён (adoption × признак) |
 | GET | `/api/packages/search?q=` | поиск по имени/описанию с пагинацией (шаг 3a): `q`, `limit` 1..200 (50), `offset`; ответ `{packages, total, limit, offset, q}`. Роут объявлен до `/api/packages/{name}` — иначе «search» стало бы именем пакета |
 | GET | `/api/packages/{name}` | карточка пакета с историей (события — через `Store.get_events(name=...)`) |
-| GET/POST | `/api/catalogs` | список и сборка каталога по фразам |
-| GET | `/api/catalogs/{id}` | элементы каталога с фильтрами и пагинацией |
-| POST | `/api/catalogs/{id}/export` | выгрузка CSV/Markdown |
+| GET/POST | `/api/catalogs` | список и сборка каталога по фразам (шаг 3b) |
+| GET | `/api/catalogs/{id}` | метаданные каталога + `items_count` (шаг 3b) |
+| GET | `/api/catalogs/{id}/items?alive=&lang=&min_stars=&q=&limit=&offset=` | элементы с фильтрами и пагинацией; ответ `{items, total, limit, offset}` (шаг 3b) |
+| POST | `/api/catalogs/{id}/export?format=csv\|md` | файл в ответе (`Content-Disposition: attachment`), CSV — `utf-8-sig` (шаг 3b) |
 | GET | `/api/events` | таймлайн событий (шаг 3a; в плане назывался `/api/monitor`): `since`, `kind`, `name`, `limit` 1..500 (100), `offset`; ответ `{events, total, limit, offset}`, `total` — по тем же фильтрам |
 | GET | `/api/compare` | сравнение 2–3 ниш по метрикам |
 | GET/PUT | `/api/settings` | пороги, ключевые слова, TTL, лимиты (шаг 2c). GET отдаёт `settings` + `readonly` (`data_dir`, `db_path`, `version`, `api_token_required`) + `editable_keys` (10 ключей); PUT валидирует тип/диапазон/инвариант `alive_weekly >= dead_weekly`, пишет `<data_dir>/settings.json` и возвращает `warnings`. `data_dir` и `language` через API не меняются — это readonly |
 | GET | `/api/health` | готовность бэкенда (для окна) |
+
+Каталоги (шаг 3b, детали):
+
+- `POST /api/catalogs` — submit job `catalog.build`; тело
+  `{"phrases": [..], "min_stars": 20, "pages": 2, "sources": ["github","npm","registry"]}`,
+  валидация 1..10 непустых фраз, `min_stars >= 0`, `pages` 1..10, источники ⊆
+  трёх известных, лишние ключи — 400. Ответ `202 {"job_id", "catalog_id"}`;
+  `catalog_id = job_id` — каталог пишется хуком lifespan под id задачи.
+- `GET /api/catalogs` — список (id, queries, created_at, stats, items_count),
+  `created_at DESC`; `items_count` считается подзапросом в том же SELECT.
+- `GET /api/catalogs/{id}` — метаданные + `items_count`; неизвестный id — 404.
+- `GET /api/catalogs/{id}/items` — фильтры `alive` (push за 90 дней),
+  `lang`, `min_stars`, `q` (по имени/описанию с экранированием `%`/`_`),
+  `limit` 1..500 (100), `offset`; `ORDER BY stars DESC NULLS LAST, name`.
+- `POST /api/catalogs/{id}/export?format=csv|md` — весь каталог файлом
+  (`Content-Disposition: attachment; filename=catalog-{id}.{ext}`), CSV
+  `utf-8-sig`, Markdown — таблица `core.catalog.to_markdown`; `format` вне
+  пары — 400.
+
+Хук lifespan пишет результаты задач по kind: `packages.check` →
+`record_observations`, `monitor.diff` → `record_events` (формат файла —
+`{"events": [{"kind","name","detail"}, ...]}`, так его пишет
+`cli/check_predecessors --diff` под `--job-json`), `catalog.build` →
+`record_catalog` + `record_catalog_items`.
 
 Правила: никакой сетевой работы в обработчиках, кроме чтения из SQLite/кэша; всё долгое — задачей.
 Ответы — JSON со стабильными ключами, пригодные и для CLI, и для UI.
@@ -362,6 +397,17 @@ Hermes не подключается к живому приложению — о
    признак, ссылки, история замеров (мини-график), кнопки «проверить по GitHub», «в эшелон».
 4. **Каталоги**. Сборка по фразам (источники: GitHub, npm, реестр), список каталогов, элементы
    с фильтрами (живые/заброшенные, язык, звёзды), экспорт CSV/Markdown.
+
+   Уточнение шага 3b (реализовано): два уровня — список каталогов (id, фразы,
+   дата, N элементов) и детальный экран каталога `/catalogs/{id}`. На детальном —
+   фильтры (живые/заброшенные по `pushed`, язык, `min_stars`, поиск),
+   пагинация (100 на страницу), экспорт CSV/MD. Элементы — строки таблицы с
+   именем, звёздами, языком, датой push, описанием и источниками; имя — внешняя
+   ссылка на GitHub в новой вкладке (`url` в схеме §5 нет, ссылка строится из
+   `owner/repo`; одиночное имя ведёт в поиск GitHub). Пока каталог не записан
+   (задача ещё идёт), экран показывает «каталог собирается» по статусу задачи с
+   тем же id и обновляется сам: запись асинхронна и отстаёт от события `done`
+   (gotcha 38). «← К списку» возвращает к `/catalogs`.
 5. **Мониторинг**. Таймлайн событий из `events`: релизы, скачки adoption, «появился MCP»
    (выделено отдельно), пропавшие пакеты; фильтр по периоду; выгрузка.
 6. **Сравнение**. 2–3 ниши/пакета бок о бок: adoption, даты, вердикты, признаки, размеры каталогов.

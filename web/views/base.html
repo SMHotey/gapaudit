@@ -13,9 +13,10 @@
       <a href="/"{% if path == '/' %} class="active"{% endif %}>Задачи</a>
       <a href="/matrix"{% if path == '/matrix' %} class="active"{% endif %}>Сейчас решать</a>
       <a href="/packages"{% if path == '/packages' %} class="active"{% endif %}>Пакеты</a>
-      <a class="disabled" title="P3: каталоги"
-         aria-disabled="true">Каталоги</a>
       <a href="/monitor"{% if path == '/monitor' %} class="active"{% endif %}>Мониторинг</a>
+      {# Каталоги (шаг 3b): активны и список, и детальный экран каталога —
+         пункт не должен гаснуть, когда открыт /catalogs/{id}. #}
+      <a href="/catalogs"{% if path == '/catalogs' or path.startswith('/catalogs/') %} class="active"{% endif %}>Каталоги</a>
       <a class="disabled" title="P3: сравнение"
          aria-disabled="true">Сравнение</a>
       <a href="/settings"{% if path == '/settings' %} class="active"{% endif %}>Настройки</a>

@@ -1,12 +1,16 @@
-"""Хук записи наблюдений в lifespan (шаг 3d-b): ``done`` → Store.
+"""Хук записи результатов в lifespan (шаги 3d-b и 3b): ``done`` → Store.
 
 Что проверяется:
 
 * ``done`` для ``kind="packages.check"`` при существующем
   ``<data_dir>/jobs/<id>.result.json`` — строки уходят в
   ``Store.record_observations`` с ``run_id=job_id``;
-* ``done`` для другого ``kind``, ``progress`` и отсутствующий result.json
-  записи не дают (отсутствующий — ещё и warning в лог);
+* ``done`` для ``monitor.diff`` — ``{"events": [...]}`` уходит в
+  ``Store.record_events`` (шаг 3b), наблюдений не появляется;
+* ``done`` для ``catalog.build`` — ``{"queries","stats","items"}`` уходит в
+  ``Store.record_catalog`` + ``record_catalog_items``;
+* ``progress`` и отсутствующий result.json записи не дают (отсутствующий —
+  ещё и warning в лог);
 * порядок выключения: запись, поставленная в пул непосредственно перед выходом
   из lifespan, успевает лечь в БД до ``store.close()``.
 
@@ -59,18 +63,66 @@ def wait_for(predicate: Callable[[], bool], *, timeout: float = 2.0) -> bool:
     return predicate()
 
 
+#: Валидные params на каждый kind хука (то, что примет POST /api/jobs).
+PARAMS: dict[str, dict[str, Any]] = {
+    "packages.check": {"names": ["requests"]},
+    "monitor.diff": {"diff_from": "raw/p.json"},
+    "catalog.build": {"phrases": ["test impact analysis"]},
+}
+
+
 def submit(client: TestClient, kind: str = "packages.check") -> tuple[str, Path]:
     """Задача в Store + путь её result.json (файл создаёт вызывающий)."""
     state = app_state(client)
-    params = {"names": ["requests"]} if kind == "packages.check" else {"diff_from": "raw/p.json"}
-    job_id = state.queue.submit(kind, params)
+    job_id = state.queue.submit(kind, PARAMS[kind])
     return job_id, state.queue.jobs_dir / f"{job_id}.result.json"
 
 
-def write_result(path: Path) -> None:
+def write_payload(path: Path, payload: Any) -> None:
     """Файл, который в проде пишет CLI по ``--json-out``."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([ROW], ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def write_result(path: Path) -> None:
+    """Файл наблюдений ``packages.check`` (список строк)."""
+    write_payload(path, [ROW])
+
+
+#: События сравнения — форма ``core.diffing.diff_observations`` и таблицы events.
+EVENTS_PAYLOAD: dict[str, Any] = {
+    "events": [
+        {"kind": "release", "name": "requests", "detail": "2.32.0"},
+        {"kind": "flag_appeared", "name": "flask", "detail": "появился MCP"},
+    ],
+    "observations": [ROW],
+}
+
+#: Каталог — форма ``core.catalog.build_catalog`` (её же пишет CLI).
+CATALOG_PAYLOAD: dict[str, Any] = {
+    "queries": ["test impact analysis"],
+    "stats": {"total": 2, "by_source": {"github": 2}},
+    "items": [
+        {
+            "source": "github",
+            "id": "owner/one",
+            "desc": "TIA tool",
+            "stars": 120,
+            "lang": "Python",
+            "pushed": "2026-10-01",
+            "sources": ["github"],
+        },
+        {
+            "source": "github",
+            "id": "owner/two",
+            "desc": "flaky detector",
+            "stars": 40,
+            "lang": "Go",
+            "pushed": "2025-01-01",
+            "sources": ["github", "npm"],
+        },
+    ],
+}
 
 
 class RecordSpy:
@@ -108,7 +160,11 @@ def test_done_packages_check_records_observations(client: TestClient) -> None:
 def test_done_for_other_kind_is_ignored(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``monitor.diff`` завершился — наблюдений не пишем (kind-фильтр в хуке)."""
+    """``monitor.diff`` завершился — наблюдений не пишем: у него свои события.
+
+    Проверка держит разделение двух записей: файл для monitor.diff — это
+    события, и путь ``packages.check`` к нему применяться не должен.
+    """
     state = app_state(client)
     job_id, result_path = submit(client, kind="monitor.diff")
     write_result(result_path)  # файл есть: отсекает именно kind
@@ -250,3 +306,128 @@ def test_pending_record_survives_lifespan_exit(
         history = reopened.get_observations_history("requests")
     assert len(history) == 1
     assert history[0]["run_id"] == job_id
+
+
+# --- monitor.diff: события (шаг 3b) -----------------------------------------
+
+
+def test_done_monitor_diff_records_events(client: TestClient) -> None:
+    """``done`` для monitor.diff → события в ``events``, ``run_id`` = id задачи."""
+    state = app_state(client)
+    job_id, result_path = submit(client, kind="monitor.diff")
+    write_payload(result_path, EVENTS_PAYLOAD)
+
+    state.queue._emit(job_id, "done", {"status": "done"})
+
+    assert wait_for(lambda: state.store.count_events() == 2)
+    events = state.store.get_events()
+    assert {event["kind"] for event in events} == {"release", "flag_appeared"}
+    assert {event["name"] for event in events} == {"requests", "flask"}
+    assert {event["run_id"] for event in events} == {job_id}
+    # события — не наблюдения: история замеров не должна пополняться
+    assert state.store.count_observations() == 0
+
+
+def test_done_monitor_diff_without_result_warns(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """result.json нет у monitor.diff — warning, событий ноль."""
+    state = app_state(client)
+    job_id, result_path = submit(client, kind="monitor.diff")
+    assert not result_path.exists()
+
+    with caplog.at_level(logging.WARNING, logger="app.web"):
+        state.queue._emit(job_id, "done", {"status": "done"})
+        assert wait_for(
+            lambda: any("result.json" in record.getMessage() for record in caplog.records)
+        )
+
+    assert state.store.count_events() == 0
+
+
+def test_done_monitor_diff_skips_rows_without_kind(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Строки без ``kind``/``name`` не пишутся: одна такая отменила бы батч.
+
+    ``events.kind`` в схеме NOT NULL — INSERT упал бы целиком, и «Мониторинг»
+    остался бы пустым из-за одной мусорной строки в файле.
+    """
+    state = app_state(client)
+    job_id, result_path = submit(client, kind="monitor.diff")
+    write_payload(
+        result_path,
+        {"events": [{"kind": "release", "name": "requests", "detail": "2.32.0"},
+                    {"name": "без-kind"}, "мусор"]},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.web"):
+        state.queue._emit(job_id, "done", {"status": "done"})
+        assert wait_for(
+            lambda: any("kind/name" in record.getMessage() for record in caplog.records)
+        )
+
+    assert state.store.count_events() == 1
+
+
+# --- catalog.build: каталог и элементы (шаг 3b) -----------------------------
+
+
+def test_done_catalog_build_records_catalog_and_items(client: TestClient) -> None:
+    """``done`` для catalog.build → строка каталога + все его элементы."""
+    state = app_state(client)
+    job_id, result_path = submit(client, kind="catalog.build")
+    write_payload(result_path, CATALOG_PAYLOAD)
+
+    state.queue._emit(job_id, "done", {"status": "done"})
+
+    assert wait_for(lambda: state.store.count_catalog_items(job_id) == 2)
+    catalog = state.store.get_catalog(job_id)
+    assert catalog is not None
+    assert catalog["queries"] == ["test impact analysis"]
+    assert catalog["stats"]["total"] == 2
+    # путь к результату задачи виден в каталоге: это файл, который прочитал хук
+    assert str(catalog["path"]).endswith(f"{job_id}.result.json")
+
+    items = state.store.get_catalog_items(job_id)
+    assert [item["name"] for item in items] == ["owner/one", "owner/two"]
+    assert items[0]["source"] == "github"
+    # источники склеены: одна запись живёт и на GitHub, и в npm
+    assert items[1]["source"] == "github,npm"
+
+
+def test_done_catalog_build_without_result_warns(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """result.json нет у catalog.build — warning, каталога нет."""
+    state = app_state(client)
+    job_id, result_path = submit(client, kind="catalog.build")
+    assert not result_path.exists()
+
+    with caplog.at_level(logging.WARNING, logger="app.web"):
+        state.queue._emit(job_id, "done", {"status": "done"})
+        assert wait_for(
+            lambda: any("result.json" in record.getMessage() for record in caplog.records)
+        )
+
+    assert state.store.get_catalog(job_id) is None
+
+
+def test_done_catalog_build_with_wrong_payload_logs_error(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Вместо объекта каталога — список: ошибка в лог, мусор в БД не попадает."""
+    state = app_state(client)
+    job_id, result_path = submit(client, kind="catalog.build")
+    write_payload(result_path, [ROW])
+
+    with caplog.at_level(logging.ERROR, logger="app.web"):
+        state.queue._emit(job_id, "done", {"status": "done"})
+        assert wait_for(
+            lambda: any(
+                "объект каталога" in record.getMessage() for record in caplog.records
+            )
+        )
+
+    assert state.store.get_catalog(job_id) is None
+    assert state.store.count_catalog_items(job_id) == 0

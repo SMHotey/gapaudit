@@ -830,3 +830,300 @@ def test_import_store_creates_no_files(tmp_path, monkeypatch) -> None:
 
     importlib.reload(app.store)
     assert list(tmp_path.iterdir()) == []
+
+
+# --- каталоги (шаг 3b) ---------------------------------------------------------------
+
+
+def catalog_item(name: str = "owner/repo", **overrides) -> dict:
+    """Строка каталога в форме ``core.catalog.build_catalog`` (проект — в ``id``)."""
+    base = {
+        "source": "github",
+        "id": name,
+        "url": f"https://github.com/{name}",
+        "desc": "test impact analysis",
+        "stars": 100,
+        "lang": "Python",
+        "pushed": "2026-10-01",
+        "topics": [],
+        "query": "test impact analysis",
+        "sources": ["github"],
+    }
+    base.update(overrides)
+    return base
+
+
+def date_ago(days: int) -> str:
+    """``YYYY-MM-DD`` N дней назад — так GitHub отдаёт ``pushed_at[:10]``."""
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() - days * 86400))
+
+
+def seed_catalog(
+    store: Store, catalog_id: str = "cat-1", items: list[dict] | None = None
+) -> None:
+    """Каталог + элементы: то, что в проде делает хук lifespan по result.json."""
+    store.record_catalog(
+        catalog_id=catalog_id,
+        queries=["test impact analysis"],
+        stats={"total": len(items or [])},
+    )
+    store.record_catalog_items(
+        catalog_id, items if items is not None else [catalog_item()]
+    )
+
+
+def test_record_catalog_round_trip(store: Store) -> None:
+    """Записанный каталог читается с развёрнутыми JSON-полями и меткой времени."""
+    store.record_catalog(
+        catalog_id="c1",
+        queries=["flaky test detection", "test impact analysis"],
+        stats={"total": 7, "languages": {"Python": 5}},
+        path="raw/c1.json",
+    )
+
+    catalog = store.get_catalog("c1")
+
+    assert catalog is not None
+    assert catalog["id"] == "c1"
+    assert catalog["queries"] == ["flaky test detection", "test impact analysis"]
+    assert catalog["stats"] == {"total": 7, "languages": {"Python": 5}}
+    assert catalog["path"] == "raw/c1.json"
+    assert ISO_RE.match(catalog["created_at"])
+
+
+def test_record_catalog_same_id_replaces_row(store: Store) -> None:
+    """Повторная запись того же id — UPSERT, а не вторая строка."""
+    store.record_catalog(
+        catalog_id="c1", queries=["old"], stats={"total": 1}, path="raw/old.json"
+    )
+    store.record_catalog(catalog_id="c1", queries=["new"], stats={"total": 2})
+
+    assert count(store, "catalogs") == 1
+    catalog = store.get_catalog("c1")
+    assert catalog is not None
+    assert catalog["queries"] == ["new"]
+    assert catalog["stats"] == {"total": 2}
+    # путь от повторной записи без аргумента не затирается
+    assert catalog["path"] == "raw/old.json"
+
+
+def test_record_catalog_items_writes_every_row(store: Store) -> None:
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("a/x"),
+            catalog_item("b/y", stars=5),
+            catalog_item("c/z", stars=None),
+        ],
+    )
+
+    assert count(store, "catalog_items") == 3
+    assert {item["name"] for item in store.get_catalog_items("cat-1")} == {
+        "a/x",
+        "b/y",
+        "c/z",
+    }
+
+
+def test_record_catalog_items_is_idempotent(store: Store) -> None:
+    """Тот же каталог повторно: PK ``(catalog_id, name)`` держит 3 строки.
+
+    Заодно проверяется, что повторная запись обновляет данные, а не молча
+    оставляет старые: ``INSERT OR REPLACE``.
+    """
+    items = [catalog_item("a/x"), catalog_item("b/y"), catalog_item("c/z")]
+    seed_catalog(store, items=items)
+
+    written = store.record_catalog_items(
+        "cat-1", [dict(item, stars=(item["stars"] or 0) + 1) for item in items]
+    )
+
+    assert written == 3
+    assert count(store, "catalog_items") == 3
+    assert {item["stars"] for item in store.get_catalog_items("cat-1")} == {101}
+
+
+def test_record_catalog_items_uses_id_and_joined_sources(store: Store) -> None:
+    """Имя — из ``id``, если нет ``name``; источники склеены через запятую."""
+    seed_catalog(
+        store, items=[catalog_item("owner/repo", sources=["github", "npm"])]
+    )
+
+    item = store.get_catalog_items("cat-1")[0]
+
+    assert item["name"] == "owner/repo"
+    assert item["source"] == "github,npm"
+
+
+def test_record_catalog_items_skips_rows_without_name(store: Store) -> None:
+    """Строка без имени не пишется: PK каталога — имя, пустое не стыкуется."""
+    seed_catalog(store, items=[catalog_item("a/x"), {"stars": 3}, "мусор"])  # type: ignore[list-item]
+
+    assert count(store, "catalog_items") == 1
+
+
+def test_get_catalog_items_sorted_by_stars_desc(store: Store) -> None:
+    """Порядок — по звёздам вниз; строки без звёзд в конце (NULLS LAST)."""
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("low/repo", stars=5),
+            catalog_item("high/repo", stars=900),
+            catalog_item("none/repo", stars=None),
+            catalog_item("mid/repo", stars=50),
+        ],
+    )
+
+    names = [item["name"] for item in store.get_catalog_items("cat-1")]
+
+    assert names == ["high/repo", "mid/repo", "low/repo", "none/repo"]
+
+
+def test_get_catalog_items_alive_true_keeps_fresh_push(store: Store) -> None:
+    """``alive=True`` — только push за последние 90 дней."""
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("fresh/repo", pushed=date_ago(5)),
+            catalog_item("stale/repo", pushed=date_ago(400)),
+            catalog_item("unknown/repo", pushed=None),
+        ],
+    )
+
+    assert [item["name"] for item in store.get_catalog_items("cat-1", alive=True)] == [
+        "fresh/repo"
+    ]
+    assert store.count_catalog_items("cat-1", alive=True) == 1
+
+
+def test_get_catalog_items_alive_false_keeps_stale_push(store: Store) -> None:
+    """``alive=False`` — push старше 90 дней; строка без даты — ни в одной группе."""
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("fresh/repo", pushed=date_ago(5)),
+            catalog_item("stale/repo", pushed=date_ago(400)),
+            catalog_item("unknown/repo", pushed=None),
+        ],
+    )
+
+    assert [item["name"] for item in store.get_catalog_items("cat-1", alive=False)] == [
+        "stale/repo"
+    ]
+    assert store.count_catalog_items("cat-1", alive=False) == 1
+
+
+def test_get_catalog_items_lang_filter(store: Store) -> None:
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("py/repo", lang="Python"),
+            catalog_item("go/repo", lang="Go"),
+        ],
+    )
+
+    assert [item["name"] for item in store.get_catalog_items("cat-1", lang="Go")] == [
+        "go/repo"
+    ]
+
+
+def test_get_catalog_items_min_stars_filter(store: Store) -> None:
+    """Порог звёзд; ``min_stars=0`` — «без ограничения», включая строки без звёзд."""
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("big/repo", stars=100),
+            catalog_item("small/repo", stars=3),
+            catalog_item("none/repo", stars=None),
+        ],
+    )
+
+    assert [item["name"] for item in store.get_catalog_items("cat-1", min_stars=10)] == [
+        "big/repo"
+    ]
+    assert store.count_catalog_items("cat-1", min_stars=0) == 3
+
+
+def test_get_catalog_items_q_matches_name_and_desc(store: Store) -> None:
+    """Поиск — по имени и описанию, без учёта регистра."""
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("flaky/tool", desc="Flaky test detection"),
+            catalog_item("another/repo", desc="flaky tests are painful"),
+            catalog_item("unrelated/repo", desc="vector database"),
+        ],
+    )
+
+    hits = store.get_catalog_items("cat-1", q="FLAKY")
+
+    assert {item["name"] for item in hits} == {"flaky/tool", "another/repo"}
+
+
+def test_get_catalog_items_q_escapes_like_wildcards(store: Store) -> None:
+    """``%`` и ``_`` в запросе — символы, а не шаблон (gotcha 44)."""
+    seed_catalog(
+        store,
+        items=[
+            catalog_item("percent/repo", desc="ускоряет сборку на 100%"),
+            catalog_item("plain/repo", desc="совсем другое описание"),
+            catalog_item("under/repo", desc="имя a_b и всё"),
+        ],
+    )
+
+    assert [item["name"] for item in store.get_catalog_items("cat-1", q="100%")] == [
+        "percent/repo"
+    ]
+    assert [item["name"] for item in store.get_catalog_items("cat-1", q="a_b")] == [
+        "under/repo"
+    ]
+
+
+def test_get_catalog_items_limit_and_offset(store: Store) -> None:
+    seed_catalog(
+        store, items=[catalog_item(f"repo/{n}", stars=n * 10) for n in range(1, 6)]
+    )
+
+    first = store.get_catalog_items("cat-1", limit=2)
+    second = store.get_catalog_items("cat-1", limit=2, offset=2)
+
+    assert [item["name"] for item in first] == ["repo/5", "repo/4"]
+    assert [item["name"] for item in second] == ["repo/3", "repo/2"]
+    assert store.count_catalog_items("cat-1") == 5
+
+
+def test_list_catalogs_newest_first_with_items_count(store: Store) -> None:
+    """Список каталогов: ``created_at DESC``, элементы посчитаны в том же SELECT."""
+    seed_catalog(store, catalog_id="cat-1", items=[catalog_item("a/x")])
+    seed_catalog(
+        store, catalog_id="cat-2", items=[catalog_item("b/y"), catalog_item("c/z")]
+    )
+    # created_at у обеих строк — одна секунда: время задаём явно, иначе
+    # порядок держал бы tie-breaker id, а тест проверял бы не то
+    conn_of(store).execute(
+        "UPDATE catalogs SET created_at = ? WHERE id = ?",
+        ("2026-10-19T10:00:00Z", "cat-1"),
+    )
+    conn_of(store).execute(
+        "UPDATE catalogs SET created_at = ? WHERE id = ?",
+        ("2026-10-19T11:00:00Z", "cat-2"),
+    )
+
+    catalogs = store.list_catalogs()
+
+    assert [catalog["id"] for catalog in catalogs] == ["cat-2", "cat-1"]
+    assert [catalog["items_count"] for catalog in catalogs] == [2, 1]
+    assert catalogs[0]["queries"] == ["test impact analysis"]
+
+
+def test_delete_catalog_removes_catalog_and_items(store: Store) -> None:
+    seed_catalog(store, catalog_id="cat-1")
+    seed_catalog(store, catalog_id="cat-2")
+
+    store.delete_catalog("cat-1")
+
+    assert store.get_catalog("cat-1") is None
+    assert store.count_catalog_items("cat-1") == 0
+    assert store.get_catalog("cat-2") is not None
+    assert count(store, "catalogs") == 1
+    assert count(store, "catalog_items") == 1

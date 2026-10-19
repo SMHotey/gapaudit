@@ -36,6 +36,8 @@
   ``interrupted``-задачи, шаг 3d-b), SSE ``/api/stream``, пакеты
   ``/api/packages*`` (шаг 3a: ``/search`` — поиск с пагинацией),
   события ``/api/events`` (шаг 3a: таймлайн «Мониторинга»),
+  каталоги ``/api/catalogs*`` (шаг 3b: сборка по фразам, список, элементы с
+  фильтрами, экспорт CSV/Markdown),
   матрица ``/api/matrix`` (шаг 2b — агрегат экрана
   «Сейчас решать»), настройки ``GET/PUT /api/settings`` (шаг 2c —
   пороги и ключевые слова, запись в ``<data_dir>/settings.json``),
@@ -43,16 +45,27 @@
 * **восстановление после падения** (шаг 3c): lifespan зовёт
   ``JobQueue.recover_interrupted()`` до ``queue.start()`` — задачи,
   работавшие в упавшем приложении, становятся ``interrupted``.
-* **запись наблюдений по завершении задачи** (шаг 3d-b): lifespan подписан на
-  события очереди; на ``done`` для ``kind="packages.check"`` он читает
+* **запись результатов по завершении задачи** (шаги 3d-b и 3b): lifespan
+  подписан на события очереди; на ``done`` он по ``kind`` выбирает обработчик
+  (таблица ``_POST_PROCESS_KINDS`` внутри lifespan) и читает
   ``<data_dir>/jobs/<id>.result.json`` (файл, который CLI записал по
-  ``--json-out``) и отдаёт строки в ``Store.record_observations`` через
-  ``ThreadPoolExecutor(max_workers=1)``. Подписчик вызывается в потоке воркера
-  под ``_emit``, поэтому сам он ничего не читает с диска и не пишет в БД —
-  только ставит задачу в пул. Порядок выключения (важен): отписка от очереди →
-  ``post_executor.shutdown(wait=True)`` → ``queue.stop()`` → ``store.close()``,
-  иначе последняя завершённая задача может не успеть записать наблюдения в уже
-  закрытый ``Store``.
+  ``--json-out``):
+
+  =================  ====================================================
+  kind                что ложится в БД
+  =================  ====================================================
+  ``packages.check``  строки → ``Store.record_observations``
+  ``monitor.diff``    ``{"events": [...]}`` → ``Store.record_events``
+  ``catalog.build``   ``{"queries","stats","items"}`` → ``Store.record_catalog``
+                      + ``Store.record_catalog_items``
+  =================  ====================================================
+
+  Подписчик вызывается в потоке воркера под ``_emit``, поэтому сам он ничего
+  не читает с диска и не пишет в БД — только ставит задачу в
+  ``ThreadPoolExecutor(max_workers=1)``. Порядок выключения (важен): отписка от
+  очереди → ``post_executor.shutdown(wait=True)`` → ``queue.stop()`` →
+  ``store.close()``, иначе последняя завершённая задача может не успеть
+  записать результат в уже закрытый ``Store``.
 
 Правило обработчиков (§7): никакой сетевой работы — только чтение SQLite и
 очереди; всё долгое уходит в задачу. События ``started`` и ``status`` не
@@ -69,6 +82,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import os
@@ -159,6 +174,27 @@ EVENTS_LIMIT_MAX = 500
 #: десятки килобайт на один поисковый запрос с клавиатуры.
 PACKAGES_SEARCH_LIMIT_DEFAULT = 50
 PACKAGES_SEARCH_LIMIT_MAX = 200
+
+#: Границы списка каталогов и их элементов (шаг 3b). Элементы — 100 на
+#: страницу, как и у остальных экранов: строка каталога несёт описание.
+CATALOGS_LIMIT_DEFAULT = 100
+CATALOGS_LIMIT_MAX = 500
+CATALOG_ITEMS_LIMIT_DEFAULT = 100
+CATALOG_ITEMS_LIMIT_MAX = 500
+
+#: Источники сборки каталога — те же три, что знает ``core.catalog``.
+#: Пустой список — ошибка, а не «все»: `POST /api/jobs` трактует отсутствие
+#: ``sources`` как «все источники», и явная пустота означала бы разное в двух
+#: слоях (AGENTS gotcha 41).
+CATALOG_SOURCES: tuple[str, ...] = ("github", "npm", "registry")
+
+#: Фразы и страницы на фразу (шаг 3b). Потолки не «на всякий случай»: 10 фраз
+#: по 10 страниц — это 300 запросов к GitHub Search при лимите 30/мин, то есть
+#: заведомо бессмысленная задача на час.
+CATALOG_PHRASES_MIN, CATALOG_PHRASES_MAX = 1, 10
+CATALOG_PAGES_MIN, CATALOG_PAGES_MAX = 1, 10
+CATALOG_MIN_STARS_DEFAULT = 20
+CATALOG_PAGES_DEFAULT = 2
 
 #: Пауза SSE-heartbeat. Тесты опускают константу в 0.1 с вместо реальных 15.
 SSE_HEARTBEAT_INTERVAL = 15.0
@@ -502,6 +538,166 @@ def _store(request: Request) -> Store:
     return store
 
 
+def _bool_query(name: str, raw: str | None) -> bool | None:
+    """Булев query-параметр: ``true``/``1`` → True, ``false``/``0`` → False, пусто → None.
+
+    Не ``bool(raw)``: строка ``"false"`` истинна, и фильтр «Заброшенные» на
+    экране каталога показывал бы ровно живые проекты — ошибка, которую видно
+    только глазами. Пустая строка — как отсутствие параметра: ``URLSearchParams``
+    в JS не различает «не задано» и «пусто» (та же причина, что у
+    :func:`_query_int`).
+    """
+    if raw is None or raw == "":
+        return None
+    text = raw.strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    raise HTTPException(
+        status_code=400, detail=f"{name}: ожидалось true/false, пришло {raw!r}"
+    )
+
+
+def _catalog_params(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Разобрать тело ``POST /api/catalogs``: params задачи и список проблем.
+
+    Отдельная проверка поверх таблиц ``app/jobs.py``: там whitelist ключей и
+    типов, здесь — границы, которые знает только этот эндпоинт (сколько фраз,
+    сколько страниц на фразу, какие источники). Экран «Каталоги» — единственный
+    клиент эндпоинта, и задача, которая заведомо упрётся в лимит GitHub, не
+    должна получить 202.
+
+    Возвращаются только ключи ``catalog.build``: всё прочее в тело запроса —
+    ошибка, а не «лишнее поле проигнорируем». ``min_stars``/``pages`` при
+    отсутствии берутся дефолтными и уходят в задачу явно — так в карточке
+    задачи видно, с какими параметрами её собирали.
+    """
+    problems: list[str] = []
+
+    raw_phrases = payload.get("phrases")
+    phrases: list[str] = []
+    if not isinstance(raw_phrases, list) or not all(
+        isinstance(item, str) for item in raw_phrases
+    ):
+        problems.append("phrases: ожидался список строк")
+    else:
+        phrases = [item.strip() for item in raw_phrases if item.strip()]
+        if not CATALOG_PHRASES_MIN <= len(phrases) <= CATALOG_PHRASES_MAX:
+            problems.append(
+                f"phrases: нужно от {CATALOG_PHRASES_MIN} до {CATALOG_PHRASES_MAX} "
+                f"непустых фраз, пришло {len(phrases)}"
+            )
+
+    min_stars = payload.get("min_stars", CATALOG_MIN_STARS_DEFAULT)
+    if isinstance(min_stars, bool) or not isinstance(min_stars, int):
+        problems.append("min_stars: ожидалось целое")
+    elif min_stars < 0:
+        problems.append("min_stars: не может быть отрицательным")
+
+    pages = payload.get("pages", CATALOG_PAGES_DEFAULT)
+    if isinstance(pages, bool) or not isinstance(pages, int):
+        problems.append("pages: ожидалось целое")
+    elif not CATALOG_PAGES_MIN <= pages <= CATALOG_PAGES_MAX:
+        problems.append(
+            f"pages: допустимо от {CATALOG_PAGES_MIN} до {CATALOG_PAGES_MAX}, "
+            f"пришло {pages}"
+        )
+
+    raw_sources = payload.get("sources", list(CATALOG_SOURCES))
+    sources: list[str] = []
+    if not isinstance(raw_sources, list) or not all(
+        isinstance(item, str) for item in raw_sources
+    ):
+        problems.append("sources: ожидался список строк")
+    else:
+        unknown = [item for item in raw_sources if item not in CATALOG_SOURCES]
+        if unknown:
+            problems.append(
+                "sources: неизвестные источники " + ", ".join(sorted(set(unknown)))
+            )
+        elif not raw_sources:
+            problems.append(
+                "sources: пусто — укажите хотя бы один из "
+                + ", ".join(CATALOG_SOURCES)
+            )
+        sources = list(dict.fromkeys(raw_sources))
+
+    extra = sorted(set(payload) - {"phrases", "min_stars", "pages", "sources"})
+    if extra:
+        problems.append("неизвестные параметры: " + ", ".join(extra))
+
+    params: dict[str, Any] = {
+        "phrases": phrases,
+        "min_stars": min_stars,
+        "pages": pages,
+        "sources": sources,
+    }
+    return params, problems
+
+
+def _catalog_markdown(catalog: dict[str, Any], items: list[dict[str, Any]]) -> str:
+    """Экспорт каталога в Markdown: шапка + таблица ``core.catalog.to_markdown``.
+
+    Таблица не пишется здесь заново: ``to_markdown`` уже рисует её для CLI, и
+    второй формат разошёлся бы с первым при первой же правке колонок. Строки
+    БД переводятся в форму каталога (``id``/``sources``) — колонки те же,
+    ``|`` внутри описания ``to_markdown`` заменяет сам.
+    """
+    from core.catalog import to_markdown  # ленивый импорт: нужен только экспорту
+
+    queries = [str(query) for query in (catalog.get("queries") or [])]
+    rows = [
+        {
+            "id": item.get("name"),
+            "stars": item.get("stars"),
+            "lang": item.get("lang"),
+            "pushed": item.get("pushed"),
+            "desc": item.get("desc"),
+            "sources": [
+                source
+                for source in str(item.get("source") or "").split(",")
+                if source
+            ],
+        }
+        for item in items
+    ]
+    title = " · ".join(queries) if queries else str(catalog.get("id"))
+    head = [
+        f"Каталог `{catalog.get('id')}`",
+        "",
+        "Фразы: " + (", ".join(queries) if queries else "—"),
+        f"Собран: {catalog.get('created_at')}",
+        f"Элементов: {len(items)}",
+        "",
+        "",
+    ]
+    return "\n".join(head) + to_markdown(rows, title)
+
+
+def _catalog_rows(items: list[dict[str, Any]]) -> list[list[Any]]:
+    """Строки CSV-экспорта: те же колонки, что в шапке ``CATALOG_CSV_HEADER``.
+
+    ``None`` превращается в пустую строку: ``csv.writer`` записал бы ``None``
+    словом «None», и Excel показал бы его как значение.
+    """
+    return [
+        [
+            item.get("name") or "",
+            item.get("source") or "",
+            "" if item.get("stars") is None else item.get("stars"),
+            item.get("lang") or "",
+            item.get("pushed") or "",
+            item.get("desc") or "",
+        ]
+        for item in items
+    ]
+
+
+#: Колонки CSV-экспорта каталога (шаг 3b) — порядок фиксирован: его читает Excel.
+CATALOG_CSV_HEADER = ("name", "source", "stars", "lang", "pushed", "desc")
+
+
 def _queue(request: Request) -> JobQueue:
     queue = getattr(request.app.state, "queue", None)
     if queue is None:
@@ -687,16 +883,117 @@ def create_app(
         application.state.settings = active_settings
         application.state.settings_path = settings_path
 
-        # --- хук завершения задачи (шаг 3d-b) --------------------------------
+        # --- хук завершения задачи (шаги 3d-b, 3b) ---------------------------
         # ``_post_process`` зовётся синхронно из потока воркера под ``_emit``:
         # ни чтения файла, ни записи в БД здесь — только постановка в пул.
-        # Один воркер: записи наблюдений не должны обгонять друг друга
-        # (порядок measured_at и id остаётся предсказуемым).
+        # Один воркер: записи не должны обгонять друг друга (порядок
+        # measured_at и id остаётся предсказуемым).
         post_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="post")
         application.state.post_executor = post_executor
 
+        def _read_result(job_id: str, result_path: Path) -> Any:
+            """Прочитать ``result.json`` задачи; ошибка — в лог, ``None`` наружу."""
+            try:
+                return json.loads(result_path.read_text(encoding="utf-8"))
+            except Exception as error:  # noqa: BLE001 - битый файл не роняет приложение
+                logger.error("не читается результат задачи %s: %s", job_id, error)
+                return None
+
+        def _record_observations(job_id: str, result_path: Path) -> None:
+            """``packages.check``: строки наблюдений → ``Store.record_observations``."""
+            rows = _read_result(job_id, result_path)
+            if rows is None:
+                return
+            if not isinstance(rows, list):
+                logger.error("результат задачи %s: ожидался список строк", job_id)
+                return
+            try:
+                ids = application.state.store.record_observations(
+                    rows, run_id=job_id
+                )
+                logger.info("записано наблюдений: %d (задача %s)", len(ids), job_id)
+            except Exception as error:  # noqa: BLE001 - БД не должна ронять приложение
+                logger.error("record_observations не удался для %s: %s", job_id, error)
+
+        def _record_events(job_id: str, result_path: Path) -> None:
+            """``monitor.diff``: ``{"events": [...]}`` → ``Store.record_events``.
+
+            Формат — объект с ключом ``events`` (так его пишет
+            ``cli.check_predecessors --diff`` под ``--job-json``); список
+            верхнего уровня тоже принимается — старые result.json и ручные
+            прогоны. Строки без ``kind``/``name`` не пишутся: ``events.kind``
+            в схеме NOT NULL, и одна мусорная строка отменила бы весь батч.
+            """
+            payload = _read_result(job_id, result_path)
+            if payload is None:
+                return
+            raw = payload.get("events") if isinstance(payload, dict) else payload
+            if not isinstance(raw, list):
+                logger.error("результат задачи %s: нет списка events", job_id)
+                return
+            events = [
+                event
+                for event in raw
+                if isinstance(event, dict) and event.get("kind") and event.get("name")
+            ]
+            if len(events) != len(raw):
+                logger.warning(
+                    "задача %s: пропущено строк без kind/name — %d",
+                    job_id,
+                    len(raw) - len(events),
+                )
+            try:
+                ids = application.state.store.record_events(events, run_id=job_id)
+                logger.info("записано событий: %d (задача %s)", len(ids), job_id)
+            except Exception as error:  # noqa: BLE001 - БД не должна ронять приложение
+                logger.error("record_events не удался для %s: %s", job_id, error)
+
+        def _record_catalog(job_id: str, result_path: Path) -> None:
+            """``catalog.build``: каталог и его элементы → таблицы catalogs*.
+
+            ``catalog_id`` — id задачи: каталог и задача — одна сущность в
+            жизни пользователя («каталог, собранный такой-то задачей»), и
+            экран открывает его сразу по id из ответа ``POST /api/catalogs``.
+            ``path`` — сам result.json: по нему видно, что читал хук.
+            """
+            payload = _read_result(job_id, result_path)
+            if payload is None:
+                return
+            if not isinstance(payload, dict):
+                logger.error(
+                    "результат задачи %s: ожидался объект каталога", job_id
+                )
+                return
+            queries = payload.get("queries") or []
+            stats = payload.get("stats") or {}
+            items = payload.get("items") or []
+            if not isinstance(items, list):
+                logger.error("результат задачи %s: items — не список", job_id)
+                return
+            try:
+                store_ = application.state.store
+                store_.record_catalog(
+                    catalog_id=job_id,
+                    queries=[str(query) for query in queries],
+                    stats=stats if isinstance(stats, dict) else {},
+                    path=str(result_path),
+                )
+                written = store_.record_catalog_items(job_id, items)
+                logger.info("записан каталог %s: элементов %d", job_id, written)
+            except Exception as error:  # noqa: BLE001 - БД не должна ронять приложение
+                logger.error("record_catalog не удался для %s: %s", job_id, error)
+
+        #: kind → что делать с result.json. Таблица, а не цепочка ``if``:
+        #: новый вид задачи с записью в БД — одна строка, и обработчик виден
+        #: целиком в одном месте.
+        _POST_PROCESS_KINDS: dict[str, Callable[[str, Path], None]] = {
+            "packages.check": _record_observations,
+            "monitor.diff": _record_events,
+            "catalog.build": _record_catalog,
+        }
+
         def _post_process(job_id: str, event_type: str, _data: dict) -> None:
-            """Callback :meth:`JobQueue.subscribe`: записать наблюдения задачи.
+            """Callback :meth:`JobQueue.subscribe`: записать результат задачи.
 
             Вызывается из потока воркера (синхронно, под ``_emit``). Не должен
             блокировать emit и не должен бросать исключения — поэтому всё
@@ -711,36 +1008,19 @@ def create_app(
                     "post_process: queue.get(%s) не удался: %s", job_id, error
                 )
                 return
-            if not job or job.kind != "packages.check":
+            if not job:
+                return
+            recorder = _POST_PROCESS_KINDS.get(job.kind)
+            if recorder is None:
                 return
             result_path = data_dir / "jobs" / f"{job_id}.result.json"
             if not result_path.exists():
-                logger.warning("нет result.json для задачи %s", job_id)
+                logger.warning(
+                    "нет result.json для задачи %s (%s)", job_id, job.kind
+                )
                 return
-
-            def _record() -> None:
-                """Прочитать результат CLI и записать его наблюдения (в пуле)."""
-                try:
-                    rows = json.loads(result_path.read_text(encoding="utf-8"))
-                except Exception as error:  # noqa: BLE001 - битый файл не роняет приложение
-                    logger.error(
-                        "не читается результат задачи %s: %s", job_id, error
-                    )
-                    return
-                try:
-                    ids = application.state.store.record_observations(
-                        rows, run_id=job_id
-                    )
-                    logger.info(
-                        "записано наблюдений: %d (задача %s)", len(ids), job_id
-                    )
-                except Exception as error:  # noqa: BLE001 - БД не должна ронять приложение
-                    logger.error(
-                        "record_observations не удался для %s: %s", job_id, error
-                    )
-
             try:
-                post_executor.submit(_record)
+                post_executor.submit(recorder, job_id, result_path)
             except RuntimeError as error:
                 # пул уже закрыт (идёт shutdown) — терять нечего, только сообщить
                 logger.warning(
@@ -1120,6 +1400,168 @@ def create_app(
             },
         }
 
+    # --- каталоги (шаг 3b) ----------------------------------------------------
+
+    @application.post("/api/catalogs", status_code=202)
+    def create_catalog(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Собрать каталог: ``{"phrases", "min_stars", "pages", "sources"}`` → 202.
+
+        Ответ — задача, а не каталог: сборка ходит в GitHub/npm/реестр минутами,
+        а обработчик по правилу §7 не имеет права на сеть. ``catalog_id`` равен
+        ``job_id``: хук lifespan пишет каталог под id задачи, и экран может
+        открыть детальный экран сразу, не дожидаясь списка.
+
+        Валидация строже ``POST /api/jobs`` (границы фраз/страниц/источников,
+        см. :func:`_catalog_params`): задача на 300 запросов к GitHub Search не
+        должна получить 202 и умереть в лимите через час.
+        """
+        params, problems = _catalog_params(payload)
+        if not problems:
+            # Тот же валидатор, которым проверяет ``POST /api/jobs``: если
+            # таблицы ``app/jobs.py`` разойдутся с этим эндпоинтом, ответ будет
+            # 400 сразу, а не 202 с задачей, которая умрёт в runner'е.
+            problems = _param_errors("catalog.build", params)
+        if problems:
+            raise HTTPException(status_code=400, detail="; ".join(problems))
+        job_id = _queue(request).submit("catalog.build", params)
+        return {"job_id": job_id, "catalog_id": job_id}
+
+    @application.get("/api/catalogs")
+    def list_catalogs(request: Request) -> dict[str, Any]:
+        """Список каталогов: ``id``, фразы, дата, статистика, число элементов.
+
+        Отсортировано по ``created_at DESC`` — свежая сборка сверху, как у
+        задач. ``items_count`` считается в том же запросе к SQLite: экран
+        рисует список целиком, и COUNT на каждый каталог был бы N+1.
+        """
+        limit = _query_int(
+            "limit",
+            request.query_params.get("limit"),
+            default=CATALOGS_LIMIT_DEFAULT,
+            low=1,
+            high=CATALOGS_LIMIT_MAX,
+        )
+        return {"catalogs": _store(request).list_catalogs(limit=limit)}
+
+    @application.get("/api/catalogs/{catalog_id}")
+    def get_catalog(catalog_id: str, request: Request) -> dict[str, Any]:
+        """Метаданные каталога + ``items_count``; неизвестный id — 404."""
+        store = _store(request)
+        catalog = store.get_catalog(catalog_id)
+        if catalog is None:
+            raise HTTPException(
+                status_code=404, detail=f"каталог {catalog_id} не найден"
+            )
+        catalog["items_count"] = store.count_catalog_items(catalog_id)
+        return catalog
+
+    @application.get("/api/catalogs/{catalog_id}/items")
+    def get_catalog_items(catalog_id: str, request: Request) -> dict[str, Any]:
+        """Элементы каталога: ``alive``, ``lang``, ``min_stars``, ``q`` + пагинация.
+
+        ``total`` считается тем же набором фильтров, что и страница (общий
+        построитель WHERE в ``Store._catalog_items_where``): экран показывает
+        «N элементов» и число страниц, и расхождение счётчика со списком
+        заметно сразу.
+
+        Пустые значения фильтров — как отсутствие фильтра: ``catalog_detail.js``
+        отправляет ``alive=`` всегда, даже когда чипс «Все» активен.
+        """
+        store = _store(request)
+        if store.get_catalog(catalog_id) is None:
+            raise HTTPException(
+                status_code=404, detail=f"каталог {catalog_id} не найден"
+            )
+        params = request.query_params
+        alive = _bool_query("alive", params.get("alive"))
+        lang = params.get("lang") or None
+        q = params.get("q") or None
+        raw_stars = params.get("min_stars")
+        min_stars = (
+            _query_int("min_stars", raw_stars, default=0, low=0)
+            if raw_stars not in (None, "")
+            else None
+        )
+        limit = _query_int(
+            "limit",
+            params.get("limit"),
+            default=CATALOG_ITEMS_LIMIT_DEFAULT,
+            low=1,
+            high=CATALOG_ITEMS_LIMIT_MAX,
+        )
+        offset = _query_int("offset", params.get("offset"), default=0, low=0)
+        items = store.get_catalog_items(
+            catalog_id,
+            alive=alive,
+            lang=lang,
+            min_stars=min_stars,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
+        total = store.count_catalog_items(
+            catalog_id, alive=alive, lang=lang, min_stars=min_stars, q=q
+        )
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @application.post("/api/catalogs/{catalog_id}/export")
+    def export_catalog(catalog_id: str, request: Request) -> Response:
+        """Выгрузка каталога файлом: ``?format=csv`` (по умолчанию) или ``md``.
+
+        Отдаётся весь каталог, а не текущая страница экрана: выгрузка — это
+        «забрать всё в Excel», и фильтры страницы в файл не переносятся
+        (их можно повторить запросом, но файл с 100 строками из 900 был бы
+        ловушкой).
+
+        CSV — ``utf-8-sig``: без BOM Excel открывает кириллицу как cp1251 и
+        показывает «Ð¡Ð¾Ð±Ñ‹Ñ‚Ð¸Ñ». Markdown собирает ``core.catalog.to_markdown`` —
+        тот же формат, что у CLI-выгрузки каталога.
+        """
+        store = _store(request)
+        catalog = store.get_catalog(catalog_id)
+        if catalog is None:
+            raise HTTPException(
+                status_code=404, detail=f"каталог {catalog_id} не найден"
+            )
+        export_format = (request.query_params.get("format") or "csv").strip().lower()
+        if export_format not in ("csv", "md"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "format: допустимо csv или md, "
+                    f"пришло {request.query_params.get('format')!r}"
+                ),
+            )
+        total = store.count_catalog_items(catalog_id)
+        items = store.get_catalog_items(catalog_id, limit=max(total, 1))
+        if export_format == "csv":
+            buffer = io.StringIO()
+            writer = csv.writer(buffer, lineterminator="\r\n")
+            writer.writerow(CATALOG_CSV_HEADER)
+            writer.writerows(_catalog_rows(items))
+            body = buffer.getvalue().encode("utf-8-sig")
+            media_type = "text/csv; charset=utf-8"
+            filename = f"catalog-{catalog_id}.csv"
+        else:
+            body = _catalog_markdown(catalog, items).encode("utf-8")
+            media_type = "text/markdown; charset=utf-8"
+            filename = f"catalog-{catalog_id}.md"
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                # Ответ зависит от БД, а не от кэша браузера: повторная
+                # выгрузка после пересборки должна содержать новые строки.
+                "Cache-Control": "no-store",
+            },
+        )
+
     # --- настройки (шаг 2c) ---------------------------------------------------
 
     @application.get("/api/settings")
@@ -1251,6 +1693,34 @@ def create_app(
         """
         return templates.TemplateResponse(
             request=request, name="monitor.html", context={"version": VERSION}
+        )
+
+    @application.get("/catalogs")
+    async def catalogs_screen(request: Request):
+        """Экран «Каталоги» (шаг 3b): список каталогов и форма сборки.
+
+        Список и форма — ``catalogs.js`` поверх ``GET/POST /api/catalogs``:
+        каталог приходит из задачи (фразы, число элементов), и сервер не
+        впечатывает его в HTML — та же причина, что у «Пакетов».
+        """
+        return templates.TemplateResponse(
+            request=request, name="catalogs.html", context={"version": VERSION}
+        )
+
+    @application.get("/catalogs/{catalog_id}")
+    async def catalog_detail_screen(catalog_id: str, request: Request):
+        """Экран каталога (шаг 3b): элементы, фильтры, пагинация, экспорт.
+
+        ``catalog_id`` подставляется в шаблон только как данные для JS
+        (``catalog_detail.js`` берёт его из ``location.pathname``); проверки
+        существования здесь нет — экран сам покажет «каталог не найден» по 404
+        от ``GET /api/catalogs/{id}``, а 404 на странице означал бы, что окно
+        не открывается вовсе.
+        """
+        return templates.TemplateResponse(
+            request=request,
+            name="catalog_detail.html",
+            context={"version": VERSION, "catalog_id": catalog_id},
         )
 
     @application.get("/settings")

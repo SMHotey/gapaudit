@@ -152,3 +152,91 @@ def test_job_emitter_clamps_progress(capsys: pytest.CaptureFixture[str]) -> None
 
     values = [message["progress"] for message in protocol(capsys.readouterr().out)]
     assert values == [1.0, 0.0]
+
+
+# --- --diff: формат результата (шаг 3b) --------------------------------------
+
+
+def baseline(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
+    """Прошлый прогон: файл наблюдений + изменённая версия — baseline для --diff."""
+    monkeypatch.setenv(_common.ENV_FAKE_HTTP, "1")
+    prev_path = tmp_path / "prev.json"
+    check_predecessors.main(["requests", "--quiet", "--json-out", str(prev_path)])
+    previous = json.loads(prev_path.read_text(encoding="utf-8"))
+    # версия в прошлом прогоне другая — сравнение обязано дать событие release
+    previous[0]["ver"] = "0.0.1"
+    previous[0]["date"] = "2020-01-01"
+    prev_path.write_text(json.dumps(previous), encoding="utf-8")
+    monkeypatch.setenv(_common.ENV_FAKE_HTTP, "1")
+    return prev_path
+
+
+def test_diff_under_job_json_writes_events_object(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """result.json задачи — объект ``{"events": [...]}``, а не список наблюдений.
+
+    Иначе хук lifespan не может записать события: ``Store.record_events`` ждёт
+    записи с ``kind``/``name``, а список наблюдений — это другая форма.
+    """
+    prev_path = baseline(tmp_path, monkeypatch)
+    result_path = tmp_path / "jobs" / "abc.result.json"
+
+    code = check_predecessors.main([
+        "requests", "--job-json", "--json-out", str(result_path),
+        "--diff", str(prev_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert isinstance(payload["events"], list)
+    assert [event["kind"] for event in payload["events"]] == ["release"]
+    assert payload["events"][0]["name"] == "requests"
+    assert set(payload["events"][0]) >= {"kind", "name", "detail"}
+    # наблюдения не потеряны: файл остаётся пригодным как baseline
+    assert payload["observations"][0]["name"] == "requests"
+
+
+def test_diff_without_job_json_keeps_list_and_prints_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Автономный CLI: печать сравнения на месте, а --json-out — по-прежнему список.
+
+    Файл используется как baseline следующего ``--diff``, поэтому формат
+    «ради очереди» здесь менять нельзя (Железное правило 2: CLI автономен).
+    """
+    prev_path = baseline(tmp_path, monkeypatch)
+    out_path = tmp_path / "current.json"
+
+    code = check_predecessors.main([
+        "requests", "--json-out", str(out_path), "--diff", str(prev_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert f"ИЗМЕНЕНИЯ с {prev_path}" in captured.out
+    assert "РЕЛИЗ" in captured.out
+    stored = json.loads(out_path.read_text(encoding="utf-8"))
+    assert isinstance(stored, list)
+    assert stored[0]["name"] == "requests"
+
+
+def test_diff_with_missing_baseline_is_quiet_for_humans(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Нет файла сравнения — как раньше: ни печати, ни падения (legacy-поведение)."""
+    monkeypatch.setenv(_common.ENV_FAKE_HTTP, "1")
+    out_path = tmp_path / "current.json"
+
+    code = check_predecessors.main([
+        "requests", "--json-out", str(out_path), "--diff", str(tmp_path / "нет.json"),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "ИЗМЕНЕНИЯ" not in captured.out
+    assert isinstance(json.loads(out_path.read_text(encoding="utf-8")), list)

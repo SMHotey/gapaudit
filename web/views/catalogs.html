@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Каталоги — GapAudit{% endblock %}
+{% block content %}
+{# Экран «Каталоги» (шаг 3b, DEVPLAN §9 п. 4). Два уровня: здесь — список
+   каталогов и форма сборки по фразам; детальный экран — /catalogs/{id}.
+
+   Строки списка рисует catalogs.js из GET /api/catalogs: id, фразы и число
+   элементов приходят из задачи, в разметку они не попадают (gotcha 37).
+   Форма скрыта до нажатия «Новый каталог» — сборка каталога не ежедневное
+   действие, и держать её открытой на экране списка незачем. #}
+<section class="toolbar">
+  <h2>Каталоги</h2>
+  <div class="toolbar-right">
+    <button class="btn btn-primary" id="new-catalog" type="button">Новый каталог</button>
+    <button class="btn" id="refresh" type="button">Обновить</button>
+  </div>
+</section>
+
+<section id="new-catalog-form" class="new-catalog-form" hidden>
+  <h3>Собрать каталог</h3>
+  <form id="catalog-form">
+    <label>Фразы (по одной на строку):
+      <textarea name="phrases" rows="3" required
+                placeholder="test impact analysis&#10;flaky test detection"></textarea>
+    </label>
+    <label>Мин. звёзд:
+      <input type="number" name="min_stars" value="20" min="0">
+    </label>
+    <label>Страниц на фразу:
+      <input type="number" name="pages" value="2" min="1" max="10">
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Собрать</button>
+      <button type="button" class="btn" id="cancel-new">Отмена</button>
+    </div>
+    <div id="catalog-msg" class="settings-msg" hidden></div>
+  </form>
+</section>
+
+<section>
+  <table class="table" id="catalogs-table">
+    <thead><tr>
+      <th>ID</th><th>Фразы</th><th>Элементов</th>
+      <th>Создан</th><th></th>
+    </tr></thead>
+    <tbody id="catalogs-body">
+      <tr><td colspan="5"><div class="empty">Загрузка…</div></td></tr>
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/catalogs.js"></script>
+{% endblock %}

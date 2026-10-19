@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Каталог — GapAudit{% endblock %}
+{% block content %}
+{# Экран каталога (шаг 3b, DEVPLAN §9 п. 4). Заголовок собирает
+   catalog_detail.js из location.pathname и GET /api/catalogs/{id};
+   идентификатор в разметку не впечатывается — он приходит от пользователя
+   (адрес страницы), и gotcha 37 требует держать такие строки вне innerHTML.
+
+   Фильтры: чипсы «живые/заброшенные» (push за 90 дней), порог звёзд и поиск
+   по имени/описанию. Всё — серверные фильтры: каталог бывает на тысячи строк,
+   и фильтрация в браузере потребовала бы загрузить их все. #}
+<section class="toolbar">
+  <a href="/catalogs" class="btn">← К списку</a>
+  <h2 id="catalog-title">Каталог</h2>
+  <div class="toolbar-right">
+    <span id="items-counter" class="muted">—</span>
+    <button class="btn" id="export-csv" type="button">CSV</button>
+    <button class="btn" id="export-md" type="button">Markdown</button>
+    <button class="btn" id="refresh" type="button">Обновить</button>
+  </div>
+</section>
+
+<section class="toolbar">
+  <div class="chips" id="alive-filter">
+    <button class="chip active" data-alive="" type="button">Все</button>
+    <button class="chip" data-alive="true" type="button">Живые</button>
+    <button class="chip" data-alive="false" type="button">Заброшенные</button>
+  </div>
+  <div class="toolbar-right">
+    <input type="number" id="filter-stars" placeholder="min ★"
+           class="search-input" min="0">
+    <input type="search" id="filter-q"
+           placeholder="Поиск по имени/описанию"
+           class="search-input">
+  </div>
+</section>
+
+<section>
+  <table class="table" id="items-table">
+    <thead><tr>
+      <th>Проект</th><th>★</th><th>Язык</th><th>Push</th>
+      <th>Описание</th><th>Источники</th>
+    </tr></thead>
+    <tbody id="items-body">
+      <tr><td colspan="6"><div class="empty">Загрузка…</div></td></tr>
+    </tbody>
+  </table>
+  <div class="pagination" id="items-pagination"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/catalog_detail.js"></script>
+{% endblock %}
