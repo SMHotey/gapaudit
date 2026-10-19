@@ -91,6 +91,33 @@ def test_delete_takes_token_from_header_not_query(client: TestClient) -> None:
     assert passed.status_code == 405
 
 
+# --- resume: заглушка 501 (шаг 3c) -------------------------------------------
+
+
+def test_resume_with_header_token_is_501(client: TestClient) -> None:
+    """Метод методом есть (шаг 3c), продолжать пока нечего — 501 (3d)."""
+    response = client.post(f"/api/jobs/{'a' * 32}/resume", headers=auth())
+
+    assert response.status_code == 501
+    assert "3d" in response.json()["detail"]
+
+
+def test_resume_without_token_is_forbidden(client: TestClient) -> None:
+    response = client.post(f"/api/jobs/{'a' * 32}/resume")
+
+    assert response.status_code == 403
+    assert "токен" in response.json()["detail"]
+
+
+def test_resume_takes_token_from_header_not_query(client: TestClient) -> None:
+    """``/resume`` — мутация: query-токен миддлварь не принимает."""
+    forbidden = client.post(f"/api/jobs/{'a' * 32}/resume?{TOKEN_QUERY}={TOKEN}")
+    passed = client.post(f"/api/jobs/{'a' * 32}/resume", headers=auth())
+
+    assert forbidden.status_code == 403
+    assert passed.status_code == 501
+
+
 # --- SSE: все три места, включая query ---------------------------------------
 
 
@@ -137,10 +164,13 @@ def test_health_without_token_is_200(client: TestClient) -> None:
 
 
 def test_index_without_token_is_200(client: TestClient) -> None:
+    """Экран шага 3c: список задач, счётчик и кнопка обновления."""
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "каркас работает" in response.text
+    assert "GapAudit" in response.text
+    assert 'id="counter"' in response.text  # индикатор «N задач (M в работе)»
+    assert 'id="refresh"' in response.text  # кнопка «Обновить»
 
 
 # --- Host / Origin -----------------------------------------------------------

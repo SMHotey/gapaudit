@@ -6,8 +6,10 @@
 
 Контракт (DEVPLAN §6):
 
-* статусы ``queued → running → done | failed | cancelled`` (``interrupted``
-  и восстановление — шаг 3c);
+* статусы ``queued → running → done | failed | cancelled``; ``interrupted``
+  — задача работала, когда приложение упало: её переводит
+  :meth:`JobQueue.recover_interrupted` на старте (шаг 3c), продолжает
+  :meth:`JobQueue.resume_interrupted`;
 * параллелизм — ``Settings.max_parallel_jobs`` воркеров;
 * отмена — сначала пустой файл ``<data_dir>/jobs/<id>.cancel`` (его читает
   сам подпроцесс), через ``cancel_grace_sec`` — ``terminate`` процесса;
@@ -320,6 +322,78 @@ class JobQueue:
         )
         return self._status_of(job_id) == "cancelled"
 
+    def recover_interrupted(self) -> list[str]:
+        """Восстановить задачи, работавшие в упавшем приложении (шаг 3c).
+
+        Все jobs со ``status='running'`` и непустым ``started_at`` — задачи,
+        которые работали, когда приложение упало: воркеры умерли вместе с
+        процессом, подпроцессы — почти наверняка тоже. Они переводятся в
+        ``interrupted`` (а не ``failed``: это не ошибка задачи, это остановка
+        приложения), и пользователь решает, продолжать ли их.
+
+        ``running`` без ``started_at`` не трогаем: такого быть не должно, а
+        молча менять чужие данные мы не вправе.
+
+        Возвращает список восстановленных ``job_id``. Вызывается из
+        lifespan (``app/web.py``) **до** :meth:`start` — из ``__init__``
+        не вызывается: конструктор не должен менять хранилище.
+        """
+        recovered: list[str] = []
+        with self._lock:
+            for row in self._store.list_jobs(status="running"):
+                if not row.get("started_at"):
+                    continue
+                job_id = str(row["id"])
+                self._store.update_job(job_id, status="interrupted")
+                recovered.append(job_id)
+        return recovered
+
+    def resume_interrupted(self, job_id: str) -> bool:
+        """Продолжить ``interrupted``-задачу; True — задача поставлена в очередь.
+
+        * задача не найдена или не в ``interrupted`` → ``False`` (продолжать
+          нечего и/или нечего продолжать);
+        * ``log_path`` пуст или файла нет → ``False`` (лог прошлого запуска —
+          свидетельство, что запуск вообще был, а пустой путь означает
+          задачу, стоявшую в очереди: её и статус был бы ``queued``);
+        * дальше: сброс полей прошлого запуска (``started_at``/``finished_at``/
+          ``error``/``progress``/``message``) → ``queued``, следы прошлого
+          запуска в памяти очереди стираются, файл ``<id>.cancel`` удаляется
+          (отмена, не дошедшая до конца перед падением, не должна убить
+          возобновлённую задачу), задача кладётся в рабочий deque.
+
+        API-эндпоинт ``POST /api/jobs/{id}/resume`` — заглушка 501 в шаге
+        3c, реальный вызов вместе с ``--job-json`` — в шаге 3d.
+        """
+        row = self._store.get_job(job_id)
+        if row is None or row["status"] != "interrupted":
+            return False
+        log_path = str(row.get("log_path") or "")
+        if not log_path or not Path(log_path).exists():
+            return False
+        with self._lock:
+            # следы прошлого запуска в памяти: финализация/отмена не должны
+            # блокировать новый старт (иначе _run_job увидит _finalized и
+            # тихо откатит задачу в cancelled).
+            self._finalized.discard(job_id)
+            self._cancel_flags.discard(job_id)
+            self._progress_emits.pop(job_id, None)
+            self._store.update_job(
+                job_id,
+                status="queued",
+                error=None,
+                started_at=None,
+                finished_at=None,
+                progress=0.0,
+                message="",
+            )
+        try:
+            (self.jobs_dir / f"{job_id}.cancel").unlink(missing_ok=True)
+        except OSError:
+            pass  # файла и не было — это норма, а блокировать возобновление нельзя
+        self._enqueue(job_id)
+        return True
+
     def get(self, job_id: str) -> Job | None:
         """Задача из Store (источник правды) или None."""
         row = self._store.get_job(job_id)
@@ -545,6 +619,13 @@ class JobQueue:
             return  # лог уже закрыт или процесс убит — не роняем воркер
 
     # --- отмена и финализация ------------------------------------------------
+
+    def _enqueue(self, job_id: str) -> None:
+        """Положить id в рабочий deque и разбудить воркеров (под ``_cond``)."""
+        with self._cond:
+            if job_id not in self._queue:
+                self._queue.append(job_id)
+                self._cond.notify()
 
     def _request_cancel(self, job_id: str) -> None:
         """Флаг отмены в памяти + пустой файл ``<id>.cancel`` для подпроцесса."""

@@ -201,6 +201,7 @@ JOB_KINDS = {
 | GET | `/jobs` | список задач и статусы |
 | POST | `/jobs` | создать задачу (`kind`, `params`) |
 | POST | `/jobs/{id}/cancel` | отмена |
+| POST | `/jobs/{id}/resume` | продолжение `interrupted`-задачи (3c: заглушка 501; реальная — 3d) |
 | GET | `/jobs/{id}/log` | хвост лога задачи |
 | GET | `/api/stream` | SSE: прогресс задач и события |
 | POST | `/api/packages/check` | прогон имён (adoption × признак) |

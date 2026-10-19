@@ -27,8 +27,11 @@
   ``app.state``; на выключении гасит очередь и закрывает БД.
 
 * **эндпоинты** (§7): задачи ``/api/jobs*`` (создание, список, карточка,
-  отмена, хвост лога), SSE ``/api/stream``, пакеты ``/api/packages*``,
-  расширенный ``/api/health``.
+  отмена, хвост лога, ``POST /resume`` — заглушка 501), SSE ``/api/stream``,
+  пакеты ``/api/packages*``, расширенный ``/api/health``.
+* **восстановление после падения** (шаг 3c): lifespan зовёт
+  ``JobQueue.recover_interrupted()`` до ``queue.start()`` — задачи,
+  работавшие в упавшем приложении, становятся ``interrupted``.
 
 Правило обработчиков (§7): никакой сетевой работы — только чтение SQLite и
 очереди; всё долгое уходит в задачу. События ``started`` и ``status`` не
@@ -46,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import secrets
 import threading
@@ -68,6 +72,12 @@ from app.store import Store
 from core.settings import Settings, from_env, resolve_data_dir
 
 __version__ = "0.1.0"
+
+#: Логгер этого модуля: в ``lifespan`` он сообщает, какие задачи восстановлены
+#: после падения приложения (шаг 3c). ``print`` в ``web.py`` запрещён —
+#: вывод бэкенда принадлежит uvicorn'у, а мы пишем через logging.
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "GhOkCache",
     "JOB_KINDS",
@@ -359,6 +369,16 @@ def create_app(
         queue = JobQueue(
             store, data_dir=data_dir, settings=resolved_settings, runner=runner
         )
+        # Задачи, работавшие в упавшем приложении, — interrupted: это видно
+        # в GET /api/jobs, а в лог уходит список id (шаг 3c). До queue.start():
+        # восстановление не должно гоняться параллельно с воркерами.
+        recovered = queue.recover_interrupted()
+        if recovered:
+            logger.info(
+                "восстановлено прерванных задач: %d (%s)",
+                len(recovered),
+                ", ".join(recovered),
+            )
         queue.start()
         application.state.store = store
         application.state.queue = queue
@@ -444,6 +464,21 @@ def create_app(
         if queue.get(job_id) is None:
             raise HTTPException(status_code=404, detail=f"задача {job_id} не найдена")
         return {"cancelled": queue.cancel(job_id)}
+
+    @application.post("/api/jobs/{job_id}/resume")
+    async def resume_job(job_id: str, request: Request) -> dict[str, Any]:
+        """Заглушка шага 3c: продолжение прерванной задачи ещё не работает.
+
+        ``501`` — честный ответ для кнопки «Продолжить» из ``index.html``:
+        сам метод :meth:`JobQueue.resume_interrupted` уже есть, а вызывать
+        его из HTTP будем в шаге 3d, там же, где реальные ``cli/*`` через
+        ``--job-json`` (до тех пор продолжать нечего: реальных прерванных
+        задач приложение ещё не умеет выполнять).
+        """
+        raise HTTPException(
+            status_code=501,
+            detail="продолжение задачи появится в шаге 3d (реальные cli-задачи)",
+        )
 
     @application.get("/api/jobs/{job_id}/log", response_class=PlainTextResponse)
     async def job_log(job_id: str, request: Request) -> str:

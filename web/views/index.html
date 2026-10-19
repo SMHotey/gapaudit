@@ -6,50 +6,205 @@
 <style>
   :root { color-scheme: dark; }
   body {
-    margin: 0; padding: 3rem 2rem; min-height: 100vh; box-sizing: border-box;
+    margin: 0; padding: 2rem; min-height: 100vh; box-sizing: border-box;
     background: #14161a; color: #e8eaed;
     font: 15px/1.55 "Segoe UI", system-ui, sans-serif;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
   }
-  h1 { font-size: 1.6rem; font-weight: 600; margin: 0 0 .75rem; }
+  h1 { font-size: 1.5rem; font-weight: 600; margin: 0 0 .75rem; }
   p  { margin: .35rem 0; color: #a9b0ba; }
   code { background: #22262d; padding: .1rem .35rem; border-radius: 4px; color: #d6dae0; }
+  .row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
   .card { background: #1b1f25; border: 1px solid #2b3138; border-radius: 10px;
-          padding: 1.75rem 2rem; max-width: 640px; width: 100%; text-align: center; }
-  #health { margin-top: 1rem; font-family: Consolas, monospace; font-size: .9rem; }
+          padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+  #counter { font-family: Consolas, monospace; }
+  #counter .busy { color: #f2c94c; }
+  #counter .idle { color: #6fcf97; }
+  button { background: #2b3138; color: #e8eaed; border: 1px solid #3a424c;
+           border-radius: 6px; padding: .4rem .9rem; font: inherit; cursor: pointer; }
+  button:hover { background: #343c46; }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #2b3138;
+           vertical-align: top; }
+  th { color: #a9b0ba; font-weight: 600; }
+  td.id { font-family: Consolas, monospace; color: #767f8b; }
+  #health { font-family: Consolas, monospace; font-size: .9rem; }
   .ok { color: #6fcf97; } .bad { color: #eb5757; }
-  .hint { margin-top: 1.5rem; font-size: .82rem; color: #767f8b; }
+  .hint { font-size: .82rem; color: #767f8b; }
+  .status-queued    { color: #a9b0ba; }
+  .status-running   { color: #f2c94c; }
+  .status-done      { color: #6fcf97; }
+  .status-failed    { color: #eb5757; }
+  .status-cancelled { color: #767f8b; }
+  .status-interrupted { color: #f2994a; }
 </style>
 </head>
 <body>
-  <div class="card">
-    <h1>GapAudit — каркас работает</h1>
-    <p>Версия приложения: <code>{{ version }}</code></p>
-    <p>Связка pywebview + FastAPI + uvicorn поднялась, токен-миддлварь пропустил запрос.</p>
-    <div id="health"><span class="hint">проверяю /api/health…</span></div>
-    <p class="hint">Это единственный экран шага 0.1. Метод, БД и рабочие экраны — следующие шаги плана.</p>
+  <h1>GapAudit</h1>
+
+  <div class="card row">
+    <span id="counter">задачи не читал — нажмите «Обновить»</span>
+    <button id="refresh" type="button">Обновить</button>
+    <span id="health"><span class="hint">проверяю /api/health…</span></span>
   </div>
 
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>id</th><th>kind</th><th>статус</th><th>прогресс</th><th>сообщение</th><th></th></tr>
+      </thead>
+      <tbody id="jobs">
+        <tr><td colspan="6" class="hint">список пуст — «Обновить» покажет задачи</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="hint">
+    Версия приложения: <code>{{ version }}</code>. Каркас работает: связка
+    pywebview + FastAPI + uvicorn, токен-миддлварь, SSE-поток событий задач.
+    Запуск реальных задач (CLI через <code>--job-json</code>) — шаг 3d.
+  </p>
+
 <script>
-// Токен приходит в query-параметре от desktop.py; дальше он же уходит заголовком,
-// чтобы проверить, что миддлварь действительно работает, а не просто «страница есть».
+// Токен приходит в query-параметре от desktop.py и уходит заголовком во все
+// /api/*-запросы (мутациям query запрещён — app/web.py, матрица токена).
 const token = new URLSearchParams(location.search).get('token') || '';
-const box = document.getElementById('health');
-fetch('/api/health', { headers: token ? { 'X-GapAudit-Token': token } : {} })
+const headers = () => (token ? { 'X-GapAudit-Token': token } : {});
+
+const state = {
+  jobs: [],        // последние известные задачи (источник — GET /api/jobs)
+  running: 0,      // счётчик «в работе»: растёт по started, падает по done/failed/cancelled
+  fetched: false,
+};
+
+// --- health -----------------------------------------------------------------
+fetch('/api/health', { headers: headers() })
   .then(async (r) => {
     const body = await r.json().catch(() => ({}));
+    const box = document.getElementById('health');
     if (!r.ok) {
       box.className = 'bad';
       box.textContent = '/api/health → ' + r.status + ' ' + (body.detail || '');
       return;
     }
     box.className = 'ok';
-    box.textContent = '/api/health → ok=' + body.ok + ', version=' + body.version;
+    box.textContent = 'health: ok, version=' + body.version;
   })
   .catch((e) => {
+    const box = document.getElementById('health');
     box.className = 'bad';
     box.textContent = '/api/health недоступен: ' + e;
   });
+
+// --- список задач -----------------------------------------------------------
+function renderCounter() {
+  const box = document.getElementById('counter');
+  if (!state.fetched) {
+    box.textContent = 'задачи не читал — нажмите «Обновить»';
+    return;
+  }
+  const busy = state.running > 0
+    ? '<span class="busy">идёт задача: ' + state.running + ' в работе</span>'
+    : '<span class="idle">ничего не выполняется</span>';
+  box.innerHTML = state.jobs.length + ' задач (' + busy + ')';
+}
+
+function renderJobs() {
+  const body = document.getElementById('jobs');
+  if (!state.jobs.length) {
+    body.innerHTML = '<tr><td colspan="6" class="hint">задач пока нет</td></tr>';
+    return;
+  }
+  body.innerHTML = state.jobs.map((job) => {
+    const resume = job.status === 'interrupted'
+      ? '<button type="button" data-resume="' + job.id + '">Продолжить</button>'
+      : '';
+    const progress = Math.round((job.progress || 0) * 100) + '%';
+    return '<tr>' +
+      '<td class="id">' + job.id + '</td>' +
+      '<td>' + job.kind + '</td>' +
+      '<td class="status-' + job.status + '">' + job.status + '</td>' +
+      '<td>' + progress + '</td>' +
+      '<td>' + (job.message || '') + '</td>' +
+      '<td>' + resume + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function refreshJobs() {
+  return fetch('/api/jobs', { headers: headers() })
+    .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    .then((payload) => {
+      state.jobs = (payload && payload.jobs) || [];
+      state.fetched = true;
+      // правда — серверная: по ней заново считаем, сколько сейчас в работе,
+      // статусы строк мы при этом не «чиним», просто перечитываем список
+      state.running = state.jobs.filter((j) => j.status === 'running').length;
+      renderCounter();
+      renderJobs();
+    })
+    .catch((e) => {
+      document.getElementById('counter').textContent = 'ошибка /api/jobs: ' + e;
+    });
+}
+
+document.getElementById('refresh').addEventListener('click', refreshJobs);
+
+// «Продолжить» для interrupted: в 3c эндпоинт — заглушка 501 (шаг 3d).
+document.getElementById('jobs').addEventListener('click', (event) => {
+  const id = event.target && event.target.getAttribute('data-resume');
+  if (!id) return;
+  fetch('/api/jobs/' + id + '/resume', { method: 'POST', headers: headers() })
+    .then((r) => {
+      if (r.status === 501) {
+        window.alert('Продолжение задачи появится в следующем шаге (3d): реальные cli-задачи через --job-json.');
+        return null;
+      }
+      if (!r.ok) return Promise.reject(r.status);
+      return r.json();
+    })
+    .then((data) => { if (data) refreshJobs(); })
+    .catch((e) => window.alert('POST /api/jobs/' + id + '/resume → ' + e));
+});
+
+// --- SSE: живой счётчик -----------------------------------------------------
+// Инвариант AGENTS gotcha 24: клиент НЕ перезаписывает статусы задач, он только
+// считает «в работе»: started → +1, done/failed/cancelled → −1.
+let refreshTimer = null;
+function scheduleRefresh() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => { refreshTimer = null; refreshJobs(); }, 250);
+}
+
+function openStream() {
+  if (!token) return; // без токена EventSource получит 403 и зациклится
+  const source = new EventSource('/api/stream?token=' + encodeURIComponent(token));
+  const onStarted = () => { state.running += 1; renderCounter(); };
+  const onFinished = () => {
+    state.running = Math.max(0, state.running - 1);
+    renderCounter();
+    scheduleRefresh(); // терминальный статус должен появиться и в таблице
+  };
+  source.addEventListener('started', onStarted);
+  source.addEventListener('done', onFinished);
+  source.addEventListener('failed', onFinished);
+  source.addEventListener('cancelled', onFinished);
+  // created/progress не двигают счётчик: статус задачи не переписываем
+  source.onerror = () => { /* EventSource сам переподключится */ };
+}
+
+// --- подтверждение закрытия окна --------------------------------------------
+// desktop.py вызывает эту функцию из window.events.closing (фоном) и закрывает
+// окно сам, если здесь true. false — пользователь остался в приложении.
+window.confirmClose = function () {
+  const active = state.running > 0
+    ? state.running
+    : state.jobs.filter((j) => j.status === 'queued' || j.status === 'running').length;
+  const what = active > 0 ? ('Активных задач: ' + active + '.') : '';
+  return window.confirm(what + ' Остановить и выйти?');
+};
+
+refreshJobs();
+openStream();
 </script>
 </body>
 </html>

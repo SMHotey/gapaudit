@@ -1,4 +1,4 @@
-"""GapAudit — точка входа приложения (шаг 0.1: только каркас).
+"""GapAudit — точка входа приложения (шаг 3c: окно, задачи, shutdown).
 
 Порядок работы (см. DEVPLAN.md §8):
 
@@ -9,17 +9,32 @@
 5. сразу после готовности health пишем токен в ``<data_dir>/session.token``
    (права 0600) — так его находят внешние клиенты (DEVPLAN §7, шаг 3b);
 6. открываем окно pywebview (или системный браузер в режиме ``--browser``);
-7. по закрытию окна удаляем ``session.token``, останавливаем сервер и выходим
-   с кодом 0 — токен живёт ровно столько, сколько живёт приложение.
+   в оконном режиме за титулом следит фоновый поток «GapAudit — N задач»,
+   а закрытие с активными задачами спрашивает подтверждение (JS ``confirm``);
+7. по закрытию окна гасим очередь задач, останавливаем сервер, удаляем
+   ``session.token`` и выходим с кодом 0 — токен живёт ровно столько, сколько
+   живёт приложение.
 
 ``webview.start()`` вызывается только из ``main()`` и только в главном потоке —
 pywebview этого требует, поэтому бэкенд обязан жить в демоне.
+
+Порядок остановки (AGENTS gotcha 27): окно закрыто → ``queue.stop`` →
+uvicorn ``should_exit`` + join → ``remove_token`` → ``exit(0)``. Очередь,
+которая не уложилась в таймаут, — предупреждение в stderr и всё равно
+exit 0: незакрытое окно хуже незавершённых процессов. Закрытие окна раньше
+~2 с после старта даёт ``E_ABORT (0x80004004)`` из WebView2 — это не ошибка
+(gotcha 10): ловим, пишем в stderr и выходим с 0.
 
 Запуск:
   python desktop.py              обычное приложение
   python desktop.py --dev        devtools включены, логи uvicorn подробные
   python desktop.py --browser    без окна, открыть системный браузер
   python desktop.py --port 8790  фиксированный порт вместо свободного
+
+Переменные окружения: ``GAPAUDIT_DATA_DIR`` (каталог данных) и
+``GAPAUDIT_NO_BROWSER`` (не открывать системный браузер в режиме
+``--browser`` — этим пользуется smoke-тест ``tests/test_desktop_browser_smoke``,
+чтобы проверка не открывала пользователю лишнюю вкладку).
 """
 
 from __future__ import annotations
@@ -33,13 +48,14 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from typing import Any, Callable
 
 import httpx
 import uvicorn
 import webview
 
 from app.session import remove_token, write_token
-from app.web import VERSION, create_app
+from app.web import TOKEN_HEADER, VERSION, create_app
 from core.settings import Settings, from_env, resolve_data_dir
 
 HOST = "127.0.0.1"
@@ -48,6 +64,22 @@ HEALTH_PATH = "/api/health"
 HEALTH_TIMEOUT = 10.0
 HEALTH_POLL_INTERVAL = 0.1
 SHUTDOWN_JOIN_TIMEOUT = 3.0
+
+#: Сколько гасить очередь задач до «принудительно» (gotcha 27).
+QUEUE_STOP_TIMEOUT = 5.0
+#: Как часто обновлять счётчик задач в заголовке окна.
+TITLE_INTERVAL = 2.0
+#: Таймаут одного HTTP-запроса фонового потока заголовка.
+TITLE_HTTP_TIMEOUT = 1.0
+#: Код E_ABORT WebView2 (0x80004004) в беззнаковом и знаковом виде.
+E_ABORT_HRESULT = 0x80004004
+E_ABORT_HRESULT_SIGNED = -2147467260
+
+#: Статусы, которые считаются «активными» для заголовка и диалога закрытия.
+#: ``interrupted`` не считается: это ждущая решения задача, а не работающая.
+ACTIVE_STATUSES = ("queued", "running")
+
+NO_BROWSER_ENV = "GAPAUDIT_NO_BROWSER"
 
 
 def free_port(host: str = HOST) -> int:
@@ -121,6 +153,177 @@ def stop_server(server: uvicorn.Server, thread: threading.Thread | None) -> None
     print("[gapaudit] сервер остановлен")
 
 
+# --- чистая логика (тестируется без окна, tests/test_desktop_logic.py) ----------
+
+
+def _jobs_word(count: int) -> str:
+    """Склонение «задача/задачи/задач»: русская морфология числа."""
+    last_two = count % 100
+    last = count % 10
+    if last == 1 and last_two != 11:
+        return "задача"
+    if 2 <= last <= 4 and not 12 <= last_two <= 14:
+        return "задачи"
+    return "задач"
+
+
+def format_title(active_jobs: int) -> str:
+    """``'GapAudit'`` без задач, ``'GapAudit — N задач(и)'`` с ними."""
+    if active_jobs <= 0:
+        return WINDOW_TITLE
+    return f"{WINDOW_TITLE} — {active_jobs} {_jobs_word(active_jobs)}"
+
+
+def should_confirm_close(active_jobs: int) -> bool:
+    """True — показать диалог «Остановить и выйти / Остаться»; False — закрыть сразу."""
+    return active_jobs > 0
+
+
+def is_e_abort(exc: BaseException) -> bool:
+    """True, если ``exc`` — ``E_ABORT`` WebView2 (закрытие окна до инициализации).
+
+    Распознаём и текст (``"E_ABORT"``, ``"0x80004004"`` — в любом регистре), и
+    числовой ``hresult``/``errno``/``code`` на самом исключении: разные слои
+    (.NET, pywebview, comtypes) отдают одно и то же разными типами.
+    """
+    text = str(exc).upper()
+    if "E_ABORT" in text or "0X80004004" in text:
+        return True
+    for attribute in ("hresult", "errno", "code"):
+        value = getattr(exc, attribute, None)
+        if value in (E_ABORT_HRESULT, E_ABORT_HRESULT_SIGNED):
+            return True
+    return False
+
+
+def count_active(jobs: list[dict[str, Any]]) -> int:
+    """Сколько задач в списках ``queued``/``running`` (``interrupted`` не считаем)."""
+    return sum(1 for job in jobs if job.get("status") in ACTIVE_STATUSES)
+
+
+def active_jobs_count(application: Any) -> int:
+    """Активные задачи из очереди в ``app.state`` (без HTTP, из процесса).
+
+    ``queue`` появляется в ``app.state`` только после lifespan, поэтому до
+    готовности health это 0, а не ошибка.
+    """
+    queue = getattr(getattr(application, "state", None), "queue", None)
+    if queue is None:
+        return 0
+    return count_active([{"status": job.status} for job in queue.list(limit=1000)])
+
+
+def poll_active_jobs(port: int, token: str, *, timeout: float = TITLE_HTTP_TIMEOUT) -> int:
+    """Активные задачи через ``GET /api/jobs`` — так считает фоновый поток окна.
+
+    Один запрос каждые ``TITLE_INTERVAL`` секунд на локальном адресе: дёшево
+    и не требует доступа к ``app.state`` из другого потока.
+    """
+    response = httpx.get(
+        f"http://{HOST}:{port}/api/jobs",
+        headers={TOKEN_HEADER: token},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    jobs = payload.get("jobs") if isinstance(payload, dict) else None
+    return count_active(jobs if isinstance(jobs, list) else [])
+
+
+def title_loop(
+    window: Any,
+    port: int,
+    token: str,
+    stop: threading.Event,
+    *,
+    interval: float = TITLE_INTERVAL,
+    poll: Callable[[int, str], int] | None = None,
+) -> None:
+    """Фоновый поток заголовка: каждые ``interval`` секунд «GapAudit — N задач».
+
+    ``stop`` — ``threading.Event``: поток выходит сразу после закрытия окна.
+    Ошибка запроса (сервер уже гасится) не роняет поток: пропускаем такт.
+    """
+    fetch = poll if poll is not None else poll_active_jobs
+    _update_title(window, port, token, fetch)
+    while not stop.wait(interval):
+        if not _update_title(window, port, token, fetch):
+            return
+
+
+def _update_title(
+    window: Any,
+    port: int,
+    token: str,
+    fetch: Callable[[int, str], int],
+) -> bool:
+    """Один такт: пересчитать активные задачи и написать заголовок. False — выйти."""
+    try:
+        active = fetch(port, token)
+    except Exception:  # noqa: BLE001 - сервер гасится, это не ошибка потока
+        return True
+    try:
+        window.set_title(format_title(active))
+    except Exception:  # noqa: BLE001 - окно закрылось, поток больше не нужен
+        return False
+    return True
+
+
+def make_closing_handler(application: Any, window: Any) -> Callable[[], bool]:
+    """Обработчик ``window.events.closing``: спросить про активные задачи.
+
+    pywebview вызывает обработчик в потоке UI (``Event(..., should_lock=True)``,
+    см. ``webview/event.py``), а ``evaluate_js`` в Windows собирает результат
+    через ``Control.Invoke`` + семафор — то есть ждёт ответа, который придёт в
+    тот же поток UI. Прямой вызов ``evaluate_js`` внутри обработчика therefore
+    подвешивал бы окно (deadlock), поэтому здесь только решение «закрываться
+    или нет», а сам диалог идёт в фоне: подтверждено → ``window.destroy()``.
+
+    Возвращает ``False`` (закрытие отменено) в момент, когда диалог ещё не
+    показан, и ``True``, когда закрываться можно: задач нет или пользователь
+    уже подтвердил выход.
+    """
+    state = {"asking": False, "approved": False}
+
+    def ask_and_close() -> None:
+        try:
+            allowed = bool(window.evaluate_js("window.confirmClose()"))
+        except Exception:  # noqa: BLE001 - окно в моменте уже умирает
+            allowed = True  # блокировать закрытие из-за сбоя диалога нельзя
+        if allowed:
+            state["asking"] = False
+            state["approved"] = True
+            try:
+                window.destroy()
+            except Exception:  # noqa: BLE001 - окно могло закрыться само
+                pass
+        else:
+            state["asking"] = False  # «Остаться»: следующий клик снова спросит
+
+    def on_closing() -> bool:
+        if state["approved"]:
+            return True
+        active = active_jobs_count(application)
+        if not should_confirm_close(active):
+            return True  # задач нет — закрываться можно сразу
+        if state["asking"]:
+            return False  # диалог уже висит, второй не открываем
+        state["asking"] = True
+        threading.Thread(
+            target=ask_and_close, name="gapaudit-confirm-close", daemon=True
+        ).start()
+        return False  # немедленное закрытие отменяем, решит диалог
+
+    return on_closing
+
+
+def stop_queue(queue: Any, timeout: float = QUEUE_STOP_TIMEOUT) -> bool:
+    """``queue.stop(timeout)``; False — очередь не уложилась в таймаут (gotcha 27)."""
+    started = time.monotonic()
+    queue.stop(timeout=timeout)
+    return (time.monotonic() - started) < timeout
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="desktop.py", description="GapAudit (каркас 0.1)")
     parser.add_argument("--dev", action="store_true", help="devtools и подробные логи")
@@ -135,8 +338,8 @@ def main(argv: list[str] | None = None) -> int:
     token = secrets.token_urlsafe(32)
     port = args.port or free_port()
     data_dir = data_dir_for()
-    app = create_app(token=token, port=port)
-    server = make_server(app, port, args.dev)
+    application = create_app(token=token, port=port)
+    server = make_server(application, port, args.dev)
     thread = start_server(server)
 
     url = f"http://{HOST}:{port}/?token={token}"
@@ -156,30 +359,56 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[gapaudit] бэкенд готов: {url}")
     print(f"[gapaudit] токен для внешних клиентов: {token_path}")
 
-    if args.browser:
-        webbrowser.open(url)
-        print("[gapaudit] окно не открывается, Ctrl+C — остановить сервер")
-        try:
-            while thread.is_alive():
-                time.sleep(0.2)
-        except KeyboardInterrupt:
-            print("[gapaudit] получен Ctrl+C")
-    else:
-        webview.create_window(
-            WINDOW_TITLE,
-            url=url,
-            width=1280,
-            height=860,
-            min_size=(1024, 720),
-            # TODO(step-3): диалог подтверждения закрытия вернём вместе со своей
-            # JS-реализацией, когда появятся задачи (сейчас подтверждать нечего).
-            confirm_close=False,
+    stop_titles = threading.Event()
+    try:
+        if args.browser:
+            if not os.environ.get(NO_BROWSER_ENV):
+                webbrowser.open(url)
+            print("[gapaudit] окно не открывается, Ctrl+C — остановить сервер")
+            try:
+                while thread.is_alive():
+                    time.sleep(0.2)
+            except KeyboardInterrupt:
+                print("[gapaudit] получен Ctrl+C")
+        else:
+            window = webview.create_window(
+                WINDOW_TITLE,
+                url=url,
+                width=1280,
+                height=860,
+                min_size=(1024, 720),
+                # Подтверждение закрытия — своё (JS-диалог с задачами), а не
+                # нативный OK/Cancel из pywebview: два диалога подряд путают.
+                confirm_close=False,
+            )
+            if window is None:
+                raise RuntimeError("pywebview не создал окно")
+            window.events.closing += make_closing_handler(application, window)
+            threading.Thread(
+                target=title_loop,
+                args=(window, port, token, stop_titles),
+                name="gapaudit-title",
+                daemon=True,
+            ).start()
+            webview.start(debug=args.dev)
+    except Exception as exc:  # noqa: BLE001 - E_ABORT при закрытии <2 с (gotcha 10)
+        if not is_e_abort(exc):
+            raise
+        print(
+            "[gapaudit] окно закрыто до инициализации WebView2 — это нормально",
+            file=sys.stderr,
         )
-        webview.start(debug=args.dev)
-
-    # окно закрыто: токен на диске больше не должен вести к живому бэкенду
-    remove_token(data_dir)
-    stop_server(server, thread)
+    finally:
+        # порядок shutdown — AGENTS gotcha 27: очередь → uvicorn → токен → 0
+        stop_titles.set()
+        queue = getattr(getattr(application, "state", None), "queue", None)
+        if queue is not None and not stop_queue(queue):
+            print(
+                "[gapaudit] не все задачи завершились, принудительно",
+                file=sys.stderr,
+            )
+        stop_server(server, thread)
+        remove_token(data_dir)
     return 0
 
 
