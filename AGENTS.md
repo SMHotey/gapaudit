@@ -211,6 +211,13 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     MCP-сессия транспортная (stdio), данные принадлежат пакету и
     времени замера (run_id + measured_at). Store — единственный
     источник правды.
+23. Тесты, поднимающие реальные подпроцессы, — под `@pytest.mark.slow`.
+    Быстрый цикл (`-m "not slow"`) — только in-memory и быстрый tmp_path,
+    без единого Popen; цель — не более 6 с (DEVPLAN §11).
+24. После `_finalized` никакие progress-апдейты не должны менять message/status:
+    поздний progress затирает shutdown/error («прогресс 0.8, статус done»).
+    Инвариант соблюдается в `JobQueue._handle_progress` под `self._lock`;
+    в app/web.py (3b) SSE-подписчик не должен перезаписывать started после done.
 
 ---
 

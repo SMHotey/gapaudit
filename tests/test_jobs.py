@@ -3,10 +3,16 @@
 Настоящие ``cli/`` не участвуют (интеграция — шаг 3d): каждый тест
 запускает ``tests/fixtures/fake_job.py`` или крошечный скрипт из
 ``tmp_path``. Сеть — ноль; подпроцессы — только локальные Python-скрипты.
+
+Разделение на быстрые и тяжёлые (AGENTS gotcha 23): тесты, поднимающие
+реальные подпроцессы, — под ``@pytest.mark.slow``; быстрый цикл
+``-m "not slow"`` проходит по submit/unsubscribe/list/валидации id и
+unit-троттлингу без единого ``Popen``.
 """
 
 from __future__ import annotations
 
+import io
 import re
 import subprocess
 import sys
@@ -125,7 +131,7 @@ def make_queue(tmp_path) -> Iterator[Callable[..., JobQueue]]:
     store_cm.__exit__(None, None, None)
 
 
-# --- 1. submit/get -----------------------------------------------------------
+# --- 1. submit/get (быстрый: воркеров нет, Popen не поднимается) -------------
 
 
 def test_submit_get_queued_and_id_hex(make_queue) -> None:
@@ -145,9 +151,10 @@ def test_submit_get_queued_and_id_hex(make_queue) -> None:
     assert queue.get("nope") is None
 
 
-# --- 2. полный путь queued → done --------------------------------------------
+# --- 2. полный путь queued → done (реальный подпроцесс) ----------------------
 
 
+@pytest.mark.slow
 def test_run_to_done_progress_pid_and_log(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter))
@@ -167,9 +174,10 @@ def test_run_to_done_progress_pid_and_log(make_queue) -> None:
     assert counter == [job_id]
 
 
-# --- 3. провал подпроцесса ---------------------------------------------------
+# --- 3. провал подпроцесса (реальный подпроцесс) ------------------------------
 
 
+@pytest.mark.slow
 def test_failed_with_error_from_protocol(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter))
@@ -183,7 +191,7 @@ def test_failed_with_error_from_protocol(make_queue) -> None:
     assert job.error is not None and "boom" in job.error
 
 
-# --- 4. отмена до старта -----------------------------------------------------
+# --- 4. отмена до старта (быстрый: подпроцесс не должен запуститься) ----------
 
 
 def test_cancel_queued_never_starts_process(make_queue) -> None:
@@ -197,14 +205,15 @@ def test_cancel_queued_never_starts_process(make_queue) -> None:
     assert job is not None and job.status == "cancelled"
 
     queue.start()
-    time.sleep(0.3)  # воркеры стартовали — но отменённую не берут
+    time.sleep(0.15)  # воркеры стартовали — но отменённую не берут
     assert counter == []  # подпроцесс не запускался
     assert queue.cancel(job_id) is False  # уже завершена
 
 
-# --- 5. отмена running: подпроцесс уважает файл-отмену -----------------------
+# --- 5. отмена running: подпроцесс уважает файл-отмену ------------------------
 
 
+@pytest.mark.slow
 def test_cancel_running_with_respect_cancel_is_fast(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter), cancel_grace_sec=5.0)
@@ -228,6 +237,7 @@ def test_cancel_running_with_respect_cancel_is_fast(make_queue) -> None:
 # --- 6. отмена running: подпроцесс игнорирует файл → terminate ---------------
 
 
+@pytest.mark.slow
 def test_cancel_running_escalates_to_terminate(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter), cancel_grace_sec=0.5)
@@ -247,9 +257,10 @@ def test_cancel_running_escalates_to_terminate(make_queue) -> None:
     assert queue.get(job_id).status == "cancelled"
 
 
-# --- 7. ограничение параллелизма ---------------------------------------------
+# --- 7. ограничение параллелизма (реальные подпроцессы) -----------------------
 
 
+@pytest.mark.slow
 def test_max_parallel_jobs_two_of_three(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter), max_parallel_jobs=2)
@@ -275,9 +286,10 @@ def test_max_parallel_jobs_two_of_three(make_queue) -> None:
         wait_for_status(queue, job_id, "done", timeout=10.0)
 
 
-# --- 8. события в порядке жизни задачи ---------------------------------------
+# --- 8. события в порядке жизни задачи (реальный прогон) ----------------------
 
 
+@pytest.mark.slow
 def test_subscribe_event_order(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter))
@@ -305,7 +317,7 @@ def test_subscribe_event_order(make_queue) -> None:
     assert events.count("cancelled") == 0
 
 
-# --- 9. unsubscribe ----------------------------------------------------------
+# --- 9. unsubscribe (быстрый: без воркеров, события даёт только submit) -------
 
 
 def test_unsubscribe_stops_events(make_queue) -> None:
@@ -318,16 +330,17 @@ def test_unsubscribe_stops_events(make_queue) -> None:
 
     queue.subscribe(callback)
     queue.unsubscribe(callback)
-    queue.start()
-    job_id = queue.submit("packages.check", {"steps": 1, "sleep": 0.01})
-    wait_for_status(queue, job_id, "done")
-    time.sleep(0.1)
-    assert events == []
+
+    queue.submit("packages.check", {"steps": 1})  # воркеров нет
+
+    assert events == []  # отписанный не получил даже created
+    assert counter == []  # и подпроцесс не понадобился
 
 
-# --- 10. list(status=...) -----------------------------------------------------
+# --- 10. list(status=...) (реальные done/failed) ------------------------------
 
 
+@pytest.mark.slow
 def test_list_filters_done_only(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter))
@@ -346,7 +359,7 @@ def test_list_filters_done_only(make_queue) -> None:
     assert len(queue.list(limit=1)) == 1
 
 
-# --- 11. дубликат job_id ------------------------------------------------------
+# --- 11. дубликат job_id (быстрый) --------------------------------------------
 
 
 def test_duplicate_job_id_raises(make_queue) -> None:
@@ -358,9 +371,10 @@ def test_duplicate_job_id_raises(make_queue) -> None:
         queue.submit("packages.check", {"steps": 1}, job_id=job_id)
 
 
-# --- 12. stop -----------------------------------------------------------------
+# --- 12. stop (реальные подпроцессы) -------------------------------------------
 
 
+@pytest.mark.slow
 def test_stop_cancels_active_and_workers_exit(make_queue) -> None:
     counter: list[str] = []
     queue = make_queue(fake_runner(counter), max_parallel_jobs=2)
@@ -387,29 +401,39 @@ def test_stop_cancels_active_and_workers_exit(make_queue) -> None:
     assert workers == []
 
 
-# --- 13. троттлинг progress ---------------------------------------------------
+# --- 13. троттлинг progress (быстрый: прямой вызов, без Popen) ----------------
 
 
 def test_progress_events_are_throttled(make_queue) -> None:
+    """100 progress-сообщений за ~0 мс → единицы эмитов (лимит 10/с)."""
     counter: list[str] = []
     queue = make_queue(fake_runner(counter))
+    job_id = queue.submit("packages.check", {"steps": 100})
+
     progress_events: list[dict] = []
 
-    def callback(job_id: str, event_type: str, data: dict) -> None:
+    def callback(job_id_: str, event_type: str, data: dict) -> None:
         if event_type == "progress":
             progress_events.append(data)
 
     queue.subscribe(callback)
-    queue.start()
-    job_id = queue.submit("packages.check", {"steps": 100, "sleep": 0.001})
-    wait_for_status(queue, job_id, "done", timeout=10.0)
+    log = io.StringIO()  # сюда _handle_progress пишет битые сообщения
+    for step in range(100):
+        queue._handle_progress(
+            job_id, {"progress": step / 100, "message": f"step {step}"}, log
+        )
 
-    assert len(progress_events) <= 15, len(progress_events)
+    # без троттлинга было бы 100; первый + максимум один через 100 мс цикла
+    assert 1 <= len(progress_events) <= 5, len(progress_events)
+    job = queue.get(job_id)
+    assert job is not None and abs(job.progress - 0.99) < 1e-9  # в Store пишется всегда
+    assert counter == []  # подпроцесс не запускался
 
 
-# --- 14. мусорный stdout -------------------------------------------------------
+# --- 14. мусорный stdout (реальный подпроцесс) ---------------------------------
 
 
+@pytest.mark.slow
 def test_garbage_stdout_goes_to_log_without_crash(make_queue, tmp_path) -> None:
     script = tmp_path / "garbage_job.py"
     script.write_text(
@@ -430,9 +454,10 @@ def test_garbage_stdout_goes_to_log_without_crash(make_queue, tmp_path) -> None:
     assert "hello world" in log_text  # непарсящаяся строка ушла в лог
 
 
-# --- 15. ненулевой код без {"type": "error"} ------------------------------------
+# --- 15. ненулевой код без {"type": "error"} (реальный подпроцесс) -------------
 
 
+@pytest.mark.slow
 def test_nonzero_exit_without_error_is_failed(make_queue, tmp_path) -> None:
     script = tmp_path / "exit7_job.py"
     script.write_text("raise SystemExit(7)\n", encoding="utf-8", newline="\n")

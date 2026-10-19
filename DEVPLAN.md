@@ -167,6 +167,10 @@ schedules(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, params TEXT, cron TEXT,
 Статусы: `queued → running → done | failed | cancelled`. Отдельно `interrupted` для случая,
 когда приложение закрыли во время работы (задача поднимается из чекпоинта при следующем старте).
 
+Уточнение (3a): статус job — `running`, но событие для подписчиков называется `started`
+(не `running`). SSE-клиент не должен выводить `started` как статус — статус он берёт из
+поля `status` события или из опроса задач.
+
 ```python
 JOB_KINDS = {
   "packages.check": {"names": [str], "keyword": [str]},
