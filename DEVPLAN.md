@@ -50,6 +50,19 @@ C:\Users\malik\gapaudit\
                         (сырая страница и её разновидности), list_servers() по курсору
     scan.py             потоковый обход каталога с чекпоинтом и отменой
     diffing.py          diff_observations() -> события (релиз, скачок adoption, появился MCP)
+    collectors/         НОВЫЙ слой сигналов (P4/P5): внешние API-коллекторы, каждый —
+                        отдельный модуль с инжектируемым транспортом
+      __init__.py
+      momentum.py        Δ adoption 7/30/90 дней (чистая функция над списком замеров)
+      cross_ecosystem.py сравнение PyPI/npm/GitHub по одному «концепту»
+      jobs.py            спрос на труд: Adzuna API
+      patents.py         патентный импульс: PatentsView API
+      funding.py         раунды финансирования: SEC EDGAR (full-text search, Form D)
+      search_trends.py   поисковый интерес: Yandex Wordstat и/или Google Trends
+    signals.py          агрегация сигналов: gap_score, signals_for_package() — чистые
+                        функции (данные передаются параметром, про БД core не знает)
+    api_keys.py         API Keys Store: чтение/запись <data_dir>/api_keys.json, права
+                        0600, base64-«шифрование», проверка ключа (без sqlite3)
     settings.py         конфиг: пороги, ключевые слова, каталог данных, расписание
   app/                  приложение: импортирует core и sqlite3
     store.py            Store: SQLite-схема, миграции, запись/чтение observations/events/
@@ -65,12 +78,16 @@ C:\Users\malik\gapaudit\
   cli/                  те же шесть скриптов; флаги и коды выхода сохраняются
   tools/sync_skill.py   собрать автономную копию для скилла (core + обёртки) и проверить её
   tests/                unit по core, фикстуры «demo-режима», UI-тесты, smoke CLI
-  data/                 база, кэш, логи задач, собранные каталоги (dev-режим, в .gitignore)
-  docs/                 скриншоты проверок шагов (коммитятся)
+  data/                 база, кэш, логи задач, собранные каталоги, api_keys.json
+                        (dev-режим, в .gitignore; в сборке — %USERPROFILE%\GapAudit-data\)
+  docs/
+    API-KEYS.md         инструкции: как получить ключи Adzuna/PatentsView/EDGAR/
+                        Yandex Wordstat/Google Trends (официальный alpha и Apify)
+    screenshots/        скриншоты проверок шагов (коммитятся)
   DEVPLAN.md            этот файл
 ```
 
-### Будущий MCP-сервер (P5, опционально)
+### Будущий MCP-сервер (P6, опционально)
 
 Тонкий фасад над Store:
 
@@ -158,6 +175,28 @@ fallback имён). Следующий — «Сравнение» + экспор
 `catalog_items.url`. Следующий — P4 (упаковка, sync_skill, demo, PyInstaller,
 README установки).
 
+Статус P3-3c (закрыт 20.10.2026, отдельным коммитом): «Сравнение» (2–3 пакета
+бок о бок), экспорт событий (CSV/JSON), экспорт матрицы (CSV), экспорт сравнения
+(CSV). Правки 3c закоммичены — в рабочем дереве их больше нет.
+
+Статус P4 (план): упаковка (PyInstaller onedir), sync_skill, demo-режим,
+README «Установка на чистой машине», API Keys Store (инфраструктура для будущих
+коллекторов), momentum, cross_ecosystem. P4 не добавляет новых экранов, кроме
+блока «Сигналы» в карточке пакета.
+
+Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
+cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
+(Adzuna), patents (PatentsView), funding (SEC EDGAR), search_interest
+(Yandex Wordstat / Google Trends). Уровень 3 (интеграция): Gap Score, экран
+«Поиск ниши» (Niche Finder), размер точки в матрице.
+
+Статус P6 (опционально): MCP-сервер (stdio, тонкий фасад над Store),
+расписание внутри приложения, уведомления о событии «появился MCP», тёмная тема.
+
+Отклонено: гео (PyPI by country / BigQuery). Причина: узкая применимость
+(только PyPI), требует GCP-аккаунт, ценность ниже, чем momentum + jobs +
+search_interest. В §16 п. 6 — закрыто как «отклонено».
+
 Критерий готовности шага 0: `python cli/check_predecessors.py gerenuk` выдаёт тот же текст, что
 старый скрипт; `core` импортируется без побочных эффектов (никаких сетевых вызовов на импорте);
 все шесть CLI проходят smoke-тест на фикстурах.
@@ -181,9 +220,28 @@ catalog_items(catalog_id TEXT, name TEXT, source TEXT, stars INTEGER, lang TEXT,
 events(id INTEGER PRIMARY KEY, run_id TEXT, kind TEXT, name TEXT, detail TEXT, at TEXT)
 schedules(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, params TEXT, cron TEXT,
      enabled INTEGER, last_run TEXT)
+signal_observations(id INTEGER PRIMARY KEY AUTOINCREMENT,
+     package TEXT NOT NULL,
+     signal_kind TEXT NOT NULL,   -- 'momentum', 'cross_eco', 'jobs', 'patents',
+                                  -- 'funding', 'search_interest'
+     value REAL,
+     detail TEXT,                  -- JSON: по странам, по раундам, по регионам
+     measured_at TEXT NOT NULL)
+concept_packages(concept TEXT NOT NULL,
+     ecosystem TEXT NOT NULL,      -- 'pypi', 'npm', 'github'
+     package TEXT NOT NULL,
+     PRIMARY KEY(concept, ecosystem, package))
 ```
 
-Таблиц: 9 именованных + sqlite_sequence (AUTOINCREMENT). Считать по именам из
+Индекс к новой таблице:
+
+```sql
+CREATE INDEX idx_signal_pkg_kind_at
+  ON signal_observations(package, signal_kind, measured_at DESC);
+```
+
+Таблиц: 11 именованных (после миграции 3) + sqlite_sequence (AUTOINCREMENT).
+Считать по именам из
 `sqlite_master`, не по общему числу.
 
 Важно (follow-up 2c): `observations.flag` — TEXT-метка (напр. `"MCP"`),
@@ -213,6 +271,16 @@ gh_search отдаёт `html_url`, `npm_search_full` — `pkg.links.npm`, рее
 идемпотентна — иначе повторный старт на той же БД падает на «duplicate column» (AGENTS gotcha 49).
 Текущая версия схемы — 2 (колонка `catalog_items.url`).
 
+Миграция 3 (P4): `signal_observations` и `concept_packages` — состояние схемы
+становится 3. Правило прежнее: версию пишет `migrate()` после каждой ступени,
+каждая миграция идемпотентна (AGENTS gotcha 49).
+
+Таблицы `api_keys` в SQLite НЕТ — сознательно. Ключи лежат в отдельном файле
+`<data_dir>/api_keys.json` (права 0600, в .gitignore), а не в БД: при экспорте
+или копировании БД ключи не утекают, и `core/` не получает зависимости от
+`sqlite3` (gotcha 19). Статус последней проверки ключа — тоже в этом файле.
+Решение зафиксировано в §16 п. 7.
+
 Соглашение о кэше (шаг 1a): `FileCache.put` пишет только в память; `save()` — атомарная запись на диск
 (tmp + `os.replace`); CLI вызывает `save()` в конце прогона, приложение — на закрытии задачи.
 `SqliteCache` (шаг 2) пишет в таблицу `cache` сразу, поэтому `save()` у него — no-op.
@@ -233,6 +301,8 @@ KIND_PARAM_KEYS (app/jobs.py — единственный источник пр�
   "registry.scan":  {"base_url": str, "limit": int, "max_pages": int}
   "github.verify":  {"targets": [str] (обязателен), "keyword": str}
   "monitor.diff":   {"diff_from": str} (обязателен)
+  "signals.collect": {"package": str (обязателен), "kinds": [str]}
+  "niche.find":      {"q": str (обязателен), "filters": dict, "limit": int}
 
 KIND_REQUIRED_KEYS — подмножество обязательных ключей на kind; KIND_PARAM_TYPES — типы
 значений для 400. POST /api/jobs отвечает 400 (fail fast), если kind неизвестен, ключ не
@@ -240,6 +310,14 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 `classes` (registry.scan) и `days` (monitor.diff) параметрами задачи не являются: классы —
 настройка метода (core.scan.DEFAULT_CLASSES), «за N дней» — фильтр отображения в UI (3d-b).
 ```
+
+Виды задач регистрируются ТОЛЬКО в `app/jobs.py`
+(`KIND_PARAM_KEYS`/`KIND_REQUIRED_KEYS`/`KIND_PARAM_TYPES`) — локального
+`JOB_KINDS` в `app/web.py` нет (шаг 3d-b). Новый вид задачи требует согласованной
+правки в четырёх местах (AGENTS gotcha 54): KIND_PARAM_KEYS, `_params_to_argv`
+(или `_KIND_TO_MODULE`), хук результата в lifespan, форма в UI.
+`signals.collect` и `niche.find` — НЕ CLI-скрипты: они работают через
+`core/collectors/` внутри подпроцесса-обёртки, argv собирается по whitelist.
 
 Обязательные свойства:
 
@@ -279,7 +357,33 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | POST | `/api/events/export?format=csv\|json&kind=&name=&since=&limit=` | выгрузка событий (шаг 3c): ВСЕ события под фильтрами, без пагинации; CSV `id,kind,name,detail,at,run_id` (`utf-8-sig`), JSON `{"events": [...]}`; `limit` 1..50000 (10000), `limit` больше потолка — 400 |
 | POST | `/api/matrix/export?format=csv` | выгрузка точек матрицы (шаг 3c): те же точки, что у `GET /api/matrix` (общий `_matrix_points`), CSV `name,source,version,released_at,adoption_week,adoption_month,flag,verdict,measured_at`, `flag` — 0/1 |
 | GET/PUT | `/api/settings` | пороги, ключевые слова, TTL, лимиты (шаг 2c). GET отдаёт `settings` + `readonly` (`data_dir`, `db_path`, `version`, `api_token_required`) + `editable_keys` (10 ключей); PUT валидирует тип/диапазон/инвариант `alive_weekly >= dead_weekly`, пишет `<data_dir>/settings.json` и возвращает `warnings`. `data_dir` и `language` через API не меняются — это readonly |
+| GET | `/api/signals/{package}` | все сигналы по пакету (P4/P5): `{momentum, cross_ecosystem, jobs, patents, funding, search_interest, gap_score}`; каждый сигнал — `{status: "ok"\|"not_configured"\|"error", value, detail}` |
+| POST | `/api/signals/collect` | собрать сигналы: kind `signals.collect` (P4/P5). Тело `{package, kinds[]}`; 202 `{job_id}` |
+| GET | `/api/gap-score?names=a,b,c` | gap_score по списку пакетов (P5): `{names, scores: [{name, score, breakdown}]}` |
+| POST | `/api/niche/find` | Niche Finder (P5): тело `{q, filters, limit}`; 202 `{job_id}` — работа идёт задачей |
+| GET | `/api/niche/result/{job_id}` | результат Niche Finder: `{q, total, results: [{name, gap_score, momentum_30d, flag, adoption_week, jobs_total, patents_percent, funding_count}]}` |
+| GET | `/api/settings/api-keys` | список провайдеров + статус (P4). НЕ значения ключей: только `{provider, configured, last_check, last_check_ok, meta_public}` |
+| PUT | `/api/settings/api-keys` | сохранить ключ (P4): `{provider, value, meta?}` |
+| POST | `/api/settings/api-keys/{provider}/check` | тестовый запрос к провайдеру (P4): `{ok, detail}` |
+| DELETE | `/api/settings/api-keys/{provider}` | удалить ключ (P4) |
 | GET | `/api/health` | готовность бэкенда (для окна) |
+
+Коллекторы сигналов (P4/P5):
+
+- `GET /api/signals/{package}` — только чтение из SQLite/кэша, сети нет.
+- `POST /api/signals/collect` — kind `signals.collect`, работа идёт задачей
+  (подпроцесс), прогресс — через SSE, запись — в `signal_observations`.
+- `POST /api/niche/find` — kind `niche.find`, конвейер из нескольких шагов
+  (`catalog.build` → `packages.check` → `signals.collect` → gap_score).
+  Результат читается `GET /api/niche/result/{job_id}`; SSE-подписчик не должен
+  перезаписывать статус после `done` (gotcha 38/24).
+- Graceful degradation: если ключа нет или внешний API вернул ошибку — коллектор
+  возвращает пустой результат, сигнал получает статус `not_configured`/`error`,
+  остальное приложение работает. Исключение из коллектора в UI/API не выходит
+  никогда (gotcha 50).
+- API-ключи: наружу отдаётся только статус (`configured`/`last_check_ok`),
+  значение ключа — никогда. Хранится в `<data_dir>/api_keys.json` (0600),
+  в SQLite — нет (§5, миграция 3).
 
 Каталоги (шаг 3b, детали):
 
@@ -341,7 +445,7 @@ RCE). Параметры — `_params_to_argv` по whitelist на каждый 
 | Hermes (разработчик) | CLI + pytest + git | всегда |
 | Человек (разово) | CLI (`python -m cli.*`) | один прогон без истории |
 | Внешний агент (Cursor/Claude) | HTTP `/api/*` с `X-GapAudit-Token` | очередь + история; токен из `<data_dir>/session.token` (3b) |
-| MCP-клиент (P5) | stdio MCP-сервер | нативный tool в Cursor/Claude Desktop |
+| MCP-клиент (P6) | stdio MCP-сервер | нативный tool в Cursor/Claude Desktop |
 
 Hermes не подключается к живому приложению — он его строит через CLI.
 Внешний клиент выбирает способ по конфигурации, а не по discovery.
@@ -423,6 +527,25 @@ Hermes не подключается к живому приложению — о
    Шаг 3c добавил в шапку кнопку CSV — выгрузку точек (`POST /api/matrix/export`,
    те же точки, что на экране: построитель `_matrix_points` общий).
 
+   Шаг P5 добавляет в матрицу: размер точки = gap_score (0–100), цвет = momentum
+   (зелёный — растёт, серый — стабилен, красный — падает), фильтр «только с
+   momentum > 0». Точки без gap_score рисуются как раньше (базовый размер).
+
+   Блок «Сигналы» в карточке пакета (P4/P5):
+
+   - Momentum: Δ adoption 7/30/90 дней (числа + стрелки), при нехватке истории —
+     «N замеров»;
+   - Cross-ecosystem: сравнение adoption в PyPI/npm/GitHub для концепта;
+   - Jobs: top-5 стран по вакансиям (если ключ Adzuna);
+   - Patents: патентный импульс за 3 года (если ключ PatentsView);
+   - Funding: последние раунды (если задан User-Agent EDGAR);
+   - Search interest: динамика поискового интереса и топ-регионы (если настроен
+     Yandex Wordstat или Google Trends);
+   - Gap Score: интегральное число 0–100 + breakdown по компонентам.
+
+   Каждый сигнал помечен статусом: «данные», «не настроен» (ссылка на
+   docs/API-KEYS.md) или «ошибка». Пустой сигнал не ломает карточку.
+
 2. **Задачи**. Очередь, прогресс-бар, текущий шаг («страница 34 из 152»), отмена, лог по клику,
    история запусков с длительностью и статусом.
 3. **Пакеты**. Поиск и карточка: версия, дата релиза, adoption за неделю и месяц, вердикт,
@@ -472,8 +595,20 @@ Hermes не подключается к живому приложению — о
    Реализовано в 2c (частично): пороги, keywords, TTL кэша, параллелизм задач и
    лимит реестра через `GET/PUT /api/settings`; каталог данных и версия — readonly
    (`data_dir` меняется только `--data-dir`/`GAPAUDIT_DATA_DIR`, требует перезапуска);
-   расписание и тёмная тема — P5. Сохранённое пишется в `<data_dir>/settings.json`
+   расписание и тёмная тема — P6. Сохранённое пишется в `<data_dir>/settings.json`
    и накладывается в lifespan `app/web.py` (desktop.py файл не читает).
+
+   Вкладка «API-ключи» (P4): провайдеры Adzuna, PatentsView, SEC EDGAR,
+   Yandex Wordstat, Google Trends (официальный alpha), Apify (для Google Trends).
+   Для каждого — поле ввода, статус («не настроен» / «настроен» / «проверка
+   пройдена» / «ошибка»), кнопки «Сохранить», «Проверить», «Удалить» и ссылка на
+   docs/API-KEYS.md. Предупреждение вверху: «Без ключа сигнал не работает,
+   остальное приложение работает». Значения ключей не показываются в списке и не
+   отдаются через API — только статус.
+
+8. **Поиск ниши** (Niche Finder, P5). Сквозной workflow: фраза → сборка
+   каталога → проверка пакетов → сбор сигналов → ранжированный список подсфер
+   с фильтрами. Схема и контракт — §19.
 
 Требования к UI: русский язык; никаких внешних CDN (Chart.js/htmx — локально в `static/`);
 все таблицы с пагинацией (каталог реестра — до сотен тысяч строк, в DOM их не заливаем);
@@ -595,6 +730,22 @@ Hermes не подключается к живому приложению — о
   те же прогоны давали 69–75 с полного при тех же 18–19 с быстрого: медленные
   тесты шага — не они, а `test_jobs_recover` и compat-L2 (gotcha 29).
 
+Коллекторы сигналов (P4/P5):
+
+- Каждый коллектор — отдельный модуль с инжектируемым транспортом; тесты на
+  фикстурах (реальные ответы API, снятые один раз); сеть в тестах — ноль.
+- Graceful degradation: если ключа нет — коллектор возвращает пустой результат,
+  сигнал помечается «не настроен», остальное приложение работает. Тест на
+  «коллектор без ключа не бросает исключение».
+- API-ключи: тест на 0600 (POSIX) / icacls (Windows), тест на «ключ не
+  логируется», тест на «ключ не отдаётся через API» (только статус).
+- API-ключи не попадают в экспорт БД и в дампы — тест на это.
+- Фикстуры внешних API лежат в `tests/fixtures/http/` рядом с существующими
+  (demo-режим отдаёт их вместо сети).
+- P5: тест gap_score на фикстуре (детерминированная формула + breakdown) и тест
+  на то, что при отсутствии части сигналов score считается по имеющимся
+  компонентам и это честно помечено.
+
 ## 12. Упаковка и запуск
 
 1. Разработка: `uv venv` → `uv pip install fastapi uvicorn jinja2 pywebview pythonnet httpx`
@@ -621,10 +772,13 @@ Hermes не подключается к живому приложению — о
 | P1 | очередь задач (подпроцессы, статусы, отмена, логи), SSE, эндпоинты задач | 3 дня | задача `packages.check` доходит до `done`, переживает перезапуск, отменяется, прогресс виден в SSE |
 | P2 | pywebview-оболочка (порт, токен, health, закрытие), экраны «Задачи» и «Сейчас решать» | 2 дня | окно открывается одной командой, матрица строится из БД, кнопка «обновить» запускает задачу |
 | P3 | «Пакеты», «Каталоги», «Мониторинг», «Сравнение», фильтры, экспорт CSV/MD | 4 дня | каталог на 300+ записей листается, события собираются в таймлайн, экспорт открывается в Excel |
-| P4 | настройки порогов и ключевых слов, demo-режим, sync со скиллом, упаковка onedir, README | 3 дня | приложение запускается на чистой машине из `dist\`, скилл обновлён синхронизацией, `compat_check` зелёный |
-| P5 (опц.) | расписание внутри приложения, уведомления о событии «появился MCP», тёмная тема | 2–3 дня | задача по расписанию выполняется без открытого окна |
+| P4 | упаковка onedir, sync со скиллом, demo-режим, README «Установка на чистой машине», API Keys Store, momentum, cross-ecosystem | 6 дней | приложение запускается на чистой машине из `dist\`, скилл обновлён синхронизацией, `compat_check` зелёный, ключ вводится в UI и проверяется |
+| P5 | сигналы ниш: jobs (Adzuna), patents (PatentsView), funding (SEC EDGAR), search_interest (Yandex Wordstat / Google Trends), gap_score, экран «Поиск ниши» | 13–14 дней | сигнал появляется в карточке пакета, без ключа приложение работает, gap_score в матрице |
+| P6 (опц.) | MCP-сервер (stdio), расписание внутри приложения, уведомления, тёмная тема | 3–5 дней | задача по расписанию выполняется без открытого окна |
 
-Итого до P4: **около 14 рабочих дней** (2,5–3 недели), из них половина — P0–P1, то есть не UI.
+Итого до P4: **около 17 рабочих дней** (было 14 — добавлены API Keys Store,
+momentum, cross-ecosystem), из них половина — P0–P1, то есть не UI. До P5 — ещё
+13–14 дней, до P6 — ещё 3–5.
 
 ## 14. Риски и что с ними делать
 
@@ -641,6 +795,15 @@ Hermes не подключается к живому приложению — о
 | Два места правды (проект и скилл) | Копии расходятся | `sync_skill.py` + `compat_check.py` как обязательный гейт перед коммитом |
 | Соблазн «доработать по ходу» | Объём вырастет вдвое | Замораживаем экраны после P2; новые идеи — в раздел «после P5» |
 | SSE `done` vs запись observations (gotcha 38) | Клиенты делают reload с задержкой 400 мс | При добавлении новых хуков на `done` — проверить, что задержка достаточна (в 2b замер: запись укладывается в 50–100 мс на свободной машине, 400 мс — с запасом) |
+| Лимиты и ToS внешних API (Adzuna, PatentsView, EDGAR, Yandex Wordstat, Google Trends) | Adzuna: 25 hits/мин, 250/сутки, 1000/нед, 2500/мес; EDGAR: 10/сек; Yandex Wordstat: квота (по данным сообщества 10/сек, 1000/сутки); PatentsView: 45/мин; Google Trends (Apify) — оплата за результат | Троттлинг по хосту (уже есть в `core/http`), кэш ответов, показ «ждём лимит N с», при ошибке — пустой результат, приложение работает |
+| ToS Adzuna запрещает агрегацию счётчиков вакансий для постоянных исследований без письменного согласия | Free tier — только «Personal or academic research» с атрибуцией «The Adzuna API» | Не собирать вакансии в аналитику без письменного согласия Adzuna; в UI показывать источник и дату; при претензиях — отключить сигнал `jobs` |
+| Формат ответов внешних API может измениться | `compat_check` защищает только от расхождений с legacy, не от чужих API | Коллектор при сбое возвращает `[]` и статус `error`; тесты на фикстурах — снятые ответы, а не живые вызовы |
+| EDGAR требует User-Agent с email | Без него — 403 | Хранить в `api_keys.json` → `providers.edgar.meta.user_agent`; подставлять заголовок |
+| Yandex Wordstat требует OAuth-токен и ClientId | Заявка на доступ, квота, `429` с `Time to refill` | Хранить `encrypted_value` = OAuth-токен, `meta.client_id` = ClientId; при 429 ждать указанное время |
+| Google Trends: официальный API — alpha по заявке | Доступ выдают ограниченному числу разработчиков | Альтернатива — Apify (платно): API-токен Apify + `actor_id`; пользователь выбирает сам |
+| Утечка ключей при копировании БД | БД копируют целиком | Ключи — в отдельном файле `<data_dir>/api_keys.json` (0600), в SQLite их нет; при экспорте БД ключи не утекают |
+| «Шифрование» ключей — base64, а не криптография | Base64 — обратимо без ключа | P4 — base64; P5 — опционально Fernet с ключом, производным от machine-id. Честно документировать: «ключи защищены правами файла, не шифрованием» |
+| Гео (PyPI by country / BigQuery) | Отклонено | Не реализуем; в §16 п. 6 закрыто как «отклонено» |
 
 ## 15. Метрики, по которым судим об успехе
 
@@ -660,6 +823,19 @@ Hermes не подключается к живому приложению — о
 4. Язык интерфейса — только русский или нужен английский (для будущей публикации)?
 5. Порог «живости» по умолчанию: оставить универсальный `100/нед` или пресеты «узкая ниша» / «массовая»?
 
+6. Гео (PyPI by country / BigQuery) — ОТКЛОНЕНО. Причина: узкая применимость
+   (только PyPI), требует GCP-аккаунт, ценность ниже, чем momentum + jobs +
+   search_interest. [отклонено 20.10.2026]
+7. API-ключи: хранить в `api_keys.json` (0600) или в SQLite? РЕШЕНО: в
+   `api_keys.json`, НЕ в БД — чтобы экспорт БД не утекал и `core/` не зависел от
+   `sqlite3`. Таблицы `api_keys` в схеме нет (§5, миграция 3). [решено 20.10.2026]
+8. Приоритет сигналов: momentum → cross_ecosystem → jobs → patents → funding →
+   search_interest → gap_score. ОБОСНОВАНО: momentum и cross_ecosystem
+   работают на существующих данных (P4, без ключей), jobs — бесплатный API с
+   регистрацией (P5), patents — бесплатный API (P5), funding — «грязный» SEC
+   EDGAR (P5), search_interest — зависит от Yandex Wordstat (бесплатно, по
+   заявке) и Google Trends (alpha или платно) (P5). [решено 20.10.2026]
+
 ## 17. Что делаем первым делом
 
 1. `uv venv` и зависимости, проверка, что пустое окно pywebview открывается (15 минут — снимает риск «не заведётся»).
@@ -668,3 +844,326 @@ Hermes не подключается к живому приложению — о
 4. P1: очередь и SSE.
 5. P2: окно и первый настоящий экран — матрица на данных, которые уже собраны.
 
+## 18. Сигналы ниш и пользовательские API
+
+### 18.1. Принципы
+
+- Сигналы ДОПОЛНЯЮТ базовые данные (adoption, flag, verdict), не заменяют их.
+  Базовая матрица работает всегда, даже без ключей.
+- Каждый коллектор — независимый модуль в `core/collectors/`. Отказ одного не
+  ломает другие.
+- Graceful degradation: нет ключа — нет сигнала, остальное работает.
+  Пользователь видит «сигнал не настроен» со ссылкой на `docs/API-KEYS.md`.
+- Никакого LLM. Все сигналы — детерминированные запросы к API + арифметика.
+- `core/` остаётся чистым: коллекторы получают транспорт и данные параметрами,
+  про `sqlite3` и про `app/` не знают (gotcha 19). Чтение из БД — в `app/`.
+
+### 18.2. API Keys Store
+
+**Где хранится:** `<data_dir>/api_keys.json` (права 0600), НЕ в SQLite — чтобы
+при экспорте БД ключи не утекали (решение — §16 п. 7).
+
+**Формат файла:**
+
+```json
+{
+  "version": 1,
+  "providers": {
+    "adzuna": {"encrypted_value": "<base64>", "added_at": "...",
+                "meta": {"app_id": "..."}},
+    "patentsview": {"encrypted_value": "<base64>", "added_at": "...", "meta": {}},
+    "edgar": {"encrypted_value": "", "added_at": "...",
+              "meta": {"user_agent": "GapAudit your-email@example.com"}},
+    "yandex_wordstat": {"encrypted_value": "<base64>", "added_at": "...",
+                         "meta": {"client_id": "..."}},
+    "google_trends": {"encrypted_value": "<base64>", "added_at": "...",
+                      "meta": {}},
+    "apify": {"encrypted_value": "<base64>", "added_at": "...",
+              "meta": {"actor_id": "..."}}
+  }
+}
+```
+
+**Шифрование:** P4 — base64 (не крипто, но не plaintext). P5 — опционально
+Fernet с ключом, производным от machine-id. Честно документировать: «ключи
+защищены правами файла, не шифрованием».
+
+**Провайдеры и зачем:**
+
+- `adzuna` — jobs (спрос на труд по странам). Ключ: `app_id` + `app_key`.
+  Лимиты free tier: 25 hits/мин, 250 hits/сутки, 1000/нед, 2500/мес. ВАЖНО: ToS
+  Adzuna запрещают агрегацию счётчиков вакансий для постоянных исследований без
+  письменного согласия; для «Personal or academic research» нужна атрибуция
+  «The Adzuna API» со ссылкой.
+- `patentsview` — patents (патентный импульс). Ключ: `api_key` (бесплатно, заявка
+  на patentsview.org). Лимит: 45 запросов/мин (уточнить при подключении).
+  Сам API — PatentsView (NIH/NSF): имена сервисов и что вводить — в
+  `docs/API-KEYS.md`.
+- `edgar` — funding (раунды). Не ключ, а User-Agent с email (требование SEC).
+  Хранить в `meta.user_agent`.
+- `yandex_wordstat` — search_interest (динамика и регионы, РФ). Бесплатно, по
+  заявке. Нужны OAuth-токен и ClientId. Квота: при превышении — `429` с
+  `Time to refill: N seconds`.
+- `google_trends` — search_interest (динамика, глобально). Официальный API —
+  alpha по заявке (бесплатно, но ограниченный доступ). Альтернатива — платные
+  Apify/DataForSEO (пользователь решает сам).
+- `apify` — обёртка для Google Trends через Apify (платно, но сразу). Нужен
+  API-токен Apify и `actor_id` для Google Trends Scraper.
+
+**UI:** Настройки → API-ключи. Список провайдеров, поле ввода, кнопки
+«Сохранить» / «Проверить» / «Удалить». Статус: «не настроен» / «настроен» /
+«проверка пройдена» / «ошибка». Ссылка на `docs/API-KEYS.md`. Значения ключей
+через API не отдаются — только статус.
+
+### 18.3. Сигналы
+
+#### Momentum (P4, 3 часа)
+
+**Что:** Δ adoption за 7/30/90 дней по истории observations. Не «сколько
+скачиваний», а «как быстро растёт».
+
+**Источник:** уже есть в Store — `get_observations_history(name, limit=...)`.
+
+**Формула:** `(latest - prev) / prev * 100` за окно, где `prev` — ближайший
+замер, отстоящий от `latest` на 7/30/90 дней. Если истории меньше окна —
+меньше точность, честно показывать «N замеров».
+
+**UI:** в карточке пакета — числа и стрелки (↑ +40%/30д, ↓ -5%/7д). В матрице —
+цвет точки (зелёный/серый/красный). В `GET /api/matrix` — поле `momentum_30d`.
+
+**Стоимость:** 3 часа (запрос + UI).
+**Без ключа:** работает всегда (данные уже есть).
+
+#### Cross-ecosystem momentum (P4, 1–2 дня)
+
+**Что:** сравнение adoption для одного «концепта» в PyPI / npm / GitHub.
+Например, «vector-db»: PyPI +40%, npm +5%, GitHub +20% → Python-экосистема
+обгоняет JS.
+
+**Источник:** таблица `concept_packages` (mapping вручную или через эвристику)
++ существующие observations.
+
+**UI:** в карточке пакета — 3 полосы (PyPI/npm/GitHub) с Δ adoption. В
+`GET /api/signals/{package}` — поле `cross_ecosystem`.
+
+**Стоимость:** 1–2 дня (mapping + UI).
+**Без ключа:** работает всегда (данные из observations).
+
+#### Jobs (P5, 2 дня)
+
+**Что:** количество вакансий по ключевому слову, по странам. Прямой гео-сигнал
+спроса на труд: «в Германии 200 вакансий с Rust, в Италии — 12».
+
+**Источник:** Adzuna API (`https://api.adzuna.com/v1/api/jobs/{country}/search/1`),
+покрытие: UK, US, DE, FR, NL, AU, BR, IN, IT, ES, CA.
+
+**Формула:** `count` по каждой стране, top-5. Хранить в
+`signal_observations(signal_kind='jobs', detail=json)`.
+
+**UI:** в карточке пакета — top-5 стран с числом вакансий. В
+`GET /api/signals/{package}` — `jobs: [{country, count}]`.
+
+**Стоимость:** 2 дня (клиент + UI + тесты на фикстурах).
+**Без ключа:** сигнал «не настроен», приложение работает.
+
+#### Patents (P5, 2–3 дня)
+
+**Что:** патентный импульс — растёт или падает число filings по теме за 3 года.
+
+**Источник:** PatentsView API (`https://search.patentsview.org/api/v1/patent/`).
+Провайдер: `patentsview` (`api_key`).
+
+**Формула:** `impulse = (count(последние 12 мес) / count(12 мес трёхлетней
+давности) − 1) · 100 %`. Хранить в
+`signal_observations(signal_kind='patents', value=percent)`.
+
+**UI:** в карточке — «патентный импульс: +40% за 3 года».
+
+**Стоимость:** 2–3 дня (клиент + парсинг + UI).
+**Без ключа:** «не настроен».
+
+#### Funding (P5, 3–5 дней)
+
+**Что:** раунды финансирования компаний, упоминающих технологию. «В этой нише
+3 раунда за квартал» = горячо.
+
+**Источник:** SEC EDGAR — полнотекстовый поиск
+(`https://efts.sec.gov/LATEST/search-index?q=...&forms=D`; Form D — уведомления
+о предложениях с суммой). Провайдер: `edgar` (User-Agent с email, не ключ).
+
+**Формула:** count filings за квартал, суммарный объём (если указан). Хранить в
+`signal_observations(signal_kind='funding', detail=json)`.
+
+**UI:** в карточке — последние раунды (компания, сумма, дата).
+
+**Стоимость:** 3–5 дней (EDGAR отдаёт XML/JSON неоднородно, нужна нормализация).
+**Без ключа:** «не настроен».
+
+#### Search interest (P5, 3–4 дня)
+
+**Что:** динамика поискового интереса и разбивка по регионам для ключевой фразы
+ниши. «В этой стране интерес растёт, в этой — стагнирует».
+
+**Источники (пользователь выбирает, какой API настроить):**
+
+- **Yandex Wordstat** — бесплатно, по заявке. OAuth-токен + ClientId. Даёт
+  частотность, динамику, срезы по регионам и устройствам. При превышении квоты —
+  `429` с `Time to refill: N seconds`. Идеален для РФ.
+- **Google Trends (официальный)** — alpha по заявке (бесплатно, но
+  ограниченный доступ). Данные consistently scaled: это абсолютный объём
+  интереса, а не индекс 0–100 из веб-интерфейса.
+- **Google Trends через Apify** — платно, но сразу. Нужен API-токен Apify и
+  `actor_id` для Google Trends Scraper. Пользователь решает, платить или нет.
+
+**Формула:** для каждой страны/региона — значение интереса, динамика за
+12 месяцев. Хранить в `signal_observations(signal_kind='search_interest',
+detail=json)` с разбивкой по регионам.
+
+**UI:** в карточке пакета — график динамики (12 мес) и top-5 регионов/стран. В
+`GET /api/signals/{package}` — `search_interest: {source, regions: [{region,
+value}], trend: [...]}`.
+
+**Стоимость:** 3–4 дня (два разных клиента + нормализация + UI).
+**Без ключа:** «не настроен».
+
+#### Gap Score (P5, 1–2 дня)
+
+**Что:** интегральная метрика 0–100. Ответ на вопрос «ниша свободна?» одним
+числом.
+
+**Формула (веса в Settings, настраиваемые):**
+
+```
+score_raw = w_adoption * norm(adoption_week)
+          + w_momentum * norm(momentum_30d)
+          + w_no_flag  * (1 if flag == False else 0)
+          + w_jobs     * norm(jobs_total)
+          + w_search   * norm(search_interest_trend)
+          + w_funding  * norm(funding_count)      # вес отрицательный
+          + w_patents  * norm(patents_percent)    # вес отрицательный
+
+score = 100 * score_raw / sum(|w_i|)   # нормировка в 0..100
+```
+
+`norm` — min-max по всем пакетам. Веса по умолчанию: adoption=1, momentum=1,
+no_flag=2, jobs=0.5, search=0.3, funding=-0.5, patents=-0.3. Знак веса задан
+явно: отрицательный вес уменьшает score (то есть «ниша занята»). Компоненты, для
+которых сигнал не настроен, не участвуют в сумме, а `score_raw` нормируется по
+сумме модулей ИСПОЛЬЗОВАННЫХ весов — и в UI честно показывается, сколько
+компонент учтено («учтено 3 из 7 компонент»).
+
+**UI:** в матрице — размер точки = gap_score. В карточке — breakdown по
+компонентам (что дало плюс, что минус) и список пропущенных компонент.
+
+**Стоимость:** 1–2 дня (агрегация + UI).
+**Без ключей:** работает частично (momentum + no_flag + adoption), без
+jobs/patents/funding/search_interest.
+
+### 18.4. Порядок реализации
+
+| Этап | Что | Оценка |
+|---|---|---|
+| P4a | API Keys Store (файл, base64, UI, тесты) | 1 день |
+| P4b | Momentum (core + UI + matrix) | 3 часа |
+| P4c | Cross-ecosystem (mapping + UI) | 1–2 дня |
+| P5a | Jobs (Adzuna) | 2 дня |
+| P5b | Patents (PatentsView) | 2–3 дня |
+| P5c | Funding (SEC EDGAR) | 3–5 дней |
+| P5d | Search interest (Yandex Wordstat + Google Trends/Apify) | 3–4 дня |
+| P5e | Gap Score (Settings веса + UI) | 1–2 дня |
+| P5f | Niche Finder (экран + конвейер задач) | 3–4 дня |
+| P6 | MCP-сервер, расписание, уведомления | 2–3 дня |
+
+### 18.5. Безопасность ключей
+
+- Ключи хранятся в `<data_dir>/api_keys.json` с правами 0600 (POSIX) / icacls
+  (Windows). Файл — в `.gitignore`.
+- Не логировать значения ключей.
+- В API — только статус («настроен»/«не настроен»), не значение.
+- При экспорте БД ключи не попадают в экспорт (в SQLite их нет вообще).
+- Честно документировать: «шифрование — base64, защита — права файла, не
+  криптография».
+
+### 18.6. Инструкции для получения ключей
+
+См. `docs/API-KEYS.md` — пошаговые инструкции для Adzuna, PatentsView, SEC
+EDGAR, Yandex Wordstat, Google Trends (официальный alpha и Apify). Ссылка из
+UI «Настройки → API-ключи».
+
+## 19. Поиск ниши (Niche Finder)
+
+### 19.1. Зачем
+
+Сейчас сценарии поиска ниш разрознены: «Сейчас решать» (верхний уровень),
+«Каталоги» (незнакомая область), «Мониторинг» (динамика), «Сравнение» (отсев).
+Пользователь прыгает между экранами. Niche Finder связывает их в один сквозной
+workflow: «ввёл фразу → получил ранжированный список подсфер с рекомендацией».
+
+### 19.2. Что делает
+
+Один kind задачи — `niche.find` — выполняет конвейер:
+
+1. `catalog.build` по фразе — находит все проекты, чьё описание содержит фразу
+   (не только имена).
+2. `packages.check` по найденным именам — adoption, verdict, flag.
+3. `signals.collect` по именам — momentum, cross_eco, jobs, patents, funding,
+   search_interest (что настроено).
+4. Расчёт `gap_score` по собранным данным.
+5. Ранжирование + фильтры — сортировка по gap_score, фильтры «только растущие»,
+   «без MCP», «без funding».
+
+Всё это — задача (подпроцесс), а не работа в обработчике запроса: инвариант 6
+(«никакой сетевой работы в обработчиках»). `POST /api/niche/find` отвечает
+`202 {"job_id"}`, результат читается `GET /api/niche/result/{job_id}`, прогресс —
+SSE.
+
+### 19.3. UI
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Поиск ниши                                                   │
+│                                                              │
+│ [vector database________________]  [Найти нишу]              │
+│                                                              │
+│ Фильтры:  ☑ только растущие (momentum > 0)                   │
+│           ☑ без MCP                                          │
+│           ☑ без funding (никто не вложился)                  │
+│           ☐ только патенты растут                            │
+│                                                              │
+│ ─────────────────────────────────────────────────────────── │
+│                                                              │
+│ Найдено 12 подсфер в «vector database»:                      │
+│                                                              │
+│  1. pinecone-client          gap 87  ↑ +42%/30д  MCP нет     │
+│     └ adoption 2.1M/нед, funding: нет, patents: +5%          │
+│                                                              │
+│  2. weaviate-client          gap 74  ↑ +28%/30д  MCP нет     │
+│     └ adoption 890k/нед, funding: 1 раунд Q3, patents: +12%  │
+│                                                              │
+│  3. chromadb                 gap 52  →  0%/30д   MCP есть    │
+│     └ adoption 4.2M/нед, funding: 2 раунда — ЗАНЯТО          │
+│                                                              │
+│  [Экспорт CSV]  [Добавить всех в матрицу]                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 19.4. Эндпоинты
+
+- `POST /api/niche/find` — тело `{"q": "vector database",
+  "filters": {"momentum_positive": true, "no_flag": true, "no_funding": true},
+  "limit": 50}`; ответ `202 {"job_id"}`. Валидация: `q` — непустая строка,
+  `filters` — объект из известных ключей, `limit` — 1..200 (50).
+- `GET /api/niche/result/{job_id}` — `{"q", "total", "results": [{name,
+  gap_score, momentum_30d, flag, adoption_week, jobs_total, patents_percent,
+  funding_count}]}`. Неизвестный/незавершённый job — 404/409.
+
+### 19.5. Стоимость
+
+3–4 дня (P5, после signals). Это не новый источник данных — это UI поверх уже
+собранного.
+
+### 19.6. Без ключей
+
+Работает частично: momentum + cross_eco + flag + adoption. Jobs/patents/
+funding/search_interest показывают «не настроен», но gap_score считается (с
+меньшим числом компонент, честно помеченным — «учтено 3 из 7 компонент»).

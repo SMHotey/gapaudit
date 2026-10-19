@@ -14,3 +14,7 @@ build/
 .pytest_cache/
 .mypy_cache/
 *.egg-info/
+
+# ключи внешних API (настраиваются в приложении, лежат в <data_dir>)
+api_keys.json
+data/api_keys.json
