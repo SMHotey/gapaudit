@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import re
 import sqlite3
+import threading
 import time
 
 import pytest
@@ -432,6 +433,200 @@ def test_counts(store: Store) -> None:
     store.record_event(run_id="r", kind="release", name="requests", at="2026-10-19T10:00:01Z")
     assert store.count_observations() == 1
     assert store.count_events() == 2
+
+
+# --- jobs (таблица jobs, шаг 3a) -------------------------------------------
+
+
+def job_record(
+    job_id: str = "job-1",
+    *,
+    kind: str = "packages.check",
+    status: str = "queued",
+    created_at: str = "2026-10-19T10:00:00Z",
+    params: dict | None = None,
+) -> dict:
+    """Словарь для Store.create_job() в форме контракта шага 3a."""
+    return {
+        "id": job_id,
+        "kind": kind,
+        "params": {"names": ["requests"]} if params is None else params,
+        "status": status,
+        "progress": 0.0,
+        "message": "",
+        "created_at": created_at,
+        "log_path": f"data/jobs/{job_id}.log",
+    }
+
+
+def test_create_job_round_trip(store: Store) -> None:
+    store.create_job(job_record())
+    job = store.get_job("job-1")
+    assert job is not None
+    assert job["id"] == "job-1"
+    assert job["kind"] == "packages.check"
+    assert job["status"] == "queued"
+    assert job["progress"] == 0.0
+    assert job["message"] == ""
+    assert job["created_at"] == "2026-10-19T10:00:00Z"
+    assert job["log_path"] == "data/jobs/job-1.log"
+    assert job["params"] == {"names": ["requests"]}  # JSON обратно в dict
+    # заполняются позже через update_job
+    assert job["started_at"] is None
+    assert job["finished_at"] is None
+    assert job["error"] is None
+    assert job["pid"] is None
+
+
+def test_get_job_unknown_id_returns_none(store: Store) -> None:
+    assert store.get_job("nope") is None
+
+
+def test_update_job_status_started_at(store: Store) -> None:
+    store.create_job(job_record())
+    store.update_job(
+        "job-1",
+        status="running",
+        started_at="2026-10-19T10:00:05Z",
+        progress=0.25,
+        message="стр. 1/4",
+        pid=4242,
+    )
+    job = store.get_job("job-1")
+    assert job is not None
+    assert job["status"] == "running"
+    assert job["started_at"] == "2026-10-19T10:00:05Z"
+    assert job["progress"] == 0.25
+    assert job["message"] == "стр. 1/4"
+    assert job["pid"] == 4242
+
+
+def test_update_job_unknown_field_raises(store: Store) -> None:
+    store.create_job(job_record())
+    with pytest.raises(ValueError, match="недопустимые поля"):
+        store.update_job("job-1", kind="registry.scan")
+    with pytest.raises(ValueError, match="params"):
+        store.update_job("job-1", params={"x": 1})
+
+
+def test_update_job_unknown_id_is_noop(store: Store) -> None:
+    store.create_job(job_record())
+    assert store.update_job("ghost", status="done") is None  # 0 строк, без исключения
+    assert store.get_job("ghost") is None
+
+
+def test_list_jobs_created_at_desc(store: Store) -> None:
+    store.create_job(job_record("old", created_at="2026-10-19T10:00:00Z"))
+    store.create_job(job_record("new", created_at="2026-10-19T12:00:00Z"))
+    store.create_job(job_record("mid", created_at="2026-10-19T11:00:00Z"))
+    assert [row["id"] for row in store.list_jobs()] == ["new", "mid", "old"]
+
+
+def test_list_jobs_status_filter(store: Store) -> None:
+    store.create_job(job_record("a", status="queued"))
+    store.create_job(job_record("b", status="done", created_at="2026-10-19T11:00:00Z"))
+    store.create_job(job_record("c", status="queued", created_at="2026-10-19T12:00:00Z"))
+    queued = store.list_jobs(status="queued")
+    assert sorted(row["id"] for row in queued) == ["a", "c"]
+    assert [row["id"] for row in store.list_jobs(status="done")] == ["b"]
+
+
+def test_list_jobs_limit(store: Store) -> None:
+    for index in range(3):
+        store.create_job(
+            job_record(f"j{index}", created_at=f"2026-10-19T10:00:0{index}Z")
+        )
+    rows = store.list_jobs(limit=2)
+    assert len(rows) == 2
+    assert [row["id"] for row in rows] == ["j2", "j1"]  # по created_at DESC
+
+
+def test_list_jobs_parallel_create(store: Store) -> None:
+    """2 потока × 50 create_job: ровно 100 строк, без исключений."""
+    errors: list[BaseException] = []
+    start = threading.Barrier(2)
+
+    def writer(prefix: str) -> None:
+        try:
+            start.wait(timeout=10)
+            for index in range(50):
+                store.create_job(
+                    job_record(
+                        f"{prefix}-{index}",
+                        created_at="2026-10-19T10:00:00Z",
+                    )
+                )
+        except BaseException as error:  # noqa: BLE001 - провал потока должен упасть в main
+            errors.append(error)
+
+    threads = [threading.Thread(target=writer, args=(p,)) for p in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not errors, errors
+    assert len(store.list_jobs(limit=200)) == 100
+
+
+# --- потокобезопасность Store (шаг 3a, follow-up 0.1) ------------------------
+
+
+def test_record_observation_is_thread_safe(tmp_path) -> None:
+    """2 потока × 100 записей на файловой БД: ровно 200 наблюдений."""
+    errors: list[BaseException] = []
+    with Store(tmp_path / "concurrent.db") as store:
+        start = threading.Barrier(2)
+
+        def writer(run_id: str) -> None:
+            try:
+                start.wait(timeout=10)
+                for _ in range(100):
+                    store.record_observation(observation(), run_id=run_id)
+            except BaseException as error:  # noqa: BLE001
+                errors.append(error)
+
+        threads = [threading.Thread(target=writer, args=(r,)) for r in ("run-a", "run-b")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert not errors, errors
+        assert store.count_observations() == 200
+
+
+def test_reads_during_writes_do_not_raise(tmp_path) -> None:
+    """Чтения параллельно с записью не роняются и видят монотонный счётчик."""
+    errors: list[BaseException] = []
+    observed: list[int] = []
+    with Store(tmp_path / "readers.db") as store:
+        stop = threading.Event()
+
+        def writer() -> None:
+            try:
+                for _ in range(50):
+                    store.record_observation(observation(), run_id="run")
+            except BaseException as error:  # noqa: BLE001
+                errors.append(error)
+            finally:
+                stop.set()
+
+        def reader() -> None:
+            try:
+                while not stop.is_set():
+                    store.count_observations()
+                    store.get_latest_observations()
+                    store.get_events(limit=5)
+                observed.append(store.count_observations())
+            except BaseException as error:  # noqa: BLE001
+                errors.append(error)
+
+        threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert not errors, errors
+        assert observed and observed[0] == 50
 
 
 # --- SqliteCache --------------------------------------------------------------------

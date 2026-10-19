@@ -202,6 +202,15 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
 20. L2 в compat_check = in-process legacy + subprocess new. Для legacy-модулей с побочными
     эффектами на импорте (catalog_scan.py) — сравнивать с legacy-экстрактом из паритетного теста,
     не импортировать legacy-модуль.
+21. sqlite3 с isolation_level=None: `with conn:` не коммитит.
+    Нужен явный `BEGIN` + `with conn:` (так работает Store).
+    Store потокобезопасен: self._lock вокруг публичных методов.
+    JobQueue зовёт Store из воркеров — это безопасно.
+22. Будущий MCP-сервер (P5) не хранит состояние: каждый tool —
+    store.get_* / store.record_*. Никаких session_id в таблицах —
+    MCP-сессия транспортная (stdio), данные принадлежат пакету и
+    времени замера (run_id + measured_at). Store — единственный
+    источник правды.
 
 ---
 
