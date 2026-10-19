@@ -27,11 +27,22 @@
   ``app.state``; на выключении гасит очередь и закрывает БД.
 
 * **эндпоинты** (§7): задачи ``/api/jobs*`` (создание, список, карточка,
-  отмена, хвост лога, ``POST /resume`` — заглушка 501), SSE ``/api/stream``,
-  пакеты ``/api/packages*``, расширенный ``/api/health``.
+  отмена, хвост лога, ``POST /resume`` — реальное продолжение
+  ``interrupted``-задачи, шаг 3d-b), SSE ``/api/stream``, пакеты
+  ``/api/packages*``, расширенный ``/api/health``.
 * **восстановление после падения** (шаг 3c): lifespan зовёт
   ``JobQueue.recover_interrupted()`` до ``queue.start()`` — задачи,
   работавшие в упавшем приложении, становятся ``interrupted``.
+* **запись наблюдений по завершении задачи** (шаг 3d-b): lifespan подписан на
+  события очереди; на ``done`` для ``kind="packages.check"`` он читает
+  ``<data_dir>/jobs/<id>.result.json`` (файл, который CLI записал по
+  ``--json-out``) и отдаёт строки в ``Store.record_observations`` через
+  ``ThreadPoolExecutor(max_workers=1)``. Подписчик вызывается в потоке воркера
+  под ``_emit``, поэтому сам он ничего не читает с диска и не пишет в БД —
+  только ставит задачу в пул. Порядок выключения (важен): отписка от очереди →
+  ``post_executor.shutdown(wait=True)`` → ``queue.stop()`` → ``store.close()``,
+  иначе последняя завершённая задача может не успеть записать наблюдения в уже
+  закрытый ``Store``.
 
 Правило обработчиков (§7): никакой сетевой работы — только чтение SQLite и
 очереди; всё долгое уходит в задачу. События ``started`` и ``status`` не
@@ -55,6 +66,7 @@ import secrets
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -389,14 +401,86 @@ def create_app(
                 len(recovered),
                 ", ".join(recovered),
             )
-        queue.start()
         application.state.store = store
         application.state.queue = queue
         application.state.data_dir = str(data_dir)
+
+        # --- хук завершения задачи (шаг 3d-b) --------------------------------
+        # ``_post_process`` зовётся синхронно из потока воркера под ``_emit``:
+        # ни чтения файла, ни записи в БД здесь — только постановка в пул.
+        # Один воркер: записи наблюдений не должны обгонять друг друга
+        # (порядок measured_at и id остаётся предсказуемым).
+        post_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="post")
+        application.state.post_executor = post_executor
+
+        def _post_process(job_id: str, event_type: str, _data: dict) -> None:
+            """Callback :meth:`JobQueue.subscribe`: записать наблюдения задачи.
+
+            Вызывается из потока воркера (синхронно, под ``_emit``). Не должен
+            блокировать emit и не должен бросать исключения — поэтому всё
+            опасное завёрнуто в try, а работа с диском и БД живёт в пуле.
+            """
+            if event_type != "done":
+                return
+            try:
+                job = application.state.queue.get(job_id)
+            except Exception as error:  # noqa: BLE001 - emit не должен падать
+                logger.error(
+                    "post_process: queue.get(%s) не удался: %s", job_id, error
+                )
+                return
+            if not job or job.kind != "packages.check":
+                return
+            result_path = data_dir / "jobs" / f"{job_id}.result.json"
+            if not result_path.exists():
+                logger.warning("нет result.json для задачи %s", job_id)
+                return
+
+            def _record() -> None:
+                """Прочитать результат CLI и записать его наблюдения (в пуле)."""
+                try:
+                    rows = json.loads(result_path.read_text(encoding="utf-8"))
+                except Exception as error:  # noqa: BLE001 - битый файл не роняет приложение
+                    logger.error(
+                        "не читается результат задачи %s: %s", job_id, error
+                    )
+                    return
+                try:
+                    ids = application.state.store.record_observations(
+                        rows, run_id=job_id
+                    )
+                    logger.info(
+                        "записано наблюдений: %d (задача %s)", len(ids), job_id
+                    )
+                except Exception as error:  # noqa: BLE001 - БД не должна ронять приложение
+                    logger.error(
+                        "record_observations не удался для %s: %s", job_id, error
+                    )
+
+            try:
+                post_executor.submit(_record)
+            except RuntimeError as error:
+                # пул уже закрыт (идёт shutdown) — терять нечего, только сообщить
+                logger.warning(
+                    "post_executor закрыт, запись для %s отброшена: %s",
+                    job_id,
+                    error,
+                )
+
+        # подписка до queue.start(): задача, завершившаяся мгновенно, не должна
+        # проскочить мимо хука.
+        queue.subscribe(_post_process)
+        queue.start()
         try:
             yield
         finally:
+            # 1. отписка ДО остановки: cancelled из queue.stop в хук не нужен.
+            queue.unsubscribe(_post_process)
+            # 2. дождаться записей, пока Store ещё открыт.
+            post_executor.shutdown(wait=True)
+            # 3. остановить очередь.
             queue.stop(timeout=5.0)
+            # 4. закрыть БД.
             store.close()
 
     application = FastAPI(title="GapAudit", version=VERSION, lifespan=lifespan)
@@ -477,18 +561,32 @@ def create_app(
 
     @application.post("/api/jobs/{job_id}/resume")
     async def resume_job(job_id: str, request: Request) -> dict[str, Any]:
-        """Заглушка шага 3c: продолжение прерванной задачи ещё не работает.
+        """Продолжить ``interrupted``-задачу (шаг 3d-b): ``{"resumed": true}``.
 
-        ``501`` — честный ответ для кнопки «Продолжить» из ``index.html``:
-        сам метод :meth:`JobQueue.resume_interrupted` уже есть, а вызывать
-        его из HTTP будем в шаге 3d, там же, где реальные ``cli/*`` через
-        ``--job-json`` (до тех пор продолжать нечего: реальных прерванных
-        задач приложение ещё не умеет выполнять).
+        Коды: ``404`` — задачи нет; ``409`` — задача не ``interrupted`` (продолжать
+        нечего) или ``JobQueue.resume_interrupted`` отказал (нет лога прошлого
+        запуска — свидетельства, что запуск вообще был). Успех — задача снова
+        ``queued`` и уже в рабочей очереди; статус подтверждается через
+        ``GET /api/jobs/{id}`` (источник правды — Store).
         """
-        raise HTTPException(
-            status_code=501,
-            detail="продолжение задачи появится в шаге 3d (реальные cli-задачи)",
-        )
+        store = _store(request)
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"задача {job_id} не найдена")
+        if job["status"] != "interrupted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "продолжить можно только interrupted, "
+                    f"текущий статус: {job['status']}"
+                ),
+            )
+        if not _queue(request).resume_interrupted(job_id):
+            raise HTTPException(
+                status_code=409,
+                detail="продолжение не удалось: нет лога прошлого запуска",
+            )
+        return {"resumed": True, "job_id": job_id}
 
     @application.get("/api/jobs/{job_id}/log", response_class=PlainTextResponse)
     async def job_log(job_id: str, request: Request) -> str:

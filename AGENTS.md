@@ -246,6 +246,13 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     (`_PROJECT_ROOT` в app/jobs.py): `python -m cli.*` требует корень в
     `sys.path`, иначе запуск из произвольного cwd даёт `ModuleNotFoundError`.
     argv от cwd не зависит — это только рабочая директория процесса.
+32. Порядок выключения в lifespan (`app/web.py`, шаг 3d-b) — часть контракта:
+    `queue.unsubscribe(хук)` → `post_executor.shutdown(wait=True)` →
+    `queue.stop()` → `store.close()`. Запись наблюдений идёт в пуле
+    (`ThreadPoolExecutor(max_workers=1)`), поэтому `store.close()` раньше
+    `shutdown` теряет последнюю задачу: запись уходит в закрытую БД.
+    Хук — пожизненный подписчик очереди, значит `len(queue._subscribers)`
+    в тестах нельзя считать абсолютом (SSE-тест сравнивает с baseline).
 
 ---
 

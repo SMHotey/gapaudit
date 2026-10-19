@@ -243,6 +243,66 @@ def test_cancel_unknown_job_is_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+# --- POST /api/jobs/{id}/resume ---------------------------------------------
+
+
+def _interrupted(client: TestClient, *, with_log: bool = True) -> str:
+    """Задача в статусе ``interrupted``; ``with_log`` — есть файл прошлого лога.
+
+    Лог — свидетельство, что запуск вообще был: ``resume_interrupted`` отказывает
+    без него (шаг 3c). Файл создаём руками: воркеры в этих тестах не поднимаются
+    (conftest), а подпроцесса, который его открыл бы, тоже нет.
+    """
+    job_id = client.post("/api/jobs", json=VALID_JOB, headers=auth()).json()["job_id"]
+    state = app_state(client)
+    if with_log:
+        log_path = Path(state.queue.get(job_id).log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("прошлый запуск\n", encoding="utf-8")
+    state.store.update_job(
+        job_id, status="interrupted", started_at="2026-10-19T00:00:00Z"
+    )
+    return job_id
+
+
+def test_resume_interrupted_returns_200_and_queues(client: TestClient) -> None:
+    job_id = _interrupted(client)
+
+    response = client.post(f"/api/jobs/{job_id}/resume", headers=auth())
+
+    assert response.status_code == 200
+    assert response.json() == {"resumed": True, "job_id": job_id}
+    # Store — источник правды: задача снова queued, следы прошлого запуска стёрты
+    row = client.get(f"/api/jobs/{job_id}", headers=auth()).json()
+    assert row["status"] == "queued"
+    assert row["started_at"] is None and row["error"] is None
+
+
+def test_resume_queued_job_is_409(client: TestClient) -> None:
+    job_id = client.post("/api/jobs", json=VALID_JOB, headers=auth()).json()["job_id"]
+
+    response = client.post(f"/api/jobs/{job_id}/resume", headers=auth())
+
+    assert response.status_code == 409
+    assert "interrupted" in response.json()["detail"]
+
+
+def test_resume_unknown_job_is_404(client: TestClient) -> None:
+    response = client.post(f"/api/jobs/{'c' * 32}/resume", headers=auth())
+
+    assert response.status_code == 404
+
+
+def test_resume_interrupted_without_log_is_409(client: TestClient) -> None:
+    """``interrupted`` без лога прошлого запуска: очередь отказывает — 409."""
+    job_id = _interrupted(client, with_log=False)
+
+    response = client.post(f"/api/jobs/{job_id}/resume", headers=auth())
+
+    assert response.status_code == 409
+    assert "лог" in response.json()["detail"]
+
+
 # --- GET /api/jobs/{id}/log --------------------------------------------------
 
 

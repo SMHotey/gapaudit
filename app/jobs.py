@@ -752,6 +752,9 @@ KIND_PARAM_KEYS: dict[str, frozenset[str]] = {
 
 #: Обязательные ключи: без них задача бессмысленна. Проверяется и в API (400),
 #: и в runner'е (``ValueError``) — одной функцией :func:`missing_required`.
+#: Пустой список/строка для обязательного ключа = «не передано»
+#: (:func:`missing_required`). Если когда-нибудь понадобится ``names: []`` как
+#: валидное пустое — потребуется ``KIND_ALLOW_EMPTY_KEYS``.
 KIND_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "packages.check": frozenset({"names"}),
     "catalog.build": frozenset({"phrases"}),

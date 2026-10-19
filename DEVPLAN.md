@@ -122,7 +122,12 @@ C:\Users\malik\gapaudit\
   принимают обе формы, сравнение в `compat_check` идёт по именам серверов;
 - `catalog.json` в `collect.py` хранит нормализованные элементы, не `{"server":{...}}`
   (следствие `list_servers_raw`). Флаг `--legacy-catalog-format` в P4 вернёт legacy-форму
-  для внешних скриптов, читающих старый формат.
+  для внешних скриптов, читающих старый формат;
+- `monitor.diff` принимает только `diff_from` (не `days`): `days` — это UI-фильтр отображения,
+  а не параметр задачи. `registry.scan` не принимает `classes` (это настройка метода в
+  `core.scan.DEFAULT_CLASSES`). `KIND_PARAM_TYPES` — третья грань того же контракта в
+  `app/jobs.py` (ключи, обязательность, типы), единственный источник правды для `app/web.py`
+  и `_default_runner` (3d-b).
 
 Критерий готовности шага 0: `python cli/check_predecessors.py gerenuk` выдаёт тот же текст, что
 старый скрипт; `core` импортируется без побочных эффектов (никаких сетевых вызовов на импорте);
@@ -206,7 +211,7 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | GET | `/jobs` | список задач и статусы |
 | POST | `/jobs` | создать задачу (`kind`, `params`) |
 | POST | `/jobs/{id}/cancel` | отмена |
-| POST | `/jobs/{id}/resume` | продолжение `interrupted`-задачи (3c: заглушка 501; реальная — 3d) |
+| POST | `/jobs/{id}/resume` | продолжение `interrupted`-задачи (3c: 501; 3d-b: реальный вызов `queue.resume_interrupted`, 404/409) |
 | GET | `/jobs/{id}/log` | хвост лога задачи |
 | GET | `/api/stream` | SSE: прогресс задач и события |
 | POST | `/api/packages/check` | прогон имён (adoption × признак) |
@@ -222,9 +227,15 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 Правила: никакой сетевой работы в обработчиках, кроме чтения из SQLite/кэша; всё долгое — задачей.
 Ответы — JSON со стабильными ключами, пригодные и для CLI, и для UI.
 `params` возвращается как есть. Валидация `POST /api/jobs` строится по таблицам
-`app/jobs.py` (`KIND_PARAM_KEYS`/`KIND_REQUIRED_KEYS`/`KIND_PARAM_TYPES`) — локального
-`JOB_KINDS` в `app/web.py` больше нет (шаг 3d-b): два описания «валидной задачи»
-расходились, и API отвечал 202 задаче, которая падала с `missing param`.
+`app/jobs.py` — `KIND_PARAM_KEYS` / `KIND_REQUIRED_KEYS` / `KIND_PARAM_TYPES` — это
+единственный источник правды; локального `JOB_KINDS` в `app/web.py` нет (шаг 3d-b):
+два описания «валидной задачи» расходились, и API отвечал 202 задаче, которая падала
+с `missing param`. `app/web.py` импортирует таблицы и отвечает 400 при неизвестном
+`kind`, неизвестном ключе `params`, неверном типе и отсутствующем/пустом обязательном
+ключе (задача не создаётся — fail fast). `_default_runner` использует те же
+`KIND_PARAM_KEYS`/`KIND_REQUIRED_KEYS` для проверки обязательных до `subprocess`.
+Добавление нового `kind` — одна правка в `app/jobs.py` (плюс строка в
+`_KIND_TO_MODULE`); `web.py` подхватывает её автоматически.
 `_default_runner` маппит `kind` в argv по whitelist-таблице `_KIND_TO_MODULE`
 (`packages.check`→`cli.check_predecessors`, `catalog.build`→`cli.catalog_build`,
 `registry.scan`→`cli.catalog_scan`, `github.verify`→`cli.verify`,
@@ -383,6 +394,11 @@ Hermes не подключается к живому приложению — о
 
   Веб-тесты с lifespan не оптимизируем в ущерб изоляции (шаг 3b: каждый такой тест
   несёт `create_app` + lifespan с чистым SQLite — это и есть изоляция, флаки дороже секунд).
+
+  Замер шага 3d-b (19.10.2026): на свободной машине полный 26.7 с (cap 30),
+  быстрый 9.1 с (cap 12) — оба в норме. Под нагрузкой (параллельные прогоны, живой
+  dev-сервер) те же тесты дают 25–35 с и 17–19 с: абсолютный гейт без оговорки
+  «clean machine» ложно-красный (AGENTS gotcha 29). Вклад 3d-b — около 0.5 с.
 
 ## 12. Упаковка и запуск
 

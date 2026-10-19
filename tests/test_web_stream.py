@@ -160,14 +160,17 @@ def test_stream_keeps_event_order_without_rewriting_it(client: TestClient) -> No
 
 def test_closing_stream_unsubscribes(client: TestClient) -> None:
     queue = app_state(client).queue
+    # пожизненный подписчик lifespan (хук записи наблюдений, шаг 3d-b) уже есть —
+    # считаем дельту, а не абсолют: иначе тест ломается от любого нового хука
+    baseline = list(queue._subscribers)
 
     with client.stream("GET", "/api/stream", headers=auth()) as response:
         assert response.status_code == 200
-        assert len(queue._subscribers) == 1
+        assert len(queue._subscribers) == len(baseline) + 1
 
     # закрытие соединения должно дойти до генератора и снять подписку
     deadline = time.monotonic() + 1.0
-    while queue._subscribers and time.monotonic() < deadline:
+    while len(queue._subscribers) > len(baseline) and time.monotonic() < deadline:
         time.sleep(0.02)
 
-    assert queue._subscribers == []
+    assert queue._subscribers == baseline

@@ -149,15 +149,18 @@ function refreshJobs() {
 
 document.getElementById('refresh').addEventListener('click', refreshJobs);
 
-// «Продолжить» для interrupted: в 3c эндпоинт — заглушка 501 (шаг 3d).
+// «Продолжить» для interrupted: POST /api/jobs/{id}/resume (шаг 3d-b).
+// 200 — задача снова queued; 409 — продолжать нечего или нет лога прошлого запуска.
 document.getElementById('jobs').addEventListener('click', (event) => {
   const id = event.target && event.target.getAttribute('data-resume');
   if (!id) return;
   fetch('/api/jobs/' + id + '/resume', { method: 'POST', headers: headers() })
     .then((r) => {
-      if (r.status === 501) {
-        window.alert('Продолжение задачи появится в следующем шаге (3d): реальные cli-задачи через --job-json.');
-        return null;
+      if (r.status === 409 || r.status === 404) {
+        return r.json().then((body) => {
+          window.alert('Продолжить задачу нельзя: ' + body.detail);
+          return null;
+        });
       }
       if (!r.ok) return Promise.reject(r.status);
       return r.json();

@@ -91,15 +91,15 @@ def test_delete_takes_token_from_header_not_query(client: TestClient) -> None:
     assert passed.status_code == 405
 
 
-# --- resume: заглушка 501 (шаг 3c) -------------------------------------------
+# --- resume: мутация, миддлварь пускает (3d-b: 404 на неизвестную задачу) -----
 
 
-def test_resume_with_header_token_is_501(client: TestClient) -> None:
-    """Метод методом есть (шаг 3c), продолжать пока нечего — 501 (3d)."""
+def test_resume_with_header_token_reaches_handler(client: TestClient) -> None:
+    """Токен в заголовке — миддлварь пропускает; неизвестная задача → 404 (не 403)."""
     response = client.post(f"/api/jobs/{'a' * 32}/resume", headers=auth())
 
-    assert response.status_code == 501
-    assert "3d" in response.json()["detail"]
+    assert response.status_code == 404
+    assert "не найдена" in response.json()["detail"]
 
 
 def test_resume_without_token_is_forbidden(client: TestClient) -> None:
@@ -115,7 +115,7 @@ def test_resume_takes_token_from_header_not_query(client: TestClient) -> None:
     passed = client.post(f"/api/jobs/{'a' * 32}/resume", headers=auth())
 
     assert forbidden.status_code == 403
-    assert passed.status_code == 501
+    assert passed.status_code == 404
 
 
 # --- SSE: все три места, включая query ---------------------------------------
