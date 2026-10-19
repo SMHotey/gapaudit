@@ -23,7 +23,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from cli._common import build_argparser, load_runtime, print_table, write_json
+from cli._common import (
+    build_argparser,
+    emit_done,
+    emit_error,
+    job_json_mode,
+    job_json_requested,
+    load_runtime,
+    print_table,
+    write_json,
+)
 from core.settings import resolve_data_dir
 
 __all__ = ["build_corpus", "covered", "is_tool", "main", "norm"]
@@ -134,7 +143,7 @@ def is_tool(repo: dict) -> bool:
     return True
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     parser = build_argparser(
         prog="coverage.py",
         description="Сопоставление покрытия, фильтр не-инструментов, карта плотности",
@@ -233,6 +242,25 @@ def _load(path: str) -> tuple[Any, bool]:
     except (OSError, ValueError):
         print(f"[gapaudit] нет файла: {path} (принимаю как пустой)", file=sys.stderr)
         return {}, False
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Точка входа CLI; под ``--job-json`` — протокол JSON-lines вокруг тела.
+
+    Таблицы при этом уходят в stderr (лог задачи), stdout остаётся чистым
+    протоколом; ошибка тела — ``{"type": "error"}`` и код 2 (шаг 3d-a).
+    """
+    if not job_json_requested(argv):
+        return _main(argv)
+    with job_json_mode():
+        try:
+            code = _main(argv)
+        except Exception as error:  # noqa: BLE001 - задача обязана отчитаться ошибкой
+            emit_error(str(error))
+            return 2
+        if code == 0:
+            emit_done()
+        return code
 
 
 if __name__ == "__main__":

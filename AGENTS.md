@@ -225,6 +225,23 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     тест на icacls — Windows-only; оба живут в `tests/test_session.py`. На Windows
     `os.chmod` не трогает ACL (режим остаётся 0666), права даёт
     `icacls /inheritance:r /grant:r <domain>\<user>:F`.
+27. desktop.py: shutdown порядок — window.events.closed -> queue.stop ->
+    uvicorn should_exit -> remove_token -> exit(0). Если queue.stop не
+    уложился в timeout — всё равно exit 0 (незакрытое окно хуже
+    незавершённых процессов). E_ABORT при закрытии <2 с — не ошибка,
+    ловить и exit 0. Подтверждение закрытия — в фоне: `evaluate_js` внутри
+    обработчика closing вешает окно (deadlock UI-потока WebView2), поэтому
+    обработчик возвращает False, а диалог идёт отдельным потоком.
+28. `--browser` smoke-тесты обязаны выставлять `GAPAUDIT_NO_BROWSER=1`:
+    иначе первый прогон открывает пользователю вкладку браузера (наблюдалось
+    в 3c). desktop.py уважает env — проверять перед `webbrowser.open`.
+29. Бюджеты тестов в DEVPLAN §11 — на «чистой машине» (без параллельных
+    сборок). Под нагрузкой +25% допустимо. Гейт на абсолютное время без
+    оговорки «clean machine» — ложно-красный. Сигнал регрессии — тренд
+    fast-цикла между двумя подряд коммитами (> 20% — стоп).
+30. GAPAUDIT_FAKE_HTTP=1 в cli/_common.py — тестовый бэкдор для сквозных
+    тестов POST → CLI → SSE без сети. Фикстуры — tests/fixtures/http.
+    В prod не выставляется. Если фикстур нет — RuntimeError, не тихий 404.
 
 ---
 

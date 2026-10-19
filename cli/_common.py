@@ -2,9 +2,15 @@
 
 Здесь живёт всё, что одинаково у шести скриптов: разбор общих флагов
 (``--data-dir``, ``--settings``, ``--cache-path``, ``--keyword``, ``--json-out``,
-``--no-cache``, ``--quiet``), сборка рантайма (настройки файл -> окружение ->
-CLI + :class:`core.http.HttpClient` с файловым кэшем), печать таблиц, атомарная
-запись JSON, коды выхода и проверка ``gh auth status``.
+``--job-json``, ``--no-cache``, ``--quiet``), сборка рантайма (настройки файл ->
+окружение -> CLI + :class:`core.http.HttpClient` с файловым кэшем), печать таблиц,
+атомарная запись JSON, коды выхода и проверка ``gh auth status``.
+
+Протокол очереди задач (шаг 3d-a, DEVPLAN §6): ``--job-json`` включает JSON-lines
+в stdout — ``hello``/``progress``/``done``/``error`` через :func:`emit_hello`,
+:func:`build_job_emitter`, :func:`emit_done`, :func:`emit_error`. Таблицы и итоги
+при этом уходят в stderr (их читает лог задачи, ``app/jobs.py``), поэтому stdout
+остаётся чистым протоколом.
 
 Правила слоя ``cli`` (DEVPLAN §3, §4): только разбор аргументов, форматирование
 и коды выхода — вся логика в ``core``. Модуль ничего не печатает на импорте и
@@ -18,12 +24,15 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from core import http as http_module
 from core.cache import DictCache, FileCache
-from core.http import HttpClient, default_throttle
+from core.http import HttpClient, Throttle, Transport, default_throttle
+from core.registry import npm_url, pypi_url, pypistats_url
 from core.settings import (
     ENV_CACHE_TTL_H,
     ENV_DATA_DIR,
@@ -38,9 +47,17 @@ from core.settings import (
 from core.github import GhClient
 
 __all__ = [
+    "ENV_FAKE_HTTP",
     "build_argparser",
+    "build_job_emitter",
+    "emit_done",
+    "emit_error",
+    "emit_hello",
     "exit_code",
+    "job_json_mode",
+    "job_json_requested",
     "load_runtime",
+    "make_fake_transport_from_fixtures",
     "print_table",
     "setup_gh_or_warn",
     "write_json",
@@ -51,6 +68,15 @@ GH_WARN = (
     "[gapaudit] gh не авторизован — доступно только check_predecessors, "
     "лимиты 60/ч (авторизуйтесь: gh auth login)"
 )
+
+#: Переменная окружения тестового бэкдора: HTTP-ответы из ``tests/fixtures/http``.
+ENV_FAKE_HTTP = "GAPAUDIT_FAKE_HTTP"
+
+#: Каталог фикстур HTTP — в репозитории, не в каталоге данных.
+FIXTURES_HTTP_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "http"
+
+#: Настоящий stdout при ``--job-json``: протокол пишется в него, а не в подменённый.
+_job_stream: Any = None
 
 
 def build_argparser(*, prog: str, description: str) -> argparse.ArgumentParser:
@@ -80,6 +106,10 @@ def build_argparser(*, prog: str, description: str) -> argparse.ArgumentParser:
     common.add_argument(
         "--json-out", metavar="FILE",
         help="куда записать сводный JSON (сравнение во времени, потребление из UI)",
+    )
+    common.add_argument(
+        "--job-json", action="store_true",
+        help="протокол JSON-lines в stdout для очереди задач (таблицы при этом — в stderr)",
     )
     common.add_argument("--no-cache", action="store_true", help="обойти кэш (сеть принудительно, без записи)")
     common.add_argument("--quiet", action="store_true", help="не печатать таблицу, только JSON/итог")
@@ -116,6 +146,15 @@ def load_runtime(args: argparse.Namespace) -> tuple[Settings, HttpClient]:
 
     data_dir = resolve_data_dir(settings)
     cache_path = getattr(args, "cache_path", None) or str(data_dir / "cache.json")
+
+    if os.environ.get(ENV_FAKE_HTTP) == "1":
+        # Тестовый бэкдор (AGENTS gotcha 30): сеть заменена фикстурами, кэш — в
+        # памяти, троттлинг выключен. Только для сквозных тестов POST -> CLI -> SSE.
+        return settings, HttpClient(
+            cache=DictCache(settings.cache_ttl_hours),
+            throttle=Throttle(default_per_minute=0),
+            transport=make_fake_transport_from_fixtures(),
+        )
 
     if getattr(args, "no_cache", False):
         # Обход кэша: память вместо файла — сеть принудительно, диск не трогаем.
@@ -212,6 +251,112 @@ def setup_gh_or_warn() -> tuple[bool, str]:
         return True, ""
     print(GH_WARN, file=sys.stderr)
     return False, GH_WARN
+
+
+# --- протокол очереди задач (--job-json, шаг 3d-a) -----------------------------
+
+
+def _write_json_line(payload: dict) -> None:
+    """Одна строка JSON-lines в stdout (или в настоящий stdout при ``--job-json``)."""
+    stream = _job_stream if _job_stream is not None else sys.stdout
+    stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    stream.flush()
+
+
+def emit_hello() -> None:
+    """``{"type": "hello", "pid": ...}`` — первое сообщение задачи (DEVPLAN §6)."""
+    _write_json_line({"type": "hello", "pid": os.getpid()})
+
+
+def emit_done() -> None:
+    """``{"type": "done"}`` — задача отработала успешно."""
+    _write_json_line({"type": "done"})
+
+
+def emit_error(message: str) -> None:
+    """``{"type": "error", "error": ...}`` — ошибка, которую увидит пользователь."""
+    _write_json_line({"type": "error", "error": str(message)})
+
+
+def build_job_emitter() -> Callable[[float, str], None]:
+    """Возвращает ``on_progress(progress, message)``, пишущий JSON-lines.
+
+    Прогресс нормализуется в ``[0, 1]``: подпроцесс не должен уметь отправить
+    ``1.5``, из-за которого UI показал бы 150%.
+    """
+
+    def emit(progress: float, message: str) -> None:
+        value = max(0.0, min(1.0, float(progress)))
+        _write_json_line({"type": "progress", "progress": value, "message": str(message)})
+
+    return emit
+
+
+def job_json_requested(argv: list[str] | None = None) -> bool:
+    """Есть ли ``--job-json`` среди аргументов (``None`` — ``sys.argv[1:]``)."""
+    raw = sys.argv[1:] if argv is None else list(argv)
+    return "--job-json" in raw
+
+
+@contextmanager
+def job_json_mode() -> Iterator[None]:
+    """Режим JSON-lines: stdout — только протокол, прочий вывод — в stderr.
+
+    Таблицы и итоги CLI под ``--job-json`` уходят в stderr: их читает лог задачи
+    (``app/jobs.py`` пишет нераспознанный stdout и весь stderr в ``jobs/<id>.log``),
+    а в stdout остаются только строки протокола — иначе таблица шла бы в лог как
+    «мусорная» строка stdout и мешала разбору. ``hello`` отправляется сразу при входе.
+
+    Выход из контекста возвращает ``sys.stdout`` на место: тесты зовут ``main()``
+    in-process и обязаны видеть свой stdout.
+    """
+    global _job_stream
+    previous = sys.stdout
+    _job_stream = previous
+    sys.stdout = sys.stderr
+    try:
+        emit_hello()
+        yield
+    finally:
+        sys.stdout = previous
+        _job_stream = None
+
+
+def make_fake_transport_from_fixtures() -> Transport:
+    """Транспорт из ``tests/fixtures/http`` для ``GAPAUDIT_FAKE_HTTP=1``.
+
+    Обслуживается ровно один пакет — ``requests``: на нём построены фикстуры
+    ``pypi_requests.json``, ``npm_requests.json``, ``pypistats_requests.json``
+    (сняты с живых API в шаге 1d). Любой другой URL — ``(404, b"")``: «пакета
+    нет» — валидный ответ для метода, а не повод падать.
+
+    Фикстур нет — ``RuntimeError`` с путём: тихий 404 скрыл бы, что бэкдор
+    включён без данных (AGENTS gotcha 30).
+    """
+    files = {
+        "pypi": FIXTURES_HTTP_DIR / "pypi_requests.json",
+        "npm": FIXTURES_HTTP_DIR / "npm_requests.json",
+        "pypistats": FIXTURES_HTTP_DIR / "pypistats_requests.json",
+    }
+    missing = [path.name for path in files.values() if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            f"{ENV_FAKE_HTTP}=1, но нет фикстур HTTP: {', '.join(missing)} "
+            f"(ожидались в {FIXTURES_HTTP_DIR})"
+        )
+    routes = {
+        pypi_url("requests"): files["pypi"].read_bytes(),
+        npm_url("requests"): files["npm"].read_bytes(),
+        pypistats_url("requests"): files["pypistats"].read_bytes(),
+    }
+
+    def transport(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        body = routes.get(url)
+        if body is None:
+            return 404, b""
+        return 200, body
+
+    return transport
 
 
 # --- внутреннее ---------------------------------------------------------------

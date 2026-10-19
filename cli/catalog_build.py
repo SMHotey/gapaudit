@@ -19,7 +19,17 @@ import os
 import sys
 from pathlib import Path
 
-from cli._common import build_argparser, load_runtime, print_table, setup_gh_or_warn, write_json
+from cli._common import (
+    build_argparser,
+    emit_done,
+    emit_error,
+    job_json_mode,
+    job_json_requested,
+    load_runtime,
+    print_table,
+    setup_gh_or_warn,
+    write_json,
+)
 from core.catalog import DEFAULT_PAGES, SOURCE_ORDER, build_catalog, to_markdown
 from core.github import GhClient
 from core.registry import RegistryClient
@@ -30,7 +40,7 @@ __all__ = ["main"]
 DEFAULT_OUT = "raw/catalog_query.json"
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     parser = build_argparser(
         prog="catalog_build.py",
         description="Сборка каталога проектов по поисковым запросам",
@@ -147,6 +157,25 @@ def _print_report(stats: dict, items: list[dict]) -> None:
         print("\nчастые теги: " + ", ".join(
             f"{key} ({value})" for key, value in list(stats["topics"].items())[:10]
         ))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Точка входа CLI; под ``--job-json`` — протокол JSON-lines вокруг тела.
+
+    Таблицы при этом уходят в stderr (лог задачи), stdout остаётся чистым
+    протоколом; ошибка тела — ``{"type": "error"}`` и код 2 (шаг 3d-a).
+    """
+    if not job_json_requested(argv):
+        return _main(argv)
+    with job_json_mode():
+        try:
+            code = _main(argv)
+        except Exception as error:  # noqa: BLE001 - задача обязана отчитаться ошибкой
+            emit_error(str(error))
+            return 2
+        if code == 0:
+            emit_done()
+        return code
 
 
 if __name__ == "__main__":

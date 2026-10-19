@@ -20,7 +20,16 @@ import argparse
 import json
 import sys
 
-from cli._common import build_argparser, load_runtime, setup_gh_or_warn, write_json
+from cli._common import (
+    build_argparser,
+    emit_done,
+    emit_error,
+    job_json_mode,
+    job_json_requested,
+    load_runtime,
+    setup_gh_or_warn,
+    write_json,
+)
 from core.github import GhClient, age_days, org_candidates, relevant_items
 
 __all__ = ["main", "verdict"]
@@ -50,7 +59,7 @@ def verdict(best: dict | None) -> str:
     return "СЛАБЫЙ"
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     parser = build_argparser(
         prog="verify.py",
         description="Точечная проверка кандидатов: НЕТ / МЁРТВАЯ ЗАГЛУШКА / СЛАБЫЙ / ЖИВОЙ",
@@ -131,6 +140,25 @@ def main(argv: list[str] | None = None) -> int:
     print("\nитог:", counts)
     print("ЗАГЛУШКА и НЕТ — это пустые ниши; ЖИВОЙ — не лезь без причины.")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Точка входа CLI; под ``--job-json`` — протокол JSON-lines вокруг тела.
+
+    Таблицы при этом уходят в stderr (лог задачи), stdout остаётся чистым
+    протоколом; ошибка тела — ``{"type": "error"}`` и код 2 (шаг 3d-a).
+    """
+    if not job_json_requested(argv):
+        return _main(argv)
+    with job_json_mode():
+        try:
+            code = _main(argv)
+        except Exception as error:  # noqa: BLE001 - задача обязана отчитаться ошибкой
+            emit_error(str(error))
+            return 2
+        if code == 0:
+            emit_done()
+        return code
 
 
 if __name__ == "__main__":

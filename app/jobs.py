@@ -139,8 +139,8 @@ class JobQueue:
         store — открытый ``app.store.Store`` (``__enter`` вызван).
         data_dir — в нём живут ``jobs/<id>.log`` и ``jobs/<id>.cancel``.
         runner — как запускать подпроцесс; по умолчанию ``_default_runner``
-            (``python -m cli.<kind>`` — параметризация в шаге 3d, в 3a тесты
-            передают свой runner).
+            (whitelist ``kind`` → ``python -m cli.<модуль>`` + params-флаги,
+            шаг 3d-a; тесты 3a передают свой runner).
         cancel_grace_sec — сколько ждать, пока подпроцесс сам проверит
             файл-отмену, прежде чем ``terminate``.
         poll_interval — как часто проверять, завершился ли процесс.
@@ -725,24 +725,142 @@ def _utcnow_iso() -> str:
     return utcnow_iso()
 
 
-def _default_runner(job: Job, data_dir: Path) -> subprocess.Popen:
-    """Запуск реального CLI-подпроцесса (скелет; параметризация — шаг 3d).
+#: Корень проекта: ``python -m cli.*`` требует его в ``sys.path`` подпроцесса.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-    TODO(3d): ``job.params`` превратить в аргументы ``--key value`` (значение-
-    список повторяет ``--key`` для каждого элемента) и подключить
-    ``--job-json``/``--json-out`` по-настоящему. В 3a этим runner'ом
-    ничего не запускается — тесты передают свой.
+#: kind задачи -> модуль CLI. Единственное место, где ``kind`` превращается в
+#: имя модуля: значение из запроса только сравнивается с ключами таблицы
+#: (см. :func:`_default_runner`).
+_KIND_TO_MODULE: dict[str, str] = {
+    "packages.check": "cli.check_predecessors",
+    "catalog.build": "cli.catalog_build",
+    "registry.scan": "cli.catalog_scan",
+    "github.verify": "cli.verify",
+    "monitor.diff": "cli.check_predecessors",
+}
+
+#: Whitelist ключей ``params`` на каждый kind: всё остальное — ``ValueError``.
+_KIND_PARAM_KEYS: dict[str, frozenset[str]] = {
+    "packages.check": frozenset({"names", "keyword"}),
+    "catalog.build": frozenset({"phrases", "min_stars", "pages", "sources"}),
+    "registry.scan": frozenset({"base_url", "limit", "max_pages"}),
+    "github.verify": frozenset({"targets", "keyword"}),
+    "monitor.diff": frozenset({"diff_from"}),
+}
+
+#: Источники каталога по умолчанию: отсутствие в ``params["sources"]`` даёт
+#: ``--no-npm``/``--no-registry`` (CLI включает всё, кроме явно выключенного).
+_DEFAULT_SOURCES: tuple[str, ...] = ("github", "npm", "registry")
+
+
+def _str_list(value: Any) -> list[str]:
+    """Список строк из значения ``params`` (``None``/мусор — пустой список)."""
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _params_to_argv(kind: str, params: dict) -> list[str]:
+    """Whitelist params -> argv. Любой неизвестный ключ — ``ValueError``.
+
+    Таблица соответствия — в DEVPLAN §7 и :data:`_KIND_PARAM_KEYS`:
+
+    * ``packages.check``: ``names`` (обязателен, позиционные), ``keyword``
+      (список -> ``--keyword=``; пусто — CLI возьмёт ``Settings.keywords``);
+    * ``catalog.build``: ``phrases`` (обязателен, позиционные), ``min_stars``,
+      ``pages``, ``sources`` (``npm``/``registry`` вне списка -> ``--no-*``);
+    * ``registry.scan``: ``base_url``, ``limit``, ``max_pages``;
+    * ``github.verify``: ``targets`` (обязателен, позиционные), ``keyword``;
+    * ``monitor.diff``: ``diff_from`` (обязателен -> ``--diff=``).
+
+    Ошибки — только ``ValueError`` и только до ``subprocess``: задача,
+    которая заведомо не запустится, не должна создавать процесс.
     """
+    if kind not in _KIND_TO_MODULE:
+        raise ValueError(f"неизвестный kind: {kind!r}")
+    schema = _KIND_PARAM_KEYS[kind]
+    for key in params:
+        if key not in schema:
+            raise ValueError(f"unknown param for {kind}: {key}")
+
+    def positional(key: str) -> list[str]:
+        """Обязательный список: позиционные аргументы CLI (пустой — ошибка)."""
+        items = _str_list(params.get(key))
+        if not items:
+            raise ValueError(f"missing param for {kind}: {key}")
+        return items
+
+    if kind == "packages.check":
+        argv = positional("names")
+        argv += [f"--keyword={word}" for word in _str_list(params.get("keyword"))]
+        return argv
+
+    if kind == "catalog.build":
+        argv = positional("phrases")
+        if "min_stars" in params:
+            argv.append(f"--min-stars={int(params['min_stars'])}")
+        if "pages" in params:
+            argv.append(f"--pages={int(params['pages'])}")
+        sources = _str_list(params.get("sources")) or list(_DEFAULT_SOURCES)
+        if "npm" not in sources:
+            argv.append("--no-npm")
+        if "registry" not in sources:
+            argv.append("--no-registry")
+        return argv
+
+    if kind == "registry.scan":
+        argv = []
+        if "base_url" in params:
+            argv.append(f"--base-url={params['base_url']}")
+        if "limit" in params:
+            argv.append(f"--limit={int(params['limit'])}")
+        if "max_pages" in params:
+            argv.append(f"--max-pages={int(params['max_pages'])}")
+        return argv
+
+    if kind == "github.verify":
+        argv = positional("targets")
+        if "keyword" in params:
+            argv.append(f"--keyword={params['keyword']}")
+        return argv
+
+    # monitor.diff — единственный оставшийся kind: сравнение с прошлым прогоном.
+    diff_from = params.get("diff_from")
+    if not diff_from:
+        raise ValueError("missing param for monitor.diff: diff_from")
+    return [f"--diff={diff_from}"]
+
+
+def _default_runner(job: Job, data_dir: Path) -> subprocess.Popen:
+    """Запуск реального CLI-подпроцесса по whitelist-таблице (шаг 3d-a).
+
+    ``argv = [python, -m, _KIND_TO_MODULE[kind], --job-json,
+    --json-out=<data_dir>/jobs/<id>.result.json, *params_argv]``.
+
+    ``kind`` НИКОГДА не подставляется в имя модуля: он лишь ключ таблицы
+    :data:`_KIND_TO_MODULE`. Неизвестный ``kind`` — ``ValueError`` до
+    ``subprocess.Popen`` (иначе ``kind="monitor.diff"`` давал бы
+    ``python -m cli.monitor.diff``, а чужой ``kind`` с точками/пробелами — RCE).
+
+    ``cwd`` — корень проекта: ``-m cli.*`` требует его в ``sys.path``,
+    независимо от того, откуда запущено приложение.
+    """
+    module = _KIND_TO_MODULE.get(job.kind)
+    if module is None:
+        raise ValueError(f"неизвестный kind: {job.kind!r}")
+    params_argv = _params_to_argv(job.kind, job.params)
+    result_path = Path(data_dir) / "jobs" / f"{job.id}.result.json"
     argv = [
         sys.executable,
         "-m",
-        f"cli.{job.kind}",
+        module,
         "--job-json",
-        "--json-out",
-        str(data_dir / "jobs" / f"{job.id}.json"),
+        f"--json-out={result_path}",
+        *params_argv,
     ]
     return subprocess.Popen(  # noqa: S603 - argv собирается из констант и id
         argv,
+        cwd=str(_PROJECT_ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

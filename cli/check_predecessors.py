@@ -29,6 +29,10 @@ from typing import Any
 
 from cli._common import (
     build_argparser,
+    build_job_emitter,
+    emit_done,
+    emit_error,
+    emit_hello,
     exit_code,
     load_runtime,
     print_table,
@@ -57,6 +61,11 @@ KIND_LABELS = {
 
 #: Файл результата по умолчанию — как в legacy.
 DEFAULT_JSON = "raw/predecessors.json"
+
+#: Имён на чанк: после каждого чанка под ``--job-json`` уходит progress-событие.
+#: ``check_many`` параллелит внутри чанка, а очередь получает прогресс достаточно
+#: часто, не разменивая параллелизм на «по одному имени».
+CHECK_CHUNK = 5
 
 
 def observation(row: dict) -> dict:
@@ -91,10 +100,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="код выхода 2, если есть ЖИВО или MCP=да (гейт для cron/CI)")
     args = parser.parse_args(argv)
 
+    # JSON-lines: hello — первое сообщение и первый stdout до любых таблиц.
+    if args.job_json:
+        emit_hello()
+
     try:
         settings, http = load_runtime(args)
     except ValueError as error:
-        print(f"[gapaudit] {error}", file=sys.stderr)
+        _fail(args, error)
         return 2
 
     # Заголовок колонки признака: меняется вместе с --keyword, как в legacy.
@@ -108,9 +121,28 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return _run(args, settings, http, client, cfg, label)
+    except Exception as error:  # noqa: BLE001 - задача обязана отчитаться ошибкой
+        # Без --job-json поведение прежнее: исключение пробрасывается (CLI падает
+        # с трейсбеком, код выхода ненулевой). С флагом — протокол + код 2.
+        if not args.job_json:
+            raise
+        _fail(args, error)
+        return 2
     finally:
         if http.cache is not None:
             http.cache.save()
+
+
+def _fail(args: argparse.Namespace, error: BaseException) -> None:
+    """Сообщить об ошибке: строка в stderr + ``{"type": "error"}`` под --job-json."""
+    print(f"[gapaudit] {error}", file=sys.stderr)
+    if args.job_json:
+        emit_error(str(error))
+
+
+def _say(args: argparse.Namespace, text: str, *, end: str = "\n") -> None:
+    """Печать для человека; под --job-json — в stderr (stdout занят протоколом)."""
+    print(text, end=end, file=sys.stderr if args.job_json else sys.stdout)
 
 
 # --- режимы ---------------------------------------------------------------------
@@ -126,25 +158,28 @@ def _run(
 ) -> int:
     if args.check_name:
         for name in args.check_name:
-            _print_availability(check(name, client, cfg=cfg), name)
+            result = check(name, client, cfg=cfg)
+            if not args.job_json:
+                _print_availability(result, name)
         return 0
 
     if args.similar:
         hits = similar_names(args.similar, client)
-        print(f"Похожие на «{args.similar}» (расстояние Левенштейна ≤ 2):")
-        for candidate, distance in hits:
-            print(f"  d={distance}  {candidate}")
-        if not hits:
-            print("  ничего похожего не найдено")
-        print("Если похожее имя есть, а оно популярно — это кандидат на типосквоттинг:")
-        print("сверяй точное имя перед установкой.")
+        if not args.job_json:
+            print(f"Похожие на «{args.similar}» (расстояние Левенштейна ≤ 2):")
+            for candidate, distance in hits:
+                print(f"  d={distance}  {candidate}")
+            if not hits:
+                print("  ничего похожего не найдено")
+            print("Если похожее имя есть, а оно популярно — это кандидат на типосквоттинг:")
+            print("сверяй точное имя перед установкой.")
         return 0
 
     names = list(args.names)
     if args.from_file:
         extra = names_from_file(args.from_file, fix_toml=True)
         if not args.quiet:
-            print(f"из {args.from_file} взято имён: {len(extra)}")
+            _say(args, f"из {args.from_file} взято имён: {len(extra)}")
         names += extra
     if args.top:
         # Топ берёт имена из GitHub-файла, поэтому здесь gh и проверяем (один раз).
@@ -153,33 +188,60 @@ def _run(
 
     names = sorted(dict.fromkeys(names))
     if not names:
-        print("нечего проверять: передай имена, --from FILE, --top N, --check-name или --similar")
+        message = "нечего проверять: передай имена, --from FILE, --top N, --check-name или --similar"
+        _say(args, message)
         return 1
 
-    rows = check_many(names, client, cfg=cfg)
-    if not args.quiet:
+    rows = _check_all(names, client, cfg, args)
+    if not args.quiet and not args.job_json:
         _print_table(rows, label)
         _print_summary(rows, label)
 
     json_path = args.json_file or args.json_out or DEFAULT_JSON
     write_json(json_path, rows)
-    print(f"\nСОХРАНЕНО: {json_path}  (пригоден для --diff в следующий раз)")
+    _say(args, f"\nСОХРАНЕНО: {json_path}  (пригоден для --diff в следующий раз)")
 
     if args.csv:
         with open(args.csv, "w", newline="", encoding="utf-8-sig") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(rows[0]), extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
-        print(f"CSV: {args.csv}")
+        _say(args, f"CSV: {args.csv}")
 
-    if args.diff and os.path.exists(args.diff):
+    if args.diff and os.path.exists(args.diff) and not args.job_json:
         _print_diff(args.diff, rows, settings)
 
     has_live = any(row["verdict"] == VERDICT_ALIVE for row in rows)
     has_flag = any(row["mcp"] for row in rows)
     if exit_code(args.strict, has_live, has_flag) == 2:
-        print("STRICT: есть живые проекты или MCP-поверхность → код выхода 2")
+        _say(args, "STRICT: есть живые проекты или MCP-поверхность → код выхода 2")
+    if args.job_json:
+        emit_done()
     return exit_code(args.strict, has_live, has_flag)
+
+
+def _check_all(
+    names: list[str],
+    client: RegistryClient,
+    cfg: PackageCheckConfig,
+    args: argparse.Namespace,
+) -> list[dict]:
+    """Проверить имена чанками по :data:`CHECK_CHUNK`.
+
+    Под ``--job-json`` после каждого чанка уходит ``progress`` — очередь и SSE
+    показывают движение, а не «зависло на 0». Без флага — один и тот же путь,
+    просто без событий (результат и порядок строк не меняются).
+    """
+    on_progress = build_job_emitter() if args.job_json else None
+    total = len(names)
+    rows: list[dict] = []
+    for start in range(0, total, CHECK_CHUNK):
+        chunk = names[start : start + CHECK_CHUNK]
+        rows.extend(check_many(chunk, client, cfg=cfg))
+        if on_progress is not None:
+            done = min(start + CHECK_CHUNK, total)
+            on_progress(done / total, f"check {done}/{total}")
+    return rows
 
 
 def _top_names(top: int) -> list[str]:
