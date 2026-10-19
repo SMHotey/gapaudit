@@ -213,11 +213,18 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     источник правды.
 23. Тесты, поднимающие реальные подпроцессы, — под `@pytest.mark.slow`.
     Быстрый цикл (`-m "not slow"`) — только in-memory и быстрый tmp_path,
-    без единого Popen; цель — не более 6 с (DEVPLAN §11).
+    без единого Popen; цель — ≤ +50% к базовому или ≤ 7 с, что больше (DEVPLAN §11).
 24. После `_finalized` никакие progress-апдейты не должны менять message/status:
     поздний progress затирает shutdown/error («прогресс 0.8, статус done»).
     Инвариант соблюдается в `JobQueue._handle_progress` под `self._lock`;
     в app/web.py (3b) SSE-подписчик не должен перезаписывать started после done.
+25. При изменении контракта `/api/*` — сначала править `tests/test_web_middleware.py`
+    (полный контур), потом `tests/test_web_smoke.py` (только сборка). Иначе соблазн
+    расширять smoke: два описания контура расходятся при первой же правке.
+26. POSIX-биты и Windows ACL проверяются по-разному: тест на chmod 0600 — `skipif Windows`,
+    тест на icacls — Windows-only; оба живут в `tests/test_session.py`. На Windows
+    `os.chmod` не трогает ACL (режим остаётся 0666), права даёт
+    `icacls /inheritance:r /grant:r <domain>\<user>:F`.
 
 ---
 
