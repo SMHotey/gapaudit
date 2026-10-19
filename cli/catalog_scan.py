@@ -19,7 +19,7 @@ from pathlib import Path
 
 from cli._common import build_argparser, load_runtime, print_table, write_json
 from core.scan import DEFAULT_BASE_URL, DEFAULT_CLASSES, ScanConfig, ScanState, scan
-from core.mcp_registry import DEFAULT_LIMIT, MCP_LIST_URL
+from core.mcp_registry import DEFAULT_LIMIT
 from core.settings import resolve_data_dir
 
 __all__ = ["main"]
@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Потоковый обход каталога реестра MCP: размер, классы задач, тип поставки",
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL,
-                        help="URL каталога с пагинацией (фиксируется в чекпоинте)")
+                        help="шаблон URL каталога с пагинацией ({limit}; фиксируется в чекпоинте)")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="серверов на страницу")
     parser.add_argument("--max-pages", type=int, default=400, help="предохранитель от бесконечного обхода")
     parser.add_argument("--checkpoint-every", type=int, default=25, help="как часто писать чекпоинт (страниц)")

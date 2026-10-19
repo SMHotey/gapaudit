@@ -47,7 +47,9 @@ __all__ = [
 ]
 
 #: URL каталога реестра с пагинацией — как в legacy ``catalog_scan.BASE``.
-DEFAULT_BASE_URL = MCP_LIST_URL.format(limit=DEFAULT_LIMIT)
+#: Это ШАБЛОН с ``{limit}`` (шаг 1g): так ``--limit``/``config.limit`` продолжает
+#: управлять страницей, а конкретный URL складывается в ``servers_page``.
+DEFAULT_BASE_URL = MCP_LIST_URL
 
 #: Классы задач: подстрока -> человекочитаемый ярлык (порядок как в legacy).
 DEFAULT_CLASSES: tuple[tuple[str, str], ...] = (
@@ -280,7 +282,12 @@ def scan(
         if cancel is not None and cancel.is_set():
             break
 
-        servers, next_cursor = servers_page(http, cursor=state.cursor, limit=config.limit)
+        servers, next_cursor = servers_page(
+            http,
+            base_url=config.base_url,
+            cursor=state.cursor,
+            limit=config.limit,
+        )
         if servers is None:
             break
 

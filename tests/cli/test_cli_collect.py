@@ -52,8 +52,10 @@ def isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
 class FakeTransport:
     def __init__(self, mapping: dict[str, tuple[int, bytes]]) -> None:
         self.mapping = mapping
+        self.calls: list[str] = []
 
     def __call__(self, url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+        self.calls.append(url)
         return self.mapping.get(url, (404, b'{"message": "Not Found"}'))
 
 
@@ -72,6 +74,22 @@ def install_http(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(http_module, "default_client", build)
+
+
+def install_map(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, tuple[int, bytes]]) -> FakeTransport:
+    """Транспорт по своему маппингу URL -> (статус, тело) — для кастомных --catalog-url."""
+    transport = FakeTransport(mapping)
+
+    def build(cache_path: str = "raw/.pcache.json") -> HttpClient:
+        return HttpClient(
+            cache=DictCache(),
+            throttle=Throttle(per_minute={MCP_HOST: 60000}),
+            transport=transport,
+            sleep=lambda _seconds: None,
+        )
+
+    monkeypatch.setattr(http_module, "default_client", build)
+    return transport
 
 
 def install_gh(monkeypatch: pytest.MonkeyPatch, *, authorized: bool = True) -> list[tuple]:
@@ -160,3 +178,105 @@ def test_keyword_is_required(
 
     assert code == 2
     assert "--keyword обязателен" in captured.err
+
+
+# --- каталог через list_servers_raw: флаги работают (шаг 1g) --------------------------
+
+
+def test_catalog_url_flag_pulls_from_that_url_not_from_mcp_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    custom = "https://catalog.example/api?limit=10"
+    payload = {"servers": [{"server": {"name": "custom/one", "description": "d"}}], "metadata": {"count": 1}}
+    transport = install_map(monkeypatch, {custom: (200, json.dumps(payload).encode("utf-8"))})
+    install_gh(monkeypatch, authorized=False)
+    out_dir = tmp_path / "out"
+
+    code = collect.main(["--keyword", "mcp", "--catalog-url", custom, "--out-dir", str(out_dir)])
+
+    assert code == 0
+    catalog = json.loads((out_dir / "catalog.json").read_text(encoding="utf-8"))
+    # Шаг 1g: элементы — развёрнутые объекты серверов (list_servers_raw), не {"server": {...}}.
+    assert [row["name"] for row in catalog] == ["custom/one"]
+    assert transport.calls == [custom]  # на MCP_LIST_URL запроса не было
+
+
+def test_catalog_items_key_flag_reads_that_key_and_ignores_servers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    payload = {
+        "servers": [{"server": {"name": "wrong/one", "description": ""}}],
+        "my_items": [{"server": {"name": "custom/two", "description": "d"}}],
+        "metadata": {"count": 1},
+    }
+    install_map(monkeypatch, {BASE: (200, json.dumps(payload).encode("utf-8"))})
+    install_gh(monkeypatch, authorized=False)
+    out_dir = tmp_path / "out"
+
+    code = collect.main([
+        "--keyword", "mcp", "--catalog-items-key", "my_items", "--out-dir", str(out_dir),
+    ])
+
+    assert code == 0
+    catalog = json.loads((out_dir / "catalog.json").read_text(encoding="utf-8"))
+    assert [row["name"] for row in catalog] == ["custom/two"]  # data["servers"] игнорируется
+
+
+def test_catalog_cursor_path_flag_reads_custom_location(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    page1 = {"my_items": [{"server": {"name": "a/one", "description": ""}}], "metadata": {"pageToken": "tok-1"}}
+    page2 = {"my_items": [{"server": {"name": "a/two", "description": ""}}], "metadata": {"count": 2}}
+    url2 = BASE + "&cursor=" + urllib.parse.quote("tok-1")
+    install_map(monkeypatch, {
+        BASE: (200, json.dumps(page1).encode("utf-8")),
+        url2: (200, json.dumps(page2).encode("utf-8")),
+    })
+    install_gh(monkeypatch, authorized=False)
+    out_dir = tmp_path / "out"
+
+    code = collect.main([
+        "--keyword", "mcp",
+        "--catalog-items-key", "my_items",
+        "--catalog-cursor-path", "metadata", "pageToken",
+        "--out-dir", str(out_dir),
+    ])
+
+    assert code == 0
+    catalog = json.loads((out_dir / "catalog.json").read_text(encoding="utf-8"))
+    # Курсор прочитан из metadata.pageToken (не nextCursor): обход дошёл до второй страницы.
+    assert [row["name"] for row in catalog] == ["a/one", "a/two"]
+
+
+def test_catalog_break_on_error_page_prints_obryv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    install_map(monkeypatch, {BASE: (500, b"boom")})
+    install_gh(monkeypatch, authorized=False)
+    out_dir = tmp_path / "out"
+
+    code = collect.main(["--keyword", "mcp", "--out-dir", str(out_dir)])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "catalog: обрыв на странице 0" in out
+    assert json.loads((out_dir / "catalog.json").read_text(encoding="utf-8")) == []
+
+
+def test_catalog_without_flags_paginates_default_registry_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """Дефолтный --catalog-url — реестр MCP; обе страницы уходят туда же (шаг 1g)."""
+    transport = install_map(monkeypatch, {
+        BASE: (200, json.dumps(PAGE1).encode("utf-8")),
+        PAGE2_URL: (200, json.dumps(LAST_PAGE).encode("utf-8")),
+    })
+    install_gh(monkeypatch, authorized=False)
+    out_dir = tmp_path / "out"
+
+    code = collect.main(["--keyword", "mcp", "--out-dir", str(out_dir)])
+
+    assert code == 0
+    catalog = json.loads((out_dir / "catalog.json").read_text(encoding="utf-8"))
+    assert len(catalog) == 20
+    assert transport.calls == [BASE, PAGE2_URL]

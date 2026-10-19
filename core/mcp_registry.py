@@ -22,6 +22,7 @@ from core.http import HttpClient
 
 __all__ = [
     "DEFAULT_CURSOR_PATH",
+    "DEFAULT_ITEMS_KEY",
     "DEFAULT_LIMIT",
     "DESC_LIMIT",
     "MCP_HOST",
@@ -45,6 +46,8 @@ MCP_LIST_URL = "https://registry.modelcontextprotocol.io/v0/servers?limit={limit
 
 #: Путь до курсора в ответе; кортеж, чтобы обход был одинаков для вложенных ответов.
 DEFAULT_CURSOR_PATH = ("metadata", "nextCursor")
+#: Ключ списка элементов в ответе каталога (как в реестре MCP).
+DEFAULT_ITEMS_KEY = "servers"
 #: Написание, которым курсор НЕ является (защита от бага из docs-usage.md).
 WRONG_CURSOR_KEY = "next_cursor"
 DEFAULT_LIMIT = 100
@@ -73,11 +76,15 @@ def normalize_server(server: dict) -> dict:
     }
 
 
-def _servers(data: Any) -> list[dict]:
-    """Внутренние объекты ``server`` из ответа реестра (мусор пропускаем)."""
+def _servers(data: Any, items_key: str = DEFAULT_ITEMS_KEY) -> list[dict]:
+    """Внутренние объекты ``server`` из ответа реестра (мусор пропускаем).
+
+    ``items_key`` — ключ списка элементов: у реестра это ``servers``, но пагинируемый
+    JSON-каталог другой раздачи может отдавать список под другим именем (шаг 1g).
+    """
     if not isinstance(data, dict):
         return []
-    items = data.get("servers")
+    items = data.get(items_key)
     if not isinstance(items, list):
         return []
     servers: list[dict] = []
@@ -135,6 +142,9 @@ def next_url(base_url: str, cursor: str | None, limit: int = DEFAULT_LIMIT) -> s
 def list_servers(
     http: HttpClient,
     *,
+    base_url: str = MCP_LIST_URL,
+    items_key: str = DEFAULT_ITEMS_KEY,
+    cursor_path: tuple[str, ...] = DEFAULT_CURSOR_PATH,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[dict], str | None]:
@@ -143,17 +153,32 @@ def list_servers(
     Ошибка сети или статуса — ``([], None)``: обход завершается, вызывающий код
     (шаг 1e) решает, повторять ли попытку. Ничего не печатает.
     """
-    servers, next_cursor = list_servers_raw(http, cursor=cursor, limit=limit)
+    servers, next_cursor = list_servers_raw(
+        http,
+        base_url=base_url,
+        items_key=items_key,
+        cursor_path=cursor_path,
+        cursor=cursor,
+        limit=limit,
+    )
     return [normalize_server(server) for server in servers], next_cursor
 
 
 def servers_page(
     http: HttpClient,
     *,
+    base_url: str = MCP_LIST_URL,
+    items_key: str = DEFAULT_ITEMS_KEY,
+    cursor_path: tuple[str, ...] = DEFAULT_CURSOR_PATH,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[dict] | None, str | None]:
     """Сырая страница обхода: ``(объекты серверов, следующий курсор)``.
+
+    ``base_url`` — шаблон URL каталога с ``{limit}`` (шаг 1g: ``--base-url``/``--catalog-url``
+    CLI перестают быть декоративными); курсор добавляется к уже собранному URL, поэтому
+    разделитель выбирается по наличию ``?``. ``items_key`` — ключ списка элементов в ответе,
+    ``cursor_path`` — путь до курсора (см. :func:`extract_cursor`).
 
     Отличие от :func:`list_servers_raw` — в одном случае: не полученная страница
     отдаёт ``None`` вместо пустого списка. Слить «серверов на странице нет» и
@@ -162,16 +187,19 @@ def servers_page(
     продолжаем позже» — а из ``([], None)`` эти два исхода неразличимы.
     Пустая страница каталога приходит как ``([], ...)``; ``None`` — только сбой.
     """
-    url = next_url(MCP_LIST_URL.format(limit=int(limit)), cursor, limit)
+    url = next_url(base_url.format(limit=int(limit)), cursor, limit)
     status, data = http.get(url)
     if status != 200 or not isinstance(data, dict):
         return None, None
-    return _servers(data), extract_cursor(data)
+    return _servers(data, items_key), extract_cursor(data, cursor_path)
 
 
 def list_servers_raw(
     http: HttpClient,
     *,
+    base_url: str = MCP_LIST_URL,
+    items_key: str = DEFAULT_ITEMS_KEY,
+    cursor_path: tuple[str, ...] = DEFAULT_CURSOR_PATH,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[list[dict], str | None]:
@@ -179,9 +207,17 @@ def list_servers_raw(
 
     Нужен там, где важны поля, которых в строке каталога нет: обходчик каталога
     (шаг 1e) считает тип поставки по ``remotes``/``packages``. Не полученная
-    страница — ``([], None)``, как у :func:`list_servers`.
+    страница — ``([], None)``, как у :func:`list_servers`: различение «сбой» и
+    «пустая страница» — контракт :func:`servers_page`, эта функция — legacy-обёртка.
     """
-    servers, next_cursor = servers_page(http, cursor=cursor, limit=limit)
+    servers, next_cursor = servers_page(
+        http,
+        base_url=base_url,
+        items_key=items_key,
+        cursor_path=cursor_path,
+        cursor=cursor,
+        limit=limit,
+    )
     if servers is None:
         return [], None
     return servers, next_cursor

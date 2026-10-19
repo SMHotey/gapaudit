@@ -340,3 +340,119 @@ def test_servers_page_distinguishes_empty_catalog_from_failed_page() -> None:
     assert servers_page(ok, limit=10) == ([], None)
     assert servers_page(boom, limit=10) == (None, None)
     assert servers_page(missing, limit=10) == (None, None)
+
+
+# --- base_url / items_key / cursor_path (шаг 1g) --------------------------------------
+
+
+def test_servers_page_custom_base_url_and_items_key_ignores_servers_key() -> None:
+    """``--base-url``/``--catalog-url`` реально управляют запросом; чужой ``items_key``
+    читается, а встроенный ``data["servers"]`` при этом игнорируется."""
+    payload = {
+        "my_items": [{"server": {"name": "custom/one", "description": "d"}}],
+        "servers": [{"server": {"name": "wrong/two", "description": ""}}],
+        "metadata": {"count": 1},
+    }
+    http, transport = make_http({"https://example.test/api?limit=10": (200, body(payload))})
+
+    servers, cursor = servers_page(
+        http,
+        base_url="https://example.test/api?limit={limit}",
+        items_key="my_items",
+        limit=10,
+    )
+
+    assert servers is not None
+    assert [server["name"] for server in servers] == ["custom/one"]
+    assert cursor is None
+    assert transport.calls == ["https://example.test/api?limit=10"]
+
+
+def test_servers_page_cursor_appends_with_ampersand_when_base_url_has_query() -> None:
+    payload = {
+        "my_items": [{"server": {"name": "custom/one", "description": "d"}}],
+        "metadata": {"pageToken": "tok/1:2"},
+    }
+    http, transport = make_http(
+        {"https://example.test/api?limit=10&cursor=tok/1%3A2": (200, body(payload))}
+    )
+
+    servers, cursor = servers_page(
+        http,
+        base_url="https://example.test/api?limit={limit}",
+        items_key="my_items",
+        cursor_path=("metadata", "pageToken"),
+        cursor="tok/1:2",
+        limit=10,
+    )
+
+    assert servers is not None and len(servers) == 1
+    assert cursor == "tok/1:2"  # курсор прочитан по кастомному пути
+    # quote() с safe="/": слэш остаётся собой, двоеточие квотируется (как в реестре).
+    assert transport.calls == ["https://example.test/api?limit=10&cursor=tok/1%3A2"]
+
+
+def test_servers_page_without_limit_placeholder_adds_limit_itself() -> None:
+    """В ``base_url`` может не быть ``{limit}`` — тогда limit добавляет ``next_url``."""
+    http, transport = make_http({"https://example.test/api?limit=7": (200, body({"my_items": []}))})
+
+    servers_page(http, base_url="https://example.test/api", items_key="my_items", limit=7)
+
+    assert transport.calls == ["https://example.test/api?limit=7"]
+
+
+def test_list_servers_raw_custom_items_key_keeps_raw_items() -> None:
+    payload = {
+        "my_items": [{"server": {"name": "custom/one", "description": "d", "remotes": [{}]}}, "мусор"],
+        "metadata": {"count": 2},
+    }
+    http, _ = make_http({"https://example.test/api?limit=10": (200, body(payload))})
+
+    servers, cursor = list_servers_raw(
+        http,
+        base_url="https://example.test/api?limit={limit}",
+        items_key="my_items",
+        limit=10,
+    )
+
+    assert servers == [payload["my_items"][0]["server"]]  # мусор пропущен, поля сырые
+    assert cursor is None
+
+
+def test_list_servers_raw_custom_cursor_path_returns_cursor() -> None:
+    payload = {
+        "my_items": [{"server": {"name": "custom/one", "description": "d"}}],
+        "metadata": {"pageToken": "tok-9"},
+    }
+    http, _ = make_http({"https://example.test/api?limit=10": (200, body(payload))})
+
+    _servers, cursor = list_servers_raw(
+        http,
+        base_url="https://example.test/api?limit={limit}",
+        items_key="my_items",
+        cursor_path=("metadata", "pageToken"),
+        limit=10,
+    )
+
+    assert cursor == "tok-9"
+
+
+def test_list_servers_raw_error_with_custom_base_url_is_empty_page() -> None:
+    """Сбой на кастомном URL — тот же legacy-контракт ``([], None)``."""
+    http, transport = make_http({})
+
+    assert list_servers_raw(http, base_url="https://example.test/api?limit={limit}", limit=10) == ([], None)
+    assert transport.calls == ["https://example.test/api?limit=10"]
+
+
+def test_list_servers_forwards_base_url_to_normalized_rows() -> None:
+    payload = fixture(PAGE1)
+    url = "https://example.test/api?limit=10"
+    http, transport = make_http({url: (200, body(payload))})
+
+    items, cursor = list_servers(http, base_url="https://example.test/api?limit={limit}", limit=10)
+
+    assert [row["id"] for row in items] == [item["server"]["name"] for item in payload["servers"]]
+    assert all(row["source"] == "registry" for row in items)
+    assert cursor == PAGE1_CURSOR
+    assert transport.calls == [url]

@@ -158,3 +158,16 @@ def test_hide_zero_filters_class_table_only(
     assert "observability" not in out  # нулевой класс скрыт в печати
     payload = json.loads(result.read_text(encoding="utf-8"))
     assert "observability" in payload["class_counts"]  # в JSON нули сохранены полностью
+
+
+def test_custom_base_url_is_used(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """``--base-url`` реально уходит в запрос — шаг 1g (фейк фиксирует URL)."""
+    custom = "https://x.example/y?limit={limit}"
+    expected = next_url("https://x.example/y?limit=10", None, LIMIT)
+    transport = install(monkeypatch, {expected: (200, body(LAST_PAGE))})
+
+    code, _checkpoint, result = run(tmp_path, extra=["--base-url", custom])
+
+    assert code == 0
+    assert transport.calls == [expected]  # на MCP_LIST_URL запроса не было
+    assert json.loads(result.read_text(encoding="utf-8"))["finished"] is True

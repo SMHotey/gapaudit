@@ -36,3 +36,6 @@ py-modules = ["desktop"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "slow: тяжёлые проверки (реальный L1/L2 compat_check) — быстрый цикл: -m \"not slow\"",
+]

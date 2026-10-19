@@ -145,6 +145,20 @@ def test_scan_stops_at_max_pages() -> None:
     assert state.cursor == PAGE1_CURSOR
 
 
+def test_scan_uses_config_base_url() -> None:
+    """``base_url`` из ScanConfig доходит до запроса — ``--base-url`` больше не декоративный (шаг 1g)."""
+    custom = "https://x.example/y?limit={limit}"
+    first = "https://x.example/y?limit=10"
+    second = next_url(first, PAGE1_CURSOR, LIMIT)
+    http, transport = make_client({first: (200, body(PAGE1)), second: (200, body(last_page()))})
+
+    state = scan(http, config=config(base_url=custom))
+
+    assert state.finished is True
+    assert state.entries == 20
+    assert transport.calls == [first, second]  # обе страницы ушли на кастомный URL
+
+
 # --- отмена --------------------------------------------------------------------------------
 
 

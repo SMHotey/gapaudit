@@ -84,7 +84,7 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
    Окно открывается после 200 от `/api/health` (ожидание до 10 с), иначе белый экран.
 5. **Закрытие**: `server.should_exit = True` → `join(timeout=3)` → `sys.exit(0)`.
 6. Ничего долгого в обработчиках: любая сетевая работа — подпроцессом через очередь задач, прогресс — SSE.
-7. Данные приложения — в `data/` dev-режима и в `%USERPROFILE%\GapAudit\` (P4); в `AppData\Local\hermes` не писать.
+7. Данные приложения — в `data/` dev-режима и в `%USERPROFILE%\GapAudit-data\` (P4); в `AppData\Local\hermes` не писать.
 
 ---
 
@@ -188,6 +188,14 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
 16. **Перед коммитом — `git diff --cached --name-only` и явный `git add <свои файлы>`.**
     Не `git add -A`/`git add .`: IDE или параллельная сессия могут держать в индексе чужие
     файлы (наблюдалось в 1d) — они уедут в ваш коммит.
+17. Перезапись файла репозитория из Python — только `Path.write_text(..., newline="\n")`.
+    Без этого на Windows в рабочем дереве появляется CRLF, а «Железное правило 1» ждёт LF.
+18. Перед коммитом в P0+ обязательно прогнать:
+      uv run python -m tools.compat_check
+    зелёный — можно мержить; красный — сначала устранить расхождение. L1 гоняет
+    паритетные тесты, L2 — legacy (in-process, подмена транспорта) против new
+    (subprocess) на одинаковых фикстурах; allowlist известных отклонений — в
+    `tools/compat_allowlist.py` (правка только с записью в DEVPLAN §4).
 
 ---
 

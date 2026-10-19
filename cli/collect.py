@@ -5,6 +5,9 @@
 три фазы те же:
 
   1. каталог реестра MCP — до конца курсора (частичная выборка искажает плотность);
+     страница идёт через ``core.mcp_registry.list_servers_raw`` (шаг 1g), поэтому
+     ``--catalog-url``/``--catalog-items-key``/``--catalog-cursor-path`` реально
+     управляют запросом;
   2. репозитории экосистемы — GitHub Search по запросам с ключевым словом;
   3. популярные репозитории по темам GitHub.
 
@@ -21,13 +24,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from cli._common import build_argparser, load_runtime, setup_gh_or_warn, write_json
 from core.github import GhClient
-from core.mcp_registry import DEFAULT_CURSOR_PATH, DEFAULT_LIMIT, MCP_LIST_URL
+from core.mcp_registry import DEFAULT_CURSOR_PATH, DEFAULT_LIMIT, MCP_LIST_URL, list_servers_raw
 from core.settings import resolve_data_dir
 
 __all__ = ["main"]
@@ -132,37 +134,34 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def dig(data: Any, path: tuple[str, ...] | list[str]) -> Any:
-    """Значение по пути ключей — порт legacy ``dig()``."""
-    for key in path:
-        if not isinstance(data, dict):
-            return None
-        data = data.get(key)
-    return data
-
-
 def _pull_catalog(http: Any, *, url: str, items_key: str, cursor_path: tuple[str, ...]) -> list[dict]:
     """Пагинировать ДО КОНЦА курсора: частичная выборка искажает плотность.
 
-    Сетевые повторы держит ``HttpClient``; сбой или статус != 200 — обрыв с
-    предупреждением (часть данных лучше данных-нет: legacy печатал то же).
+    Страница целиком тянет :func:`core.mcp_registry.list_servers_raw` (шаг 1g) —
+    та же пагинация, что у обходчика каталога, без дублирования ``http.get``
+    (``--catalog-url``/``--catalog-items-key``/``--catalog-cursor-path`` реально
+    управляют запросом). Сбой или статус != 200 превращается в ``([], None)``:
+    обрыв с предупреждением — часть данных лучше данных-нет, legacy печатал то же.
     """
     items: list[dict] = []
     cursor: str | None = None
     pages = 0
     while pages < CATALOG_MAX_PAGES:
-        page_url = url + (("&cursor=" + urllib.parse.quote(cursor)) if cursor else "")
-        status, data = http.get(page_url, timeout=45)
-        if status != 200 or not isinstance(data, dict):
+        batch, cursor = list_servers_raw(
+            http,
+            base_url=url,
+            items_key=items_key,
+            cursor_path=cursor_path,
+            cursor=cursor,
+        )
+        if not batch:
             print(f"catalog: обрыв на странице {pages}")
             break
-        batch = data.get(items_key) or []
         items.extend(batch)
         pages += 1
-        cursor = dig(data, cursor_path)
         if pages % 25 == 0:
             print(f"  catalog pages: {pages} items: {len(items)}")
-        if not batch or not cursor:
+        if not cursor:
             break
     return items
 
