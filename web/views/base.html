@@ -18,8 +18,7 @@
          aria-disabled="true">Каталоги</a>
       <a class="disabled" title="P3: мониторинг"
          aria-disabled="true">Мониторинг</a>
-      <a class="disabled" title="P2c: настройки"
-         aria-disabled="true">Настройки</a>
+      <a href="/settings"{% if path == '/settings' %} class="active"{% endif %}>Настройки</a>
     </nav>
     <div class="health" id="health">
       <span class="dot" id="health-db" title="db"></span>

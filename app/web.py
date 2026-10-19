@@ -30,7 +30,9 @@
   отмена, хвост лога, ``POST /resume`` — реальное продолжение
   ``interrupted``-задачи, шаг 3d-b), SSE ``/api/stream``, пакеты
   ``/api/packages*``, матрица ``/api/matrix`` (шаг 2b — агрегат экрана
-  «Сейчас решать»), расширенный ``/api/health``.
+  «Сейчас решать»), настройки ``GET/PUT /api/settings`` (шаг 2c —
+  пороги и ключевые слова, запись в ``<data_dir>/settings.json``),
+  расширенный ``/api/health``.
 * **восстановление после падения** (шаг 3c): lifespan зовёт
   ``JobQueue.recover_interrupted()`` до ``queue.start()`` — задачи,
   работавшие в упавшем приложении, становятся ``interrupted``.
@@ -69,6 +71,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -90,7 +93,15 @@ from app.jobs import (
     missing_required,
 )
 from app.store import Store
-from core.settings import Settings, from_env, resolve_data_dir
+from core.settings import (
+    SETTINGS_FILENAME,
+    Settings,
+    from_env,
+    load as load_settings,
+    resolve_data_dir,
+    save as save_settings,
+    to_dict as settings_to_dict,
+)
 
 __version__ = "0.1.0"
 
@@ -100,6 +111,7 @@ __version__ = "0.1.0"
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "EDITABLE_SETTING_KEYS",
     "GhOkCache",
     "KIND_PARAM_KEYS",
     "KIND_PARAM_TYPES",
@@ -148,6 +160,65 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: (обязательные) и ``KIND_PARAM_TYPES`` (типы значений). Локального списка
 #: kind в этом модуле нет намеренно (шаг 3d-b): два описания «валидной задачи»
 #: расходились — API отвечал 202, а задача падала с ``missing param``.
+
+# --- настройки (шаг 2c) ------------------------------------------------------
+
+#: Что экран «Настройки» вправе менять через ``PUT /api/settings``.
+#: ``data_dir`` здесь нет: путь данных задаётся ``--data-dir``/env и требует
+#: перезапуска (guard в ``core.settings.resolve_data_dir``); ``language`` — тоже
+#: (реализован только ``ru``, переключатель был бы фикцией).
+EDITABLE_SETTING_KEYS: tuple[str, ...] = (
+    "alive_weekly",
+    "alive_monthly",
+    "dead_weekly",
+    "dead_monthly",
+    "stale_days",
+    "adoption_delta_pct",
+    "keywords",
+    "cache_ttl_hours",
+    "max_parallel_jobs",
+    "registry_limit",
+)
+
+#: Изменение любого из этих полей меняет вердикты и раскладку матрицы.
+#: Список намеренно шире пары ``alive_*``: ``stale_days`` и
+#: ``adoption_delta_pct`` уезжают в тот же ``VerdictConfig``.
+VERDICT_SETTING_KEYS: tuple[str, ...] = (
+    "alive_weekly",
+    "alive_monthly",
+    "dead_weekly",
+    "dead_monthly",
+    "stale_days",
+    "adoption_delta_pct",
+)
+
+#: Целочисленные поля: ключ -> (минимум, максимум|None, что писать при нарушении).
+_INT_SETTING_BOUNDS: dict[str, tuple[int, int | None, str]] = {
+    "alive_weekly": (0, None, "порог не может быть отрицательным"),
+    "alive_monthly": (0, None, "порог не может быть отрицательным"),
+    "dead_weekly": (0, None, "порог не может быть отрицательным"),
+    "dead_monthly": (0, None, "порог не может быть отрицательным"),
+    "stale_days": (1, None, "застой — минимум 1 день"),
+    "max_parallel_jobs": (1, 10, "параллельных задач — от 1 до 10"),
+    "registry_limit": (1, 1000, "лимит реестра — от 1 до 1000"),
+}
+
+#: Дробные поля: ключ -> (минимум, строго ли больше, что писать при нарушении).
+_FLOAT_SETTING_BOUNDS: dict[str, tuple[float, bool, str]] = {
+    "adoption_delta_pct": (0.0, False, "Δ adoption не может быть отрицательной"),
+    "cache_ttl_hours": (0.0, True, "TTL кэша должен быть больше нуля"),
+}
+
+#: Границы списка ключевых слов (``PUT /api/settings``).
+KEYWORDS_MIN, KEYWORDS_MAX = 1, 50
+
+WARNING_VERDICTS = (
+    "изменение порогов повлияет на /api/matrix и вердикты — "
+    "нажмите «Обновить» на экранах"
+)
+WARNING_RESTART = (
+    "изменение max_parallel_jobs вступит в силу после перезапуска приложения"
+)
 
 
 # --- проверки окружения (миддлварь) ------------------------------------------
@@ -359,6 +430,116 @@ def _tail(path: Path, size: int = LOG_TAIL_BYTES) -> bytes:
         return b""
 
 
+# --- настройки: валидация и сохранение (шаг 2c) ------------------------------
+
+
+def _is_number(value: Any) -> bool:
+    """``bool`` числом не считается: JSON ``true`` не должен стать порогом 1."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _settings_problem(key: str, value: Any) -> str | None:
+    """Проверить одно значение из ``PUT /api/settings``; ``None`` — годится.
+
+    Правила — по типу поля, а не по имени ключа в обработчике: таблицы границ
+    (:data:`_INT_SETTING_BOUNDS`, :data:`_FLOAT_SETTING_BOUNDS`) задают и тип, и
+    диапазон, поэтому новый изменяемый ключ добавляется одной строкой, а не
+    ещё одной веткой ``if``.
+
+    Ключевые слова нормализуются здесь же (``strip``): из формы приходит текст,
+    разбитый по строкам, и пробелы вокруг слова — не часть признака. Пустая
+    строка — ошибка (а не «молча выкинуть»): иначе список из одних переводов
+    строки прошёл бы проверку длины и записался пустым.
+    """
+    if key == "keywords":
+        if not isinstance(value, list):
+            return "keywords: ожидался список строк"
+        words = [item.strip() for item in value if isinstance(item, str)]
+        if len(words) != len(value):
+            return "keywords: ожидался список строк"
+        if not KEYWORDS_MIN <= len(words) <= KEYWORDS_MAX:
+            return (
+                f"keywords: нужно от {KEYWORDS_MIN} до {KEYWORDS_MAX} слов, "
+                f"пришло {len(words)}"
+            )
+        if not all(words):
+            return "keywords: пустое слово в списке"
+        return None
+
+    if key in _INT_SETTING_BOUNDS:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"{key}: ожидалось целое"
+        low, high, message = _INT_SETTING_BOUNDS[key]
+        if value < low or (high is not None and value > high):
+            return f"{key}: {message}"
+        return None
+
+    if key in _FLOAT_SETTING_BOUNDS:
+        if not _is_number(value):
+            return f"{key}: ожидалось число"
+        low_f, strict, message = _FLOAT_SETTING_BOUNDS[key]
+        if value < low_f or (strict and value <= low_f):
+            return f"{key}: {message}"
+        return None
+
+    return f"{key}: поле нельзя менять через API"
+
+
+def _normalized_setting(key: str, value: Any) -> Any:
+    """Значение в том виде, в каком оно живёт в :class:`Settings`.
+
+    Отличается от присланного только ``keywords``: в dataclass это ``tuple``
+    (хешируемое поле, удобно сравнивать), а по JSON приходит список.
+    """
+    if key == "keywords":
+        return tuple(item.strip() for item in value)
+    if key in _FLOAT_SETTING_BOUNDS:
+        return float(value)
+    return value
+
+
+def _merge_saved_settings(settings: Settings, path: Path) -> Settings:
+    """Наложить изменяемые поля ``settings.json`` на настройки из окружения.
+
+    ``desktop.py`` собирает :class:`Settings` из окружения и о файле настроек не
+    знает, а P2 требует, чтобы сохранённое на экране «Настройки» переживало
+    перезапуск. Поэтому чтение файла живёт здесь — в слое, который этот файл и
+    пишет (``PUT /api/settings``).
+
+    Накладываются только :data:`EDITABLE_SETTING_KEYS`: ``data_dir`` приходит из
+    ``--data-dir``/``GAPAUDIT_DATA_DIR`` (иначе сохранённый путь перебил бы
+    явно заданный при запуске и guard ``resolve_data_dir`` стал бы непредсказуем),
+    ``language`` пока не переключается.
+
+    Битый файл не роняет приложение: ``core.settings.load`` возвращает дефолты с
+    причиной в ``load_error``, здесь причина уходит в лог, а настройки остаются
+    теми, с которыми приложение стартовало.
+    """
+    if not path.exists():
+        return settings
+    saved = load_settings(path)
+    if saved.load_error:
+        logger.warning("settings.json не прочитан (%s): %s", path, saved.load_error)
+        return settings
+    updates = {key: getattr(saved, key) for key in EDITABLE_SETTING_KEYS}
+    return replace(settings, **updates)
+
+
+def _settings_payload(settings: Settings) -> dict[str, Any]:
+    """Ответ ``GET /api/settings``: изменяемые поля, readonly-поля, список ключей."""
+    data_dir = resolve_data_dir(settings)
+    return {
+        "settings": settings_to_dict(settings),
+        "readonly": {
+            "data_dir": str(data_dir),
+            "db_path": str(data_dir / "gapaudit.db"),
+            "version": VERSION,
+            "api_token_required": True,
+        },
+        "editable_keys": list(EDITABLE_SETTING_KEYS),
+    }
+
+
 # --- сборка приложения -------------------------------------------------------
 
 
@@ -387,10 +568,15 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         data_dir = resolve_data_dir(resolved_settings)
         data_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = data_dir / SETTINGS_FILENAME
+        # Сохранённые на экране «Настройки» значения переживают перезапуск:
+        # файл накладывается на Settings из окружения до сборки Store/очереди,
+        # чтобы задача стартовала уже с новым TTL и лимитом реестра.
+        active_settings = _merge_saved_settings(resolved_settings, settings_path)
         store = Store(data_dir / "gapaudit.db")
         store.__enter__()
         queue = JobQueue(
-            store, data_dir=data_dir, settings=resolved_settings, runner=runner
+            store, data_dir=data_dir, settings=active_settings, runner=runner
         )
         # Задачи, работавшие в упавшем приложении, — interrupted: это видно
         # в GET /api/jobs, а в лог уходит список id (шаг 3c). До queue.start():
@@ -405,6 +591,10 @@ def create_app(
         application.state.store = store
         application.state.queue = queue
         application.state.data_dir = str(data_dir)
+        # Настройки, с которыми реально работают запросы, и путь их файла:
+        # GET/PUT /api/settings читают и пишут именно это (шаг 2c).
+        application.state.settings = active_settings
+        application.state.settings_path = settings_path
 
         # --- хук завершения задачи (шаг 3d-b) --------------------------------
         # ``_post_process`` зовётся синхронно из потока воркера под ``_emit``:
@@ -773,6 +963,95 @@ def create_app(
             },
         }
 
+    # --- настройки (шаг 2c) ---------------------------------------------------
+
+    @application.get("/api/settings")
+    def get_settings(request: Request) -> dict[str, Any]:
+        """Текущие настройки, readonly-поля и список изменяемых ключей.
+
+        Отдаётся то, что живёт в ``app.state.settings``: после ``PUT`` это уже
+        новое значение, поэтому экран читает состояние одним запросом, а не
+        собирает его из ответа сохранения.
+
+        ``readonly`` — не настройки, а факты о запущенном приложении:
+        ``data_dir`` вычисляется тем же :func:`core.settings.resolve_data_dir`,
+        что и в lifespan (один источник правды о пути), ``db_path`` — файл
+        SQLite внутри него, ``api_token_required`` зашит ``True``: миддлварь
+        требует токен на всё ``/api/*``, кроме ``/api/health``.
+
+        Пустой ``editable_keys`` не бывает: список — контракт экрана, по нему
+        ``settings.js`` решает, какие поля показывать редактируемыми.
+        """
+        settings = getattr(request.app.state, "settings", None) or Settings()
+        return _settings_payload(settings)
+
+    @application.put("/api/settings")
+    def put_settings(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Обновить изменяемые настройки и сохранить их в ``settings.json``.
+
+        Валидация — до любой записи: при ошибке не меняется ни ``app.state``,
+        ни файл (иначе экран показал бы «сохранено» после 400 с половиной
+        применённых полей). Все проблемы собираются в один ответ.
+
+        Инвариант ``alive_weekly >= dead_weekly`` проверяется на **сведённых**
+        значениях, а не на присланных: ``PUT {"dead_weekly": 200}`` при
+        ``alive_weekly=100`` из текущих настроек тоже должен быть отвергнут.
+
+        Запись атомарна (:func:`core.settings.save`: tmp + ``os.replace``) —
+        файл читают и UI при следующем старте, и подпроцесс задачи.
+
+        ``warnings`` — что изменилось, но не вступило в силу сразу:
+        пороги видны в ``/api/matrix`` и вердиктах после перечитывания экранов,
+        а ``max_parallel_jobs`` — только после перезапуска (очередь собрана со
+        старым значением). Экран показывает эти строки рядом с «Сохранено».
+        """
+        state = request.app.state
+        current = getattr(state, "settings", None) or Settings()
+        settings_path = getattr(state, "settings_path", None)
+        if settings_path is None:
+            raise HTTPException(
+                status_code=503, detail="путь настроек неизвестен (lifespan не запускался)"
+            )
+
+        problems: list[str] = []
+        updates: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key not in EDITABLE_SETTING_KEYS:
+                problems.append(f"{key}: неизвестная настройка")
+                continue
+            problem = _settings_problem(key, value)
+            if problem is not None:
+                problems.append(problem)
+                continue
+            updates[key] = _normalized_setting(key, value)
+        if problems:
+            raise HTTPException(status_code=400, detail="; ".join(problems))
+
+        alive = updates.get("alive_weekly", current.alive_weekly)
+        dead = updates.get("dead_weekly", current.dead_weekly)
+        if alive < dead:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "alive_weekly: порог «живой» не может быть меньше "
+                    f"«мёртвого» ({alive} < {dead})"
+                ),
+            )
+
+        new_settings = replace(current, **updates) if updates else current
+        changed = {
+            key for key in updates if getattr(current, key) != getattr(new_settings, key)
+        }
+        save_settings(new_settings, settings_path)
+        state.settings = new_settings
+
+        warnings: list[str] = []
+        if changed.intersection(VERDICT_SETTING_KEYS):
+            warnings.append(WARNING_VERDICTS)
+        if "max_parallel_jobs" in changed:
+            warnings.append(WARNING_RESTART)
+        return {"settings": settings_to_dict(new_settings), "warnings": warnings}
+
     # --- экраны ---------------------------------------------------------------
 
     @application.get("/")
@@ -792,6 +1071,18 @@ def create_app(
         """
         return templates.TemplateResponse(
             request=request, name="matrix.html", context={"version": VERSION}
+        )
+
+    @application.get("/settings")
+    async def settings_screen(request: Request):
+        """Экран «Настройки» (шаг 2c): пороги, keywords, readonly-поля.
+
+        Форма заполняется ``settings.js`` из ``GET /api/settings``: значения
+        порогов — данные, а не разметка, и сервер их в HTML не впечатывает
+        (та же причина, что у «Задач» и матрицы).
+        """
+        return templates.TemplateResponse(
+            request=request, name="settings.html", context={"version": VERSION}
         )
 
     return application

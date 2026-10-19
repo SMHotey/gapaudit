@@ -1,18 +1,20 @@
-"""Контракт экранов (шаг 2a, расширен в 2b): защита от возврата мёртвых веток.
+"""Контракт экранов (шаг 2a, расширен в 2b и 2c): защита от мёртвых веток.
 
 История: в шаге 3c ``POST /api/jobs/{id}/resume`` отвечал 501, и экран
 показывал «продолжение не реализовано». В 3d-b эндпоинт стал настоящим,
-ветка умерла. Тест держит четыре факта:
+ветка умерла. Тест держит пять фактов:
 
 * в отдаваемых страницах и отдаваемых скриптах нет кода 501 — иначе вернулась
   заглушка;
 * коды ошибок кнопки «Продолжить» (404 «задачи нет», 409 «не interrupted
   или нет лога») описаны в шаблоне, а не только в JS: ``jobs.js`` читает их
   из ``window.GapAuditJobsConfig``;
-* каждая ссылка навигации ведёт на существующий маршрут (в 2b «Сейчас решать»
-  перестала быть выключенной — экран появился);
-* выключенные пункты помечены ``aria-disabled`` — «серая» ссылка без этого
-  атрибута читается скринридером как рабочая.
+* у каждого живого экрана на месте его контейнеры (матрица — SVG, оверлей
+  карточки, таблица кандидатов, счётчик «ВОТ СЮДА»);
+* каждая живая ссылка навигации ведёт на существующий маршрут, а после 2c
+  живых пунктов три: «Задачи», «Сейчас решать», «Настройки»;
+* выключенные пункты (экраны P3) помечены ``aria-disabled`` и не имеют
+  ``href`` — «серая» ссылка без этих признаков читается как рабочая.
 """
 
 from __future__ import annotations
@@ -29,15 +31,18 @@ RENDERED_FILES = (
     WEB / "views" / "base.html",
     WEB / "views" / "index.html",
     WEB / "views" / "matrix.html",
+    WEB / "views" / "settings.html",
     WEB / "static" / "app.js",
     WEB / "static" / "jobs.js",
     WEB / "static" / "matrix.js",
+    WEB / "static" / "settings.js",
     WEB / "static" / "sse.js",
     WEB / "static" / "style.css",
 )
 
 #: Пункты навигации: подпись -> маршрут. Остальные обязаны быть выключены.
-NAV_ROUTES = {"Задачи": "/", "Сейчас решать": "/matrix"}
+#: В 2c «Настройки» перестали быть выключенной заглушкой — экран появился.
+NAV_ROUTES = {"Задачи": "/", "Сейчас решать": "/matrix", "Настройки": "/settings"}
 
 _ANCHOR = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.DOTALL)
 _HREF = re.compile(r'href="([^"]+)"')
@@ -74,10 +79,58 @@ def test_no_501_in_any_rendered_file(client: TestClient) -> None:
         assert path.exists(), path
         assert "501" not in path.read_text(encoding="utf-8"), path
 
-    for url in ("/", "/matrix"):
+    for url in ("/", "/matrix", "/settings"):
         response = client.get(url)
         assert response.status_code == 200, url
         assert "501" not in response.text, url
+
+
+def test_matrix_page_keeps_its_containers(client: TestClient) -> None:
+    """Матрица: контейнеры SVG, карточки и таблицы кандидатов не исчезли.
+
+    Контракт экрана «Сейчас решать»: без любого из этих id ``matrix.js``
+    падает в ``null.querySelector``, и экран остаётся пустым — молча, потому
+    что ошибка живёт в консоли WebView2, а не в ответе сервера.
+    """
+    response = client.get("/matrix")
+
+    assert response.status_code == 200
+    assert "501" not in response.text
+    for element_id in (
+        "matrix-svg", "card-overlay", "candidates-body", "count-high-no-flag",
+    ):
+        assert f'id="{element_id}"' in response.text, element_id
+
+
+def test_navigation_active_and_disabled_sets(client: TestClient) -> None:
+    """Живых пунктов ровно три, выключенных — три, и они не пересекаются.
+
+    После 2c выключенными остались только экраны P3. Тест держит обе стороны:
+    забытая активация (пункт остался ``disabled``) и самовольная ссылка на
+    несуществующий маршрут (``href`` без страницы) — обе ломают навигацию
+    одинаково тихо.
+    """
+    page = client.get("/").text
+    anchors = [
+        (attrs, re.sub(r"<[^>]+>", "", label).strip())
+        for attrs, label in _ANCHOR.findall(page)
+    ]
+    nav = [(attrs, label) for attrs, label in anchors if label in NAV_ROUTES]
+    others = [
+        (attrs, label) for attrs, label in anchors
+        if label and label not in NAV_ROUTES and label != "GapAudit"
+    ]
+
+    assert [label for _, label in nav] == ["Задачи", "Сейчас решать", "Настройки"]
+    assert [label for _, label in others] == ["Пакеты", "Каталоги", "Мониторинг"]
+    for attrs, label in nav:
+        href = _HREF.search(attrs)
+        assert href is not None, f"пункт {label!r} без href"
+        assert href.group(1) == NAV_ROUTES[label], label
+        assert "disabled" not in attrs, label
+    for attrs, label in others:
+        assert "disabled" in attrs, label
+        assert "href" not in attrs, label
 
 
 def test_navigation_links_point_to_existing_routes(client: TestClient) -> None:
@@ -115,5 +168,5 @@ def test_navigation_links_point_to_existing_routes(client: TestClient) -> None:
         assert "disabled" in attrs, label
         assert "href" not in attrs, label
 
-    for url in ("/", "/matrix"):
+    for url in ("/", "/matrix", "/settings"):
         assert client.get(url).text.count('class="active"') == 1, url

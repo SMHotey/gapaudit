@@ -4,9 +4,28 @@
 
    Токен читается из location.search: desktop.py открывает окно с ?token=...
    (вариант A из DEVPLAN §7). Дальше он уходит заголовком X-GapAudit-Token —
-   в query токен допустим только для SSE (матрица токена в app/web.py). */
+   в query токен допустим только для SSE (матрица токена в app/web.py).
+
+   Токен переживает переходы по ссылкам (шаг 2c): пункты навигации ведут на
+   /matrix и /settings без query, и на первом же клике location.search терял
+   токен — все запросы экрана получали 403 «нужен токен сессии», а окно
+   показывало пустые формы. Поэтому токен из query кладётся в sessionStorage
+   (на вкладку, живёт до закрытия окна) и оттуда читается на следующих
+   страницах. Cookie для этого не годится: её никто не выставляет — миддлварь
+   только читает. */
 (function () {
-  const token = new URLSearchParams(location.search).get('token') || '';
+  const TOKEN_STORAGE_KEY = 'gapaudit-token';
+
+  function resolveToken() {
+    const fromQuery = new URLSearchParams(location.search).get('token') || '';
+    if (fromQuery) {
+      try { sessionStorage.setItem(TOKEN_STORAGE_KEY, fromQuery); } catch (e) { /* приватный режим */ }
+      return fromQuery;
+    }
+    try { return sessionStorage.getItem(TOKEN_STORAGE_KEY) || ''; } catch (e) { return ''; }
+  }
+
+  const token = resolveToken();
 
   function setText(id, text) {
     const el = document.getElementById(id);
@@ -76,5 +95,20 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     window.GapAudit.health();
+  });
+
+  /* F5 = «Обновить» (шаг 2c, DEVPLAN §9). В WebView2 поведение F5 по умолчанию
+     не определено (может открыть devtools или не сделать ничего), поэтому
+     клавишу перехватываем сами: экран, определивший window.__gapauditRefresh
+     (jobs.js / matrix.js / settings.js), перечитывает свои данные; остальные
+     экраны получают обычную перезагрузку страницы. */
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'F5') return;
+    e.preventDefault();
+    if (typeof window.__gapauditRefresh === 'function') {
+      window.__gapauditRefresh();
+    } else {
+      location.reload();
+    }
   });
 })();

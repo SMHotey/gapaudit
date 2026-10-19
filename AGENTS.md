@@ -282,6 +282,20 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     кавычка в имени рвёт атрибут). Пример: строки jobs.js собираются
     DOM-методами, matrix.js так же рисует точки SVG и подписи квадрантов.
     innerHTML допустим только для статической разметки без данных.
+38. SSE-событие done приходит из JobQueue._finalize ДО того, как
+    post_executor запишет observations в Store (шаг 3d-b: запись
+    асинхронная, через ThreadPoolExecutor). Клиент, который на done
+    перечитывает /api/matrix или /api/packages, увидит старые данные.
+    Сейчас: reload с задержкой 400 мс (matrix.js, jobs.js) — магическое
+    число, но работает (запись укладывается в 50–100 мс на свободной
+    машине). Отдельное событие recorded после submit — P3/P4, если
+    задержка начнёт мешать. Синхронный reload на done НЕ ставить: данные
+    не успеют записаться.
+39. F5 в pywebview: app.js перехватывает keydown F5 и зовёт
+    window.__gapauditRefresh (если экран его определил) или location.reload().
+    На поведение WebView2 по умолчанию не полагаться (F5 может открыть
+    devtools или не сделать ничего). Каждый экранный JS в DOMContentLoaded
+    ставит window.__gapauditRefresh = load.
 
 ---
 

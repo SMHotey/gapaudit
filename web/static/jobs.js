@@ -226,6 +226,11 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    /* F5 = «Обновить»: app.js перехватывает клавишу F5 и зовёт эту функцию
+       (AGENTS gotcha 39). Список перечитывается, фильтр и таблица остаются
+       на месте — перезагрузка страницы потеряла бы выбранный статус. */
+    window.__gapauditRefresh = load;
+
     $('refresh').addEventListener('click', load);
 
     $('status-filter').addEventListener('click', function (ev) {

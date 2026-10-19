@@ -235,15 +235,32 @@
       plural(data.counts.total, 'пакет', 'пакета', 'пакетов');
     $('count-with-week').textContent = data.counts.with_week;
     $('count-high-no-flag').textContent = data.counts.high_no_flag;
+    /* Здесь — когда экран последний раз читал API (локальное время), а дата
+       самого замера живёт отдельной строкой под матрицей: это разные факты,
+       и «свежесть окна» не должна выдавать себя за свежесть данных. */
+    const now = new Date();
+    $('matrix-updated').textContent = 'обновлено в ' +
+      now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  /* «Последний замер: <дата> · Обновить». Берётся самый свежий measured_at из
+     точек: у пакетов он разный (задачу могли догонять частями), и подписывать
+     экран датой одного пакета нельзя. Нет ни одной даты — строку скрываем,
+     а не показываем прочерк: пустая метка выглядит как «данных нет», хотя
+     данные могут быть без замеров. */
+  function renderLastMeasured(data) {
     const stamps = data.points
       .map((point) => point.measured_at || '')
-      .filter((value) => value);
-    if (stamps.length) {
-      $('matrix-updated').textContent =
-        'замер: ' + stamps.sort()[stamps.length - 1].slice(0, 16);
-    } else {
-      $('matrix-updated').textContent = 'замеров нет';
+      .filter((value) => value)
+      .sort();
+    const box = $('last-measured');
+    if (!stamps.length) {
+      box.hidden = true;
+      return;
     }
+    $('last-measured-time').textContent =
+      stamps[stamps.length - 1].slice(0, 16).replace('T', ' ');
+    box.hidden = false;
   }
 
   async function load() {
@@ -252,6 +269,7 @@
       renderSummary(current);
       renderMatrix(current);
       renderCandidates(current);
+      renderLastMeasured(current);
     } catch (e) {
       $('matrix-svg').innerHTML = '';
       $('matrix-empty').hidden = false;
@@ -433,7 +451,17 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    /* F5 = «Обновить»: app.js перехватывает клавишу и зовёт эту функцию
+       (AGENTS gotcha 39). Экран без своей функции оставил бы F5 браузеру. */
+    window.__gapauditRefresh = load;
+
     $('refresh').addEventListener('click', load);
+    /* Ссылка «Обновить» рядом с датой замера: hash в href гасим, иначе
+       WebView2 прыгнул бы к якорю и потерял позицию прокрутки. */
+    $('last-measured-refresh').addEventListener('click', function (ev) {
+      ev.preventDefault();
+      load();
+    });
 
     $('card-overlay').addEventListener('click', function (ev) {
       if (ev.target === $('card-overlay')) closeCard();

@@ -24,6 +24,13 @@
   <svg id="matrix-svg" viewBox="0 0 1000 400" preserveAspectRatio="xMidYMid meet"
        role="img" aria-label="Матрица adoption и признака ниши"></svg>
 </section>
+{# Дата последнего замера + ручное обновление (шаг 2c, DEVPLAN §9 п. 1:
+   «дата замера, „данные от HH:MM · обновить“»). Время подставляет matrix.js
+   из самого свежего measured_at — сервер данных в разметку не впечатывает. #}
+<div class="last-measured muted" id="last-measured" hidden>
+  Последний замер: <span id="last-measured-time">—</span> ·
+  <a href="#" id="last-measured-refresh">Обновить</a>
+</div>
 <section>
   <h2>Живые и без признака — кандидаты</h2>
   <table class="table" id="candidates-table">

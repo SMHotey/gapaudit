@@ -137,3 +137,67 @@ def test_app_js_fills_footer_version(client: TestClient) -> None:
 
     assert "setText('version', 'GapAudit v' + h.version)" in script
 
+
+# --- экран «Настройки» и F5 (шаг 2c) ----------------------------------------
+
+
+def test_settings_screen_renders_form(client: TestClient) -> None:
+    """GET /settings: форма порогов, контейнеры readonly-полей и скрипт экрана.
+
+    Поля ввода перечислены по именам: ``settings.js`` ищет их через
+    ``form.elements.<name>``, и переименование в шаблоне дало бы пустую форму
+    без единой ошибки в консоли.
+    """
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<a href="/settings" class="active">Настройки</a>' in response.text
+    assert response.text.count('class="active"') == 1
+
+    for name in (
+        "alive_weekly", "alive_monthly", "dead_weekly", "dead_monthly",
+        "stale_days", "adoption_delta_pct", "cache_ttl_hours",
+        "max_parallel_jobs", "registry_limit", "keywords",
+    ):
+        assert f'name="{name}"' in response.text, name
+    for element_id in ("settings-form", "settings-msg", "ro-data-dir",
+                       "ro-db-path", "ro-version", "reset"):
+        assert f'id="{element_id}"' in response.text, element_id
+    assert "/static/settings.js" in response.text
+
+
+def test_f5_refresh_hook_is_wired_on_every_screen(client: TestClient) -> None:
+    """F5 перехвачен в app.js, и каждый экранный скрипт отдаёт свой refresh.
+
+    Без второй половины F5 просто перезагрузил бы страницу: экран не успевает
+    объявить ``window.__gapauditRefresh`` до обработчика клавиши, и «Обновить»
+    теряет выбранный фильтр и открытую карточку.
+    """
+    app_js = client.get("/static/app.js").text
+    assert "e.key !== 'F5'" in app_js
+    assert "preventDefault" in app_js
+    assert "window.__gapauditRefresh" in app_js
+    assert "location.reload()" in app_js
+
+    for script_path in ("/static/jobs.js", "/static/matrix.js",
+                        "/static/settings.js"):
+        script = client.get(script_path).text
+        assert "window.__gapauditRefresh = load" in script, script_path
+
+
+def test_token_survives_navigation_between_screens(client: TestClient) -> None:
+    """Токен из ``?token=`` запоминается и переживает клик по навигации.
+
+    Пункты навигации — обычные ``<a href="/matrix">`` без query: после клика
+    ``location.search`` пуст, и без запоминания каждый экран получал 403, а окно
+    показывало пустые матрицу и форму настроек (обнаружено живым прогоном 2c).
+    """
+    script = client.get("/static/app.js").text
+
+    assert "sessionStorage.setItem" in script
+    assert "sessionStorage.getItem" in script
+    assert "resolveToken" in script
+    # токен из query приоритетнее: новый запуск окна приносит новый токен
+    assert script.index("location.search") < script.index("sessionStorage.getItem")
+

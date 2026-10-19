@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Настройки — GapAudit{% endblock %}
+{% block content %}
+{# Экран настроек (шаг 2c, DEVPLAN §9 п. 7). Форма заполняется settings.js из
+   GET /api/settings: значения порогов — данные, а не разметка, поэтому ни одно
+   поле не впечатано в HTML. Изменяемые поля ограничены EDITABLE_SETTING_KEYS
+   в app/web.py; readonly (каталог данных, база, версия) — только показ. #}
+<section class="settings-wrap">
+  <h2>Пороги вердиктов</h2>
+  <p class="muted">
+    Влияют на матрицу «Сейчас решать» и вердикты пакетов.
+    После сохранения — нажмите «Обновить» на экранах.
+  </p>
+  <form id="settings-form">
+    <fieldset>
+      <legend>Пороги</legend>
+      <label>Живой (неделя):
+        <input type="number" name="alive_weekly" min="1" required>
+      </label>
+      <label>Живой (месяц):
+        <input type="number" name="alive_monthly" min="1" required>
+      </label>
+      <label>Мёртвый (неделя):
+        <input type="number" name="dead_weekly" min="0" required>
+      </label>
+      <label>Мёртвый (месяц):
+        <input type="number" name="dead_monthly" min="0" required>
+      </label>
+      <label>Застой (дней без релиза):
+        <input type="number" name="stale_days" min="1" required>
+      </label>
+      <label>Δ adoption (%):
+        <input type="number" name="adoption_delta_pct" step="0.1"
+               min="0" required>
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Признаки (keywords)</legend>
+      <p class="muted">
+        По одному на строку. Используются для определения «есть MCP»
+        (или другого признака). От 1 до 50 слов.
+      </p>
+      <textarea name="keywords" rows="3" required></textarea>
+    </fieldset>
+    <fieldset>
+      <legend>Задачи и кэш</legend>
+      <label>TTL кэша (часов):
+        <input type="number" name="cache_ttl_hours" step="0.5"
+               min="0.5" required>
+      </label>
+      <label>Параллельных задач:
+        <input type="number" name="max_parallel_jobs" min="1"
+               max="10" required>
+      </label>
+      <label>Лимит реестра:
+        <input type="number" name="registry_limit" min="10"
+               max="1000" required>
+      </label>
+    </fieldset>
+    <div class="readonly-info">
+      <div><span class="muted">Каталог данных:</span>
+           <code id="ro-data-dir">—</code></div>
+      <div><span class="muted">База:</span>
+           <code id="ro-db-path">—</code></div>
+      <div><span class="muted">Версия:</span>
+           <code id="ro-version">—</code></div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+      <button type="button" class="btn" id="reset">Сбросить</button>
+    </div>
+    <div id="settings-msg" class="settings-msg" hidden></div>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/settings.js"></script>
+{% endblock %}
