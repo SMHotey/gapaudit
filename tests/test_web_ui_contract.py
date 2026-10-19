@@ -12,11 +12,11 @@
 * у каждого живого экрана на месте его контейнеры (матрица — SVG, оверлей
   карточки — один на все экраны в ``base.html``, таблица кандидатов, счётчик
   «ВОТ СЮДА», поиск и пагинация «Пакетов», таймлайн «Мониторинга»);
-* каждая живая ссылка навигации ведёт на существующий маршрут, а после 3b
-  живых пунктов шесть: «Задачи», «Сейчас решать», «Пакеты», «Мониторинг»,
-  «Каталоги», «Настройки»;
-* выключенные пункты (экран 3c) помечены ``aria-disabled`` и не имеют
-  ``href`` — «серая» ссылка без этих признаков читается как рабочая.
+* каждая живая ссылка навигации ведёт на существующий маршрут, а после 3c
+  живых пунктов семь: «Задачи», «Сейчас решать», «Пакеты», «Мониторинг»,
+  «Каталоги», «Сравнение», «Настройки»;
+* выключенных пунктов не осталось: P3 закрыт, и «серая» ссылка без ``href``
+  вернулась бы как регрессия.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ RENDERED_FILES = (
     WEB / "views" / "matrix.html",
     WEB / "views" / "catalogs.html",
     WEB / "views" / "catalog_detail.html",
+    WEB / "views" / "compare.html",
     WEB / "views" / "monitor.html",
     WEB / "views" / "packages.html",
     WEB / "views" / "settings.html",
@@ -42,6 +43,7 @@ RENDERED_FILES = (
     WEB / "static" / "card.js",
     WEB / "static" / "catalog_detail.js",
     WEB / "static" / "catalogs.js",
+    WEB / "static" / "compare.js",
     WEB / "static" / "jobs.js",
     WEB / "static" / "matrix.js",
     WEB / "static" / "monitor.js",
@@ -53,13 +55,15 @@ RENDERED_FILES = (
 
 #: Пункты навигации: подпись -> маршрут. Остальные обязаны быть выключены.
 #: 3a: «Пакеты» и «Мониторинг» стали живыми — экраны появились.
-#: 3b: «Каталоги» стала живой; выключенным остался только «Сравнение» (3c).
+#: 3b: «Каталоги» стала живой; 3c закрыл P3 — «Сравнение» тоже живая ссылка,
+#: выключенных пунктов в шапке больше нет.
 NAV_ROUTES = {
     "Задачи": "/",
     "Сейчас решать": "/matrix",
     "Пакеты": "/packages",
     "Мониторинг": "/monitor",
     "Каталоги": "/catalogs",
+    "Сравнение": "/compare",
     "Настройки": "/settings",
 }
 
@@ -104,7 +108,8 @@ def test_no_501_in_any_rendered_file(client: TestClient) -> None:
         assert path.exists(), path
         assert "501" not in path.read_text(encoding="utf-8"), path
 
-    for url in ("/", "/matrix", "/packages", "/monitor", "/catalogs", "/settings"):
+    for url in ("/", "/matrix", "/packages", "/monitor", "/catalogs", "/compare",
+                "/settings"):
         response = client.get(url)
         assert response.status_code == 200, url
         assert "501" not in response.text, url
@@ -127,13 +132,12 @@ def test_matrix_page_keeps_its_containers(client: TestClient) -> None:
         assert f'id="{element_id}"' in response.text, element_id
 
 
-def test_navigation_active_and_disabled_sets(client: TestClient) -> None:
-    """Живых пунктов ровно шесть, выключенный — один, и они не пересекаются.
+def test_navigation_has_no_disabled_items(client: TestClient) -> None:
+    """Все семь пунктов шапки — живые ссылки: P3 закрыт, выключенных нет.
 
-    После 3b выключенным остался только «Сравнение» (3c). Тест держит обе
-    стороны: забытая активация (пункт остался ``disabled``) и самовольная
-    ссылка на несуществующий маршрут (``href`` без страницы) — обе ломают
-    навигацию одинаково тихо.
+    Тест держит обе стороны одной ошибки: забытая активация (пункт остался
+    ``disabled``) и ссылка на несуществующий маршрут (``href`` без страницы) —
+    обе ломают навигацию одинаково тихо.
     """
     page = client.get("/").text
     anchors = [
@@ -148,25 +152,23 @@ def test_navigation_active_and_disabled_sets(client: TestClient) -> None:
 
     assert [label for _, label in nav] == [
         "Задачи", "Сейчас решать", "Пакеты", "Мониторинг", "Каталоги",
-        "Настройки",
+        "Сравнение", "Настройки",
     ]
-    assert [label for _, label in others] == ["Сравнение"]
+    assert others == [], "в шапке не осталось выключенных пунктов (3c закрыл P3)"
     for attrs, label in nav:
         href = _HREF.search(attrs)
         assert href is not None, f"пункт {label!r} без href"
         assert href.group(1) == NAV_ROUTES[label], label
         assert "disabled" not in attrs, label
-    for attrs, label in others:
-        assert "disabled" in attrs, label
-        assert "href" not in attrs, label
+        assert "aria-disabled" not in attrs, label
 
 
 def test_navigation_links_point_to_existing_routes(client: TestClient) -> None:
-    """Навигация: живые пункты ведут на существующие экраны, остальные выключены.
+    """Навигация: каждый пункт ведёт на существующий экран и подсвечен один.
 
     Тест, который ловит забытую активацию: в 2a «Сейчас решать» была
-    ``disabled``, в 2b — рабочая ссылка на ``/matrix``. Если экран появился, а
-    навигацию не тронули, пункт останется выключенным и тест скажет об этом.
+    ``disabled``, в 2b — рабочая ссылка на ``/matrix``; в 3c то же случилось бы
+    со «Сравнением», если бы экран появился, а шапку не тронули.
     """
     page = client.get("/").text
     anchors = [
@@ -181,23 +183,12 @@ def test_navigation_links_point_to_existing_routes(client: TestClient) -> None:
         assert href is not None, f"пункт {label!r} без href"
         route = href.group(1)
         assert route == NAV_ROUTES[label], label
-        assert "aria-disabled" not in attrs, label
         # маршрут действительно существует
         assert client.get(route).status_code == 200, route
 
-    # Все прочие пункты навигации — выключены явно.
-    others = [
-        (attrs, label) for attrs, label in anchors
-        if label and label not in NAV_ROUTES and label != "GapAudit"
-    ]
-    assert others, "в навигации должны остаться выключенные пункты P3/2c"
-    for attrs, label in others:
-        assert 'aria-disabled="true"' in attrs, label
-        assert "disabled" in attrs, label
-        assert "href" not in attrs, label
-
+    # ровно один активный пункт на каждом экране — шапка не «подсвечивает всё»
     for url in ("/", "/matrix", "/packages", "/monitor", "/catalogs",
-                "/catalogs/abc123", "/settings"):
+                "/catalogs/abc123", "/compare", "/settings"):
         assert client.get(url).text.count('class="active"') == 1, url
 
 
@@ -218,7 +209,8 @@ def test_card_overlay_exists_once_on_every_screen(client: TestClient) -> None:
     шаблоне экрана) дали бы пустую вторую карточку: ``getElementById`` находит
     первую, а вторая остаётся висеть поверх страницы.
     """
-    for url in ("/", "/matrix", "/packages", "/monitor", "/catalogs", "/settings"):
+    for url in ("/", "/matrix", "/packages", "/monitor", "/catalogs", "/compare",
+                "/settings"):
         page = client.get(url).text
         assert page.count('id="card-overlay"') == 1, url
         assert page.count('id="card-content"') == 1, url

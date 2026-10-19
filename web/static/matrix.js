@@ -283,12 +283,41 @@
      «Пакеты» и «Мониторинг». Здесь остаётся только вызов
      window.GapAuditCard.open(name) — разметку, запросы и ошибки держит модуль. */
 
+  /* Выгрузка точек матрицы (шаг 3c): POST /api/matrix/export — CSV в ответе,
+     точки те же, что на экране (сервер считает их общим построителем). Ссылку
+     создаём сами и отзываем после клика. */
+  async function exportCsv() {
+    const token = (window.GapAudit && window.GapAudit.token) || '';
+    try {
+      const resp = await fetch('/api/matrix/export?format=csv', {
+        method: 'POST',
+        headers: { 'X-GapAudit-Token': token },
+      });
+      if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+      const blob = await resp.blob();
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = 'matrix.csv';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () {
+        URL.revokeObjectURL(href);
+      }, 1000);
+    } catch (e) {
+      $('matrix-empty').hidden = false;
+      $('matrix-empty').textContent = 'экспорт не удался: ' + e.message;
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     /* F5 = «Обновить»: app.js перехватывает клавишу и зовёт эту функцию
        (AGENTS gotcha 39). Экран без своей функции оставил бы F5 браузеру. */
     window.__gapauditRefresh = load;
 
     $('refresh').addEventListener('click', load);
+    $('export-csv').addEventListener('click', exportCsv);
     /* Ссылка «Обновить» рядом с датой замера: hash в href гасим, иначе
        WebView2 прыгнул бы к якорю и потерял позицию прокрутки. */
     $('last-measured-refresh').addEventListener('click', function (ev) {

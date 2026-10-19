@@ -39,7 +39,10 @@
   каталоги ``/api/catalogs*`` (шаг 3b: сборка по фразам, список, элементы с
   фильтрами, экспорт CSV/Markdown),
   матрица ``/api/matrix`` (шаг 2b — агрегат экрана
-  «Сейчас решать»), настройки ``GET/PUT /api/settings`` (шаг 2c —
+  «Сейчас решать»), сравнение ``/api/compare`` (шаг 3c — 2–3 пакета бок о
+  бок по последнему замеру) и выгрузки ``POST /api/events/export``,
+  ``POST /api/matrix/export``, ``POST /api/compare/export`` (шаг 3c: файл в
+  ответе, CSV — ``utf-8-sig``), настройки ``GET/PUT /api/settings`` (шаг 2c —
   пороги и ключевые слова, запись в ``<data_dir>/settings.json``),
   расширенный ``/api/health``.
 * **восстановление после падения** (шаг 3c): lifespan зовёт
@@ -187,6 +190,16 @@ CATALOG_ITEMS_LIMIT_MAX = 500
 #: ``sources`` как «все источники», и явная пустота означала бы разное в двух
 #: слоях (AGENTS gotcha 41).
 CATALOG_SOURCES: tuple[str, ...] = ("github", "npm", "registry")
+
+#: Границы экспорта событий (шаг 3c). Порог не «на всякий случай»: выгрузка —
+#: это весь таймлайн, но ответ на 500 тысяч строк убил бы и SQLite, и окно.
+#: 10 000 по умолчанию — с запасом на год мониторинга десятка пакетов.
+EVENTS_EXPORT_LIMIT_DEFAULT = 10_000
+EVENTS_EXPORT_LIMIT_MAX = 50_000
+
+#: Сколько ниш сравнивает экран «Сравнение» (шаг 3c): меньше двух — не сравнение,
+#: больше трёх — не влезает в окно без горизонтальной прокрутки.
+COMPARE_NAMES_MIN, COMPARE_NAMES_MAX = 2, 3
 
 #: Фразы и страницы на фразу (шаг 3b). Потолки не «на всякий случай»: 10 фраз
 #: по 10 страниц — это 300 запросов к GitHub Search при лимите 30/мин, то есть
@@ -696,6 +709,154 @@ def _catalog_rows(items: list[dict[str, Any]]) -> list[list[Any]]:
 
 #: Колонки CSV-экспорта каталога (шаг 3b) — порядок фиксирован: его читает Excel.
 CATALOG_CSV_HEADER = ("name", "source", "stars", "lang", "pushed", "desc")
+
+#: Колонки экспорта событий (шаг 3c): те же поля, что у ``GET /api/events``,
+#: плюс ``run_id`` — по нему события группируются в один прогон мониторинга.
+EVENTS_CSV_HEADER = ("id", "kind", "name", "detail", "at", "run_id")
+
+#: Колонки экспорта матрицы и сравнения (шаг 3c): одна строка — один пакет.
+#: Порядок колонок — как у точки ``/api/matrix``, чтобы файл и экран читались
+#: слева направо одинаково.
+MATRIX_CSV_HEADER = (
+    "name",
+    "source",
+    "version",
+    "released_at",
+    "adoption_week",
+    "adoption_month",
+    "flag",
+    "verdict",
+    "measured_at",
+)
+
+
+def _csv_body(header: tuple[str, ...], rows: list[list[Any]]) -> bytes:
+    """CSV с BOM (``utf-8-sig``) и CRLF: без BOM Excel показывает «Ð¡Ð¾Ð±Ñ‹Ñ‚Ð¸Ñ».
+
+    Один построитель на все выгрузки шага (события, матрица, сравнение):
+    каждая копия ``csv.writer`` — это ещё одно место, где забывается BOM или
+    ``lineterminator``, и файл открывается одной строкой в старом Excel.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def _attachment(
+    body: bytes, *, filename: str, media_type: str = "text/csv; charset=utf-8"
+) -> Response:
+    """Файл в ответе: ``Content-Disposition: attachment`` и запрет кэша.
+
+    ``Cache-Control: no-store`` — не украшение: выгрузка читает БД, и повторное
+    скачивание после новой задачи обязано дать новые строки, а не копию из
+    кэша браузера.
+    """
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _export_date() -> str:
+    """Дата в имени файла выгрузки (UTC, ``YYYY-MM-DD``)."""
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _compare_names(raw: str) -> list[str]:
+    """Разобрать ``names=a,b,c`` экрана «Сравнение»: 2–3 имени, без повторов.
+
+    Пустые куски (``a,,b``, хвостовая запятая) отбрасываются: пользователь
+    вводит строку руками, и лишняя запятая не должна давать 400 на «двух»
+    именах. Границы проверяются после дедупликации — ``a,a,b`` это два имени.
+    """
+    parts = [part.strip() for part in (raw or "").split(",")]
+    names = list(dict.fromkeys(part for part in parts if part))
+    if len(names) < COMPARE_NAMES_MIN or len(names) > COMPARE_NAMES_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"names: нужно {COMPARE_NAMES_MIN}–{COMPARE_NAMES_MAX} имени через "
+                f"запятую, пришло {len(names)}"
+            ),
+        )
+    return names
+
+
+def _compare_row(observation: dict[str, Any]) -> dict[str, Any]:
+    """Наблюдение -> колонка экрана «Сравнение» (шаг 3c).
+
+    Признак разложен на два поля, как в ``/api/matrix``: ``flag`` — булево (из
+    ``flag_value``), ``flag_label`` — метка ключевого слова (``flag`` TEXT).
+    ``bool("MCP")`` всегда истинно, поэтому одного поля было бы мало.
+    """
+    return {
+        "name": observation.get("name"),
+        "source": observation.get("source"),
+        "version": observation.get("version"),
+        "released_at": observation.get("released_at"),
+        "adoption_month": observation.get("adoption_month"),
+        "adoption_week": observation.get("adoption_week"),
+        "flag": bool(observation.get("flag_value")),
+        "flag_label": observation.get("flag"),
+        "verdict": observation.get("verdict"),
+        "measured_at": observation.get("measured_at"),
+    }
+
+
+def _matrix_points(
+    observations: list[dict[str, Any]], alive_weekly: int
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Точки матрицы и квадранты из последних наблюдений (шаг 2b, общий с 3c).
+
+    Один построитель на ``GET /api/matrix`` и ``POST /api/matrix/export``:
+    экспорт обязан содержать ровно те точки, что на экране, и отдельный цикл
+    разошёлся бы с ним при первой правке фильтра (например, «показывать и
+    нулевой adoption»).
+
+    Точка — только наблюдение с ``adoption_week > 0``: на логарифмической оси
+    ``log10(0)`` не существует. Такие наблюдения остаются в ``counts.total``,
+    но не в ``counts.with_week`` — разница и есть ответ на вопрос «почему
+    точек меньше, чем пакетов».
+    """
+    quadrants: dict[str, list[str]] = {
+        "high_no_flag": [],
+        "high_with_flag": [],
+        "low_no_flag": [],
+        "low_with_flag": [],
+    }
+    points: list[dict[str, Any]] = []
+    for observation in observations:
+        name = str(observation.get("name") or "")
+        week = observation.get("adoption_week") or 0
+        if not name or not isinstance(week, int) or week <= 0:
+            continue
+        flag = bool(observation.get("flag_value"))
+        if week >= alive_weekly:
+            bucket = "high_with_flag" if flag else "high_no_flag"
+        else:
+            bucket = "low_with_flag" if flag else "low_no_flag"
+        quadrants[bucket].append(name)
+        points.append(
+            {
+                "name": name,
+                "source": observation.get("source"),
+                "version": observation.get("version"),
+                "released_at": observation.get("released_at"),
+                "adoption_week": week,
+                "adoption_month": observation.get("adoption_month"),
+                "flag": flag,
+                "flag_label": observation.get("flag"),
+                "verdict": observation.get("verdict"),
+                "measured_at": observation.get("measured_at"),
+            }
+        )
+    return points, quadrants
 
 
 def _queue(request: Request) -> JobQueue:
@@ -1241,6 +1402,69 @@ def create_app(
             "offset": offset,
         }
 
+    @application.post("/api/events/export")
+    def export_events(request: Request) -> Response:
+        """Выгрузка событий файлом (шаг 3c): ``?format=csv|json``.
+
+        Отдаются все события под фильтрами экрана (``kind``, ``name``,
+        ``since``) и без пагинации: выгрузка — это «забрать таймлайн целиком»,
+        и файл с одной страницей из двадцати был бы ловушкой. Верх ``limit``
+        (50 000) ограничивает не удобство, а память: строки складываются в
+        список в памяти процесса.
+
+        CSV — ``utf-8-sig`` (иначе Excel показывает кириллицу как cp1251),
+        JSON — ``{"events": [...]}`` с ``ensure_ascii=False``: файл читают и
+        Excel, и внешний клиент, а экранированные ``\\uXXXX`` вместо кириллицы
+        сломали бы второй сценарий.
+
+        POST, а не GET: выгрузка — действие пользователя с побочным эффектом
+        (скачивание), и токен в query для мутаций запрещён (см. докстринг
+        модуля).
+        """
+        params = request.query_params
+        export_format = (params.get("format") or "csv").strip().lower()
+        if export_format not in ("csv", "json"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"format: допустимо csv или json, пришло {params.get('format')!r}",
+            )
+        limit = _query_int(
+            "limit",
+            params.get("limit"),
+            default=EVENTS_EXPORT_LIMIT_DEFAULT,
+            low=1,
+            high=EVENTS_EXPORT_LIMIT_MAX,
+        )
+        events = _store(request).get_events(
+            since=params.get("since") or None,
+            kind=params.get("kind") or None,
+            name=params.get("name") or None,
+            limit=limit,
+            offset=0,
+        )
+        if export_format == "csv":
+            rows = [
+                [
+                    event.get("id"),
+                    event.get("kind"),
+                    event.get("name"),
+                    event.get("detail") or "",
+                    event.get("at"),
+                    event.get("run_id"),
+                ]
+                for event in events
+            ]
+            return _attachment(
+                _csv_body(EVENTS_CSV_HEADER, rows),
+                filename=f"events-{_export_date()}.csv",
+            )
+        body = json.dumps({"events": events}, ensure_ascii=False, default=str)
+        return _attachment(
+            body.encode("utf-8"),
+            filename=f"events-{_export_date()}.json",
+            media_type="application/json; charset=utf-8",
+        )
+
     # --- пакеты ---------------------------------------------------------------
 
     @application.get("/api/packages")
@@ -1356,39 +1580,7 @@ def create_app(
             "alive_monthly": int(settings.alive_monthly),
         }
         observations = store.get_latest_observations()
-        quadrants: dict[str, list[str]] = {
-            "high_no_flag": [],
-            "high_with_flag": [],
-            "low_no_flag": [],
-            "low_with_flag": [],
-        }
-        points: list[dict[str, Any]] = []
-        for observation in observations:
-            name = str(observation.get("name") or "")
-            week = observation.get("adoption_week") or 0
-            if not name or not isinstance(week, int) or week <= 0:
-                continue
-            flag = bool(observation.get("flag_value"))
-            high = week >= thresholds["alive_weekly"]
-            if high:
-                bucket = "high_with_flag" if flag else "high_no_flag"
-            else:
-                bucket = "low_with_flag" if flag else "low_no_flag"
-            quadrants[bucket].append(name)
-            points.append(
-                {
-                    "name": name,
-                    "source": observation.get("source"),
-                    "version": observation.get("version"),
-                    "released_at": observation.get("released_at"),
-                    "adoption_week": week,
-                    "adoption_month": observation.get("adoption_month"),
-                    "flag": flag,
-                    "flag_label": observation.get("flag"),
-                    "verdict": observation.get("verdict"),
-                    "measured_at": observation.get("measured_at"),
-                }
-            )
+        points, quadrants = _matrix_points(observations, thresholds["alive_weekly"])
         return {
             "points": points,
             "quadrants": quadrants,
@@ -1399,6 +1591,126 @@ def create_app(
                 "high_no_flag": len(quadrants["high_no_flag"]),
             },
         }
+
+    @application.post("/api/matrix/export")
+    def export_matrix(request: Request) -> Response:
+        """Выгрузка точек матрицы CSV (шаг 3c): ``?format=csv``.
+
+        Ровно те точки, что на экране: построитель общий с ``GET /api/matrix``
+        (:func:`_matrix_points`), и «экспорт полнее экрана» здесь был бы
+        дефектом — файл сверяют с картинкой. Порог ``alive_weekly`` берётся из
+        текущих настроек, как и у экрана.
+
+        ``flag`` пишется как 0/1, а не словом: колонку считают в Excel
+        формулами, и текст «да» в числовом столбце ломает сумму.
+        """
+        export_format = (request.query_params.get("format") or "csv").strip().lower()
+        if export_format != "csv":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "format: допустимо только csv, "
+                    f"пришло {request.query_params.get('format')!r}"
+                ),
+            )
+        settings = getattr(request.app.state, "settings", None) or Settings()
+        observations = _store(request).get_latest_observations()
+        points, _quadrants = _matrix_points(observations, int(settings.alive_weekly))
+        rows = [
+            [
+                point.get("name"),
+                point.get("source") or "",
+                point.get("version") or "",
+                point.get("released_at") or "",
+                "" if point.get("adoption_week") is None else point.get("adoption_week"),
+                "" if point.get("adoption_month") is None else point.get("adoption_month"),
+                1 if point.get("flag") else 0,
+                point.get("verdict") or "",
+                point.get("measured_at") or "",
+            ]
+            for point in points
+        ]
+        return _attachment(
+            _csv_body(MATRIX_CSV_HEADER, rows),
+            filename=f"matrix-{_export_date()}.csv",
+        )
+
+    # --- сравнение (шаг 3c) ---------------------------------------------------
+
+    @application.get("/api/compare")
+    def compare_packages(request: Request, names: str = "") -> dict[str, Any]:
+        """Сравнение 2–3 пакетов бок о бок: последнее наблюдение каждого.
+
+        ``names`` — строка через запятую (``requests,flask``); 400, если имён не
+        2–3 после дедупликации. По одному наблюдению на имя — то же правило,
+        что у матрицы: сравнивать историю незачем, экран про «сейчас».
+
+        ``missing`` — имена, по которым в Store нет ни одного наблюдения. Они
+        не ошибка: два из трёх пакетов могли ещё не проверяться, и экран
+        показывает оставшиеся колонки с пометкой «нет данных». 404 — только
+        когда нет ни одного: пустая таблица выглядела бы сломанным экраном.
+        """
+        wanted = _compare_names(names)
+        observations = _store(request).get_latest_observations(wanted)
+        by_name = {str(row.get("name")): row for row in observations}
+        found = [name for name in wanted if name in by_name]
+        if not found:
+            raise HTTPException(
+                status_code=404,
+                detail="нет наблюдений ни по одному имени: " + ", ".join(wanted),
+            )
+        return {
+            "packages": [_compare_row(by_name[name]) for name in found],
+            "missing": [name for name in wanted if name not in by_name],
+        }
+
+    @application.post("/api/compare/export")
+    def export_compare(request: Request) -> Response:
+        """Выгрузка сравнения CSV (шаг 3c): ``?format=csv&names=a,b``.
+
+        Колонки — как у матрицы (:data:`MATRIX_CSV_HEADER`): строка на пакет, что
+        и на экране «Сравнение», только транспонировано. Валидация имён и
+        выборка те же, что у ``GET /api/compare`` (400/404 совпадают), — файл не
+        должен уметь то, чего не умеет экран.
+        """
+        export_format = (request.query_params.get("format") or "csv").strip().lower()
+        if export_format != "csv":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "format: допустимо только csv, "
+                    f"пришло {request.query_params.get('format')!r}"
+                ),
+            )
+        wanted = _compare_names(request.query_params.get("names") or "")
+        observations = _store(request).get_latest_observations(wanted)
+        by_name = {str(row.get("name")): row for row in observations}
+        found = [name for name in wanted if name in by_name]
+        if not found:
+            raise HTTPException(
+                status_code=404,
+                detail="нет наблюдений ни по одному имени: " + ", ".join(wanted),
+            )
+        rows = []
+        for name in found:
+            package = _compare_row(by_name[name])
+            rows.append(
+                [
+                    package.get("name"),
+                    package.get("source") or "",
+                    package.get("version") or "",
+                    package.get("released_at") or "",
+                    "" if package.get("adoption_week") is None else package["adoption_week"],
+                    "" if package.get("adoption_month") is None else package["adoption_month"],
+                    1 if package.get("flag") else 0,
+                    package.get("verdict") or "",
+                    package.get("measured_at") or "",
+                ]
+            )
+        return _attachment(
+            _csv_body(MATRIX_CSV_HEADER, rows),
+            filename=f"compare-{_export_date()}.csv",
+        )
 
     # --- каталоги (шаг 3b) ----------------------------------------------------
 
@@ -1721,6 +2033,18 @@ def create_app(
             request=request,
             name="catalog_detail.html",
             context={"version": VERSION, "catalog_id": catalog_id},
+        )
+
+    @application.get("/compare")
+    async def compare_screen(request: Request):
+        """Экран «Сравнение» (шаг 3c): 2–3 пакета бок о бок.
+
+        Шаблон отдаёт только форму и пустую таблицу: колонки — это данные из
+        ``GET /api/compare``, и сервер их в HTML не впечатывает (та же причина,
+        что у «Пакетов» и «Каталогов»; gotcha 37).
+        """
+        return templates.TemplateResponse(
+            request=request, name="compare.html", context={"version": VERSION}
         )
 
     @application.get("/settings")

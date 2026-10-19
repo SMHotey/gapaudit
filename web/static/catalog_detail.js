@@ -57,11 +57,15 @@
     tbody.appendChild(tr);
   }
 
-  /* Ссылка на проект: owner/repo — прямая страница GitHub, одиночное имя
-     (пакет npm, запись реестра) — поиск GitHub по этому имени. Обе ведут
-     наружу в новой вкладке: уходить из приложения в текущей нельзя. */
-  function projectUrl(name) {
-    const value = String(name || '');
+  /* Ссылка на проект: сначала url из источника находки (миграция 2, шаг 3c) —
+     GitHub отдаёт html_url, npm — links.npm. Если url нет (старый каталог,
+     запись реестра без ссылки), работает прежнее правило: owner/repo — прямая
+     страница GitHub, одиночное имя (пакет npm) — поиск GitHub по имени. Обе
+     ведут наружу в новой вкладке: уходить из приложения в текущей нельзя. */
+  function projectUrl(item) {
+    const url = String((item && item.url) || '');
+    if (url.indexOf('http://') === 0 || url.indexOf('https://') === 0) return url;
+    const value = String((item && item.name) || '');
     if (!value) return '';
     if (value.indexOf('/') >= 0) return 'https://github.com/' + value;
     return 'https://github.com/search?q=' + encodeURIComponent(value) +
@@ -74,7 +78,7 @@
     const nameCell = document.createElement('td');
     const link = document.createElement('a');
     link.className = 'mono catalog-link';
-    link.href = projectUrl(item.name);
+    link.href = projectUrl(item);
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     link.textContent = item.name || '—';

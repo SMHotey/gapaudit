@@ -23,6 +23,10 @@
     <input type="search" id="monitor-name" placeholder="Фильтр по имени"
            class="search-input">
     <span id="monitor-counter" class="muted">—</span>
+    {# Выгрузка таймлайна (шаг 3c): POST /api/events/export — файл в ответе.
+       Фильтры (вид/имя) переносятся в запрос: «выгрузить то, что вижу». #}
+    <button class="btn" id="export-csv" type="button">CSV</button>
+    <button class="btn" id="export-json" type="button">JSON</button>
     <button class="btn" id="refresh" type="button">Обновить</button>
   </div>
 </section>

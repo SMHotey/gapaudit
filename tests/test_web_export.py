@@ -139,6 +139,30 @@ def test_events_export_filter_by_kind(client: TestClient) -> None:
     assert {row[1] for row in rows[1:]} == {"release"}
 
 
+def test_events_export_is_not_a_page(client: TestClient) -> None:
+    """Выгрузка не равна странице экрана: 60 событий уезжают все, а не 50.
+
+    Экран листает по 50 (``PAGE_SIZE`` в ``monitor.js``), а выгрузка обязана
+    содержать весь таймлайн под фильтром — иначе файл молча теряет хвост, и
+    «экспорт» оказывается копией одного экрана.
+    """
+    store = app_state(client).store
+    store.record_events(
+        [
+            {"kind": "release", "name": f"pkg-{index:02d}", "detail": f"1.0 → 1.{index}"}
+            for index in range(60)
+        ],
+        run_id="run-1",
+        at="2026-10-19T10:00:00Z",
+    )
+
+    rows = read_csv(
+        client.post("/api/events/export", params={"format": "csv"}, headers=auth()).content
+    )
+
+    assert len(rows) == 61  # шапка + 60
+
+
 def test_events_export_rejects_unknown_format(client: TestClient) -> None:
     """``format=xml`` — 400."""
     response = client.post("/api/events/export", params={"format": "xml"}, headers=auth())
@@ -170,7 +194,9 @@ def test_matrix_export_csv_has_points_of_matrix(client: TestClient) -> None:
 
     rows = read_csv(response.content)
     assert rows[0] == MATRIX_HEADER
-    assert [row[0] for row in rows[1:]] == ["requests", "flask"]  # по убыванию не сортируем
+    # порядок — как у Store.get_latest_observations (по имени), не по adoption:
+    # файл и экран строятся из одного списка, сортировку делает экран
+    assert [row[0] for row in rows[1:]] == ["flask", "requests"]
     # flag — числом 0/1: колонку считают формулами в Excel
     flag_index = MATRIX_HEADER.index("flag")
     assert {row[flag_index] for row in rows[1:]} == {"0", "1"}

@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from app.store import SCHEMA_VERSION, Store, SqliteCache, utcnow_iso
+from app.store import SCHEMA_VERSION, Store, SqliteCache, migrate_1, utcnow_iso
 
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
@@ -81,10 +81,10 @@ def store():
 # --- миграции -----------------------------------------------------------------
 
 
-def test_migration_creates_all_tables_and_version_1(store: Store) -> None:
+def test_migration_creates_all_tables_and_version_2(store: Store) -> None:
     assert store.conn is not None
-    assert schema_version(store) == "1"
-    assert SCHEMA_VERSION == 1
+    assert schema_version(store) == "2"
+    assert SCHEMA_VERSION == 2
     # meta + 8 таблиц миграции 1; sqlite_sequence (AUTOINCREMENT) не наша.
     assert ALL_TABLES <= table_names(store)
 
@@ -93,9 +93,9 @@ def test_second_enter_on_file_db_is_idempotent(tmp_path) -> None:
     db = tmp_path / "twice.db"
     with Store(db) as first:
         first.record_observation(observation(), run_id="r1", measured_at="2026-10-19T10:00:00Z")
-        assert schema_version(first) == "1"
+        assert schema_version(first) == "2"
     with Store(db) as second:
-        assert schema_version(second) == "1"
+        assert schema_version(second) == "2"
         assert count(second, "observations") == 1
 
 
@@ -108,12 +108,79 @@ def test_migrate_from_version_zero_without_meta(tmp_path) -> None:
     raw.commit()
     raw.close()
     with Store(db) as store:
-        assert schema_version(store) == "1"
+        assert schema_version(store) == "2"
         assert "observations" in table_names(store)
 
 
+def test_migrate_1_to_2_adds_url_column_keeping_old_rows(tmp_path) -> None:
+    """БД версии 1 поднимается до 2: колонка ``url`` появляется, строки целы.
+
+    Версия 1 создаётся вручную (``migrate_1`` + строка в ``meta``) — так
+    выглядит БД, сделанная приложением до шага 3c. Строка каталога, записанная
+    до миграции, обязана остаться: ``ALTER TABLE ADD COLUMN`` не перестраивает
+    таблицу, и у неё просто нет ссылки.
+    """
+    db = tmp_path / "v1.db"
+    raw = sqlite3.connect(db)
+    raw.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    migrate_1(raw)
+    assert raw.execute(
+        "SELECT value FROM meta WHERE key='schema_version'"
+    ).fetchone()[0] == "1"
+    assert "url" not in {row[1] for row in raw.execute("PRAGMA table_info(catalog_items)")}
+    raw.execute("INSERT INTO catalog_items(catalog_id, name) VALUES('c1', 'old/repo')")
+    raw.commit()
+    raw.close()
+
+    with Store(db) as store:
+        assert schema_version(store) == "2"
+        assert "url" in {
+            row[1] for row in conn_of(store).execute("PRAGMA table_info(catalog_items)")
+        }
+        assert store.get_catalog_items("c1")[0]["url"] is None
+
+
+def test_record_catalog_items_stores_url(store: Store) -> None:
+    """``url`` из находки источника доезжает до ``get_catalog_items``."""
+    store.record_catalog_items(
+        "cat-1",
+        [{"name": "owner/repo", "url": "https://github.com/owner/repo", "sources": ["github"]}],
+    )
+
+    item = store.get_catalog_items("cat-1")[0]
+    assert item["url"] == "https://github.com/owner/repo"
+
+
+def test_record_catalog_items_without_url_stores_none(store: Store) -> None:
+    """Нет ``url`` (или он пустой) — NULL: экран отличает «ссылки нет» от адреса."""
+    store.record_catalog_items(
+        "cat-1",
+        [
+            {"name": "no-url", "sources": ["registry"]},
+            {"name": "empty-url", "url": "", "sources": ["registry"]},
+        ],
+    )
+
+    urls = {item["name"]: item["url"] for item in store.get_catalog_items("cat-1")}
+    assert urls == {"no-url": None, "empty-url": None}
+
+
+def test_reenter_version_2_db_does_not_rerun_migration(tmp_path) -> None:
+    """Повторное открытие БД v2 — без «duplicate column name: url».
+
+    Проверка на файле, а не на ``:memory:``: миграция видит уже применённую
+    схему только если версия записана в ``meta`` — файл это и проверяет.
+    """
+    db = tmp_path / "twice-v2.db"
+    with Store(db) as first:
+        first.record_catalog_items("c1", [{"name": "owner/repo", "url": "https://x"}])
+
+    with Store(db) as second:
+        assert schema_version(second) == "2"
+        assert second.get_catalog_items("c1")[0]["url"] == "https://x"
+
+
 def test_future_schema_version_raises(tmp_path) -> None:
-    import sqlite3
 
     db = tmp_path / "future.db"
     raw = sqlite3.connect(db)

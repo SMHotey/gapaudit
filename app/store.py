@@ -37,6 +37,7 @@ __all__ = [
     "SqliteCache",
     "migrate",
     "migrate_1",
+    "migrate_2",
     "utcnow_iso",
 ]
 
@@ -46,7 +47,8 @@ __all__ = [
 CATALOG_ALIVE_DAYS = 90
 
 #: Текущая версия схемы. Больше, чем в meta.schema_version, — БД новее кода.
-SCHEMA_VERSION = 1
+#: 2 (шаг 3c): ``catalog_items.url`` — ссылка на проект из источника находки.
+SCHEMA_VERSION = 2
 
 _OBSERVATION_COLUMNS = (
     "id, run_id, name, source, version, released_at, adoption_month, "
@@ -243,15 +245,34 @@ def migrate_1(conn: sqlite3.Connection) -> None:
     with _transaction(conn):
         for statement in statements:
             conn.execute(statement)
+        # Своя версия, а не SCHEMA_VERSION: номер пишет та миграция, к которой
+        # он относится (с 3c версия схемы 2, и migrate_1, записав «2», оставил
+        # бы БД без колонки url, но с видом «всё применено»).
         conn.execute(
-            "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (str(SCHEMA_VERSION),),
+            "INSERT INTO meta(key, value) VALUES('schema_version', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
         )
 
 
+def migrate_2(conn: sqlite3.Connection) -> None:
+    """Миграция 1 → 2: колонка ``catalog_items.url`` (шаг 3c).
+
+    ``ALTER TABLE … ADD COLUMN`` в SQLite добавляет колонку без перестройки
+    таблицы, старые строки получают NULL. Миграция идемпотентна: колонка уже
+    есть — выходим. Это не перестраховка, а условие повторного старта: если
+    процесс упал между ``ALTER`` и записью ``meta.schema_version``, версия
+    осталась 1, миграция запустится снова, и без проверки SQLite ответил бы
+    «duplicate column name: url» — приложение не открылось бы вовсе.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(catalog_items)")}
+    if "url" in columns:
+        return
+    with _transaction(conn):
+        conn.execute("ALTER TABLE catalog_items ADD COLUMN url TEXT")
+
+
 #: Реестр миграций: номер версии → функция. Новая миграция = новая запись.
-_MIGRATIONS = {1: migrate_1}
+_MIGRATIONS = {1: migrate_1, 2: migrate_2}
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -279,6 +300,15 @@ def migrate(conn: sqlite3.Connection) -> None:
         if migration is None:
             raise RuntimeError(f"нет миграции со степенью {step}")
         migration(conn)
+        # Версия фиксируется после каждой ступени, а не только в migrate_1:
+        # без этого БД, пришедшая с version=1, каждый старт заново прогоняла бы
+        # migrate_2 (ALTER TABLE в SQLite не повторяем, но полагаться на это
+        # нельзя — миграции пишутся по одной и не обязаны быть идемпотентными).
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(step),),
+        )
         version = step
 
 
@@ -916,6 +946,12 @@ class Store:
         ``core.catalog.dedupe``) важнее одиночного ``source``: один проект
         живёт и на GitHub, и в npm, а колонка одна — она хранит их через
         запятую, и экран «Источники» показывает всё найденное.
+
+        ``url`` — ссылка на проект от источника находки (миграция 2, шаг 3c):
+        GitHub отдаёт ``html_url``, npm — ``links.npm``, реестр — ``url``
+        сервера (у записей реестра он пустой). Пустая строка хранится как
+        NULL: «ссылки нет» и «ссылка пустая» — одно состояние, и экран не
+        должен строить ссылку на пустой адрес.
         """
         written = 0
         with self._lock, self._tx() as conn:
@@ -929,8 +965,8 @@ class Store:
                 source = ",".join(sources) if sources else item.get("source")
                 conn.execute(
                     """INSERT OR REPLACE INTO catalog_items(
-                           catalog_id, name, source, stars, lang, pushed, desc
-                       ) VALUES(?, ?, ?, ?, ?, ?, ?)""",
+                           catalog_id, name, source, stars, lang, pushed, desc, url
+                       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         catalog_id,
                         str(name),
@@ -939,6 +975,7 @@ class Store:
                         item.get("lang"),
                         item.get("pushed"),
                         item.get("desc"),
+                        item.get("url") or None,
                     ),
                 )
                 written += 1
@@ -1055,7 +1092,7 @@ class Store:
                 catalog_id, alive=alive, lang=lang, min_stars=min_stars, q=q
             )
             sql = (
-                "SELECT name, source, stars, lang, pushed, desc FROM catalog_items"
+                "SELECT name, source, stars, lang, pushed, desc, url FROM catalog_items"
                 f"{clause} ORDER BY stars DESC NULLS LAST, name LIMIT ? OFFSET ?"
             )
             params.extend([limit, offset])

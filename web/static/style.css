@@ -512,3 +512,30 @@ a:hover { color: var(--accent-hover); }
 .catalog-link:hover { color: var(--accent-hover); }
 /* Список каталогов: строка целиком кликабельна, ID — моноширинным. */
 #catalogs-table tbody tr { cursor: pointer; }
+
+/* --- сравнение (шаг 3c) ---------------------------------------------------- */
+
+/* Форма ввода имён: та же строка поиска, что на «Пакетах», но растянутая.
+   Остальные компоненты (table, settings-msg, btn, toolbar) уже есть с 2a–3b. */
+.compare-form { margin: 12px 0; }
+.compare-form form { display: flex; gap: 8px; align-items: center; }
+.compare-form label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.compare-form .search-input { flex: 1; width: auto; min-width: 240px; }
+
+.compare-table th, .compare-table td { padding: 8px 12px; }
+.compare-table thead th { background: var(--bg-elev); }
+/* Первая колонка — подписи параметров: она не должна тонуть в моноширинных
+   значениях, поэтому прилипает к левому краю при горизонтальной прокрутке. */
+.compare-table tbody td:first-child {
+  color: var(--text-muted);
+  white-space: nowrap;
+  position: sticky;
+  left: 0;
+  background: var(--bg-elev);
+}

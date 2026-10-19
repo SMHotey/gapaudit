@@ -144,6 +144,20 @@ shutdown-order). Resume / recover_interrupted / отмена / SSE /
 sessionStorage (в 3a — HttpOnly cookie, gotcha 40). Следующий — P3
 (Пакеты, Мониторинг, Каталоги, Сравнение, экспорт CSV/MD).
 
+Статус P3 (наполовину): закрыт «Пакеты» (поиск, пагинация, карточка),
+«Мониторинг» (таймлайн, фильтры), «Каталоги» (сборка по фразам, список,
+детальный экран с фильтрами, пагинацией, экспорт CSV/MD). HttpOnly cookie
+для токена (навигация без ?token=). monitor.diff как задача (с фиксом
+fallback имён). Следующий — «Сравнение» + экспорт событий/matrix + полировка
+(3c).
+
+Статус P3: закрыт 2026-10-19. 739 тестов. Все 7 экранов работают в WebView2:
+Задачи, Сейчас решать, Пакеты, Мониторинг, Каталоги, Сравнение, Настройки.
+Экспорт: каталог (CSV/MD), события (CSV/JSON), матрица (CSV), сравнение
+(CSV). monitor.diff как задача работает (fallback имён из prev). Миграция 2:
+`catalog_items.url`. Следующий — P4 (упаковка, sync_skill, demo, PyInstaller,
+README установки).
+
 Критерий готовности шага 0: `python cli/check_predecessors.py gerenuk` выдаёт тот же текст, что
 старый скрипт; `core` импортируется без побочных эффектов (никаких сетевых вызовов на импорте);
 все шесть CLI проходят smoke-тест на фикстурах.
@@ -163,7 +177,7 @@ observations(id INTEGER PRIMARY KEY, run_id TEXT, name TEXT, source TEXT, versio
      flag TEXT, flag_value INTEGER, verdict TEXT, measured_at TEXT)
 catalogs(id TEXT PRIMARY KEY, queries TEXT, created_at TEXT, stats TEXT, path TEXT)
 catalog_items(catalog_id TEXT, name TEXT, source TEXT, stars INTEGER, lang TEXT,
-     pushed TEXT, desc TEXT, PRIMARY KEY(catalog_id, name))
+     pushed TEXT, desc TEXT, url TEXT, PRIMARY KEY(catalog_id, name))
 events(id INTEGER PRIMARY KEY, run_id TEXT, kind TEXT, name TEXT, detail TEXT, at TEXT)
 schedules(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, params TEXT, cron TEXT,
      enabled INTEGER, last_run TEXT)
@@ -184,14 +198,20 @@ schedules(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, params TEXT, cron TEXT,
 
 Уточнение 3b по `catalog_items`: `source` хранит источники склейки через
 запятую (`github,npm`) — колонка одна, а после `core.catalog.dedupe` у находки
-их несколько; `url` в схеме нет, поэтому экран строит ссылку на GitHub из
-`name` (`owner/repo`), а для одиночного имени — поиском GitHub.
+их несколько. `url` добавлен миграцией 2 (3c) и берётся из `item["url"]`:
+gh_search отдаёт `html_url`, `npm_search_full` — `pkg.links.npm`, реестр —
+`server.repository.url` (у записей реестра он пустой, хранится как NULL).
+Экран строит ссылку из `url`, а при его отсутствии — из `name` (`owner/repo` →
+страница GitHub, одиночное имя → поиск GitHub).
 
 Что это даёт сразу: «покажи, у кого за 30 дней вырос adoption и при этом не появился MCP» —
 один запрос; «когда впервые появился сервер у инструмента из моего эшелона» — из `events`;
 «сколько всего уникальных пакетов в поле зрения» — из `packages`.
 
 Правило: схема версионируется в `meta.schema_version`, миграции — маленькие функции `migrate_N()`.
+Версию пишет сам `migrate()` после каждой ступени (а не `migrate_1`), и каждая миграция
+идемпотентна — иначе повторный старт на той же БД падает на «duplicate column» (AGENTS gotcha 49).
+Текущая версия схемы — 2 (колонка `catalog_items.url`).
 
 Соглашение о кэше (шаг 1a): `FileCache.put` пишет только в память; `save()` — атомарная запись на диск
 (tmp + `os.replace`); CLI вызывает `save()` в конце прогона, приложение — на закрытии задачи.
@@ -254,7 +274,10 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | GET | `/api/catalogs/{id}/items?alive=&lang=&min_stars=&q=&limit=&offset=` | элементы с фильтрами и пагинацией; ответ `{items, total, limit, offset}` (шаг 3b) |
 | POST | `/api/catalogs/{id}/export?format=csv\|md` | файл в ответе (`Content-Disposition: attachment`), CSV — `utf-8-sig` (шаг 3b) |
 | GET | `/api/events` | таймлайн событий (шаг 3a; в плане назывался `/api/monitor`): `since`, `kind`, `name`, `limit` 1..500 (100), `offset`; ответ `{events, total, limit, offset}`, `total` — по тем же фильтрам |
-| GET | `/api/compare` | сравнение 2–3 ниш по метрикам |
+| GET | `/api/compare` | сравнение 2–3 пакетов (шаг 3c): `names=a,b,c`; ответ `{packages: [{name, source, version, released_at, adoption_month, adoption_week, flag, flag_label, verdict, measured_at}], missing: [имена без наблюдений]}`. 400 — имён не 2–3 после дедупликации, 404 — ни одного имени в Store |
+| POST | `/api/compare/export?format=csv&names=a,b` | выгрузка сравнения (шаг 3c): строка на пакет, колонки как у матрицы; 400/404 те же, что у `GET /api/compare` |
+| POST | `/api/events/export?format=csv\|json&kind=&name=&since=&limit=` | выгрузка событий (шаг 3c): ВСЕ события под фильтрами, без пагинации; CSV `id,kind,name,detail,at,run_id` (`utf-8-sig`), JSON `{"events": [...]}`; `limit` 1..50000 (10000), `limit` больше потолка — 400 |
+| POST | `/api/matrix/export?format=csv` | выгрузка точек матрицы (шаг 3c): те же точки, что у `GET /api/matrix` (общий `_matrix_points`), CSV `name,source,version,released_at,adoption_week,adoption_month,flag,verdict,measured_at`, `flag` — 0/1 |
 | GET/PUT | `/api/settings` | пороги, ключевые слова, TTL, лимиты (шаг 2c). GET отдаёт `settings` + `readonly` (`data_dir`, `db_path`, `version`, `api_token_required`) + `editable_keys` (10 ключей); PUT валидирует тип/диапазон/инвариант `alive_weekly >= dead_weekly`, пишет `<data_dir>/settings.json` и возвращает `warnings`. `data_dir` и `language` через API не меняются — это readonly |
 | GET | `/api/health` | готовность бэкенда (для окна) |
 
@@ -281,6 +304,13 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 `{"events": [{"kind","name","detail"}, ...]}`, так его пишет
 `cli/check_predecessors --diff` под `--job-json`), `catalog.build` →
 `record_catalog` + `record_catalog_items`.
+
+`monitor.diff` (фикс 3c): argv задачи содержит только `--diff=<файл>` — имён в
+нём нет, и CLI падал на «нечего проверять» до чтения prev, поэтому событий не
+появлялось никогда. Теперь при `--diff` без позиционных имён имена берутся из
+самого prev-файла (`observations` или `items`); пустой/нечитаемый baseline под
+`--job-json` — `emit_error` + код 2, а не тихий `done` с нулём событий
+(AGENTS gotcha 45).
 
 Правила: никакой сетевой работы в обработчиках, кроме чтения из SQLite/кэша; всё долгое — задачей.
 Ответы — JSON со стабильными ключами, пригодные и для CLI, и для UI.
@@ -390,6 +420,8 @@ Hermes не подключается к живому приложению — о
    «Последний замер: <дата> · Обновить» (самый свежий `measured_at` из точек,
    не дата загрузки экрана; дата загрузки живёт в панели как «обновлено в HH:MM»).
    F5 на всех экранах = «Обновить» (см. `web/static/app.js` и gotcha 39).
+   Шаг 3c добавил в шапку кнопку CSV — выгрузку точек (`POST /api/matrix/export`,
+   те же точки, что на экране: построитель `_matrix_points` общий).
 
 2. **Задачи**. Очередь, прогресс-бар, текущий шаг («страница 34 из 152»), отмена, лог по клику,
    история запусков с длительностью и статусом.
@@ -403,14 +435,37 @@ Hermes не подключается к живому приложению — о
    фильтры (живые/заброшенные по `pushed`, язык, `min_stars`, поиск),
    пагинация (100 на страницу), экспорт CSV/MD. Элементы — строки таблицы с
    именем, звёздами, языком, датой push, описанием и источниками; имя — внешняя
-   ссылка на GitHub в новой вкладке (`url` в схеме §5 нет, ссылка строится из
-   `owner/repo`; одиночное имя ведёт в поиск GitHub). Пока каталог не записан
-   (задача ещё идёт), экран показывает «каталог собирается» по статусу задачи с
-   тем же id и обновляется сам: запись асинхронна и отстаёт от события `done`
-   (gotcha 38). «← К списку» возвращает к `/catalogs`.
+   ссылка на проект в новой вкладке (`url` из источника находки, миграция 2;
+   при его отсутствии — `owner/repo` в GitHub, одиночное имя — в поиск GitHub).
+   Пока каталог не записан (задача ещё идёт), экран показывает «каталог
+   собирается» по статусу задачи с тем же id и обновляется сам: запись
+   асинхронна и отстаёт от события `done` (gotcha 38). «← К списку» возвращает
+   к `/catalogs`.
+
+   Уточнение шага 3c: экспорт каталога (CSV/MD) выгружает весь каталог, не
+   текущую страницу/фильтр. Экспорт отфильтрованного — отдельная опция в P4,
+   если попросят. Детальный экран каталога, пока каталог собирается
+   (`GET /api/catalogs/{id}` → 404, но `GET /api/jobs/{id}` → running/queued),
+   показывает «Каталог собирается… N%» и опрашивает каждые 3 с (плюс
+   SSE-событие done с задержкой 400 мс, gotcha 38).
+
 5. **Мониторинг**. Таймлайн событий из `events`: релизы, скачки adoption, «появился MCP»
    (выделено отдельно), пропавшие пакеты; фильтр по периоду; выгрузка.
+
+   Уточнение шага 3c: выгрузка таймлайна — кнопки CSV и JSON в шапке экрана,
+   `POST /api/events/export` с текущими фильтрами (вид/имя). В файл уходит весь
+   таймлайн под фильтром, а не текущая страница: экран листает по 50, выгрузка
+   — «забрать всё».
 6. **Сравнение**. 2–3 ниши/пакета бок о бок: adoption, даты, вердикты, признаки, размеры каталогов.
+
+   Реализовано в 3c: экран `/compare` — форма «имена через запятую» (2–3,
+   проверка на сервере: 400 при 1 или 4) и таблица «параметр × пакет» по
+   последнему замеру каждого имени (`GET /api/compare`). Колонки: источник,
+   версия, дата релиза, adoption за неделю и месяц, метка признака MCP, вердикт,
+   дата замера. Имя без наблюдений не ошибка — колонки нет, а под таблицей
+   строка «Нет данных: …»; 404 — только если не найдено ни одного. Экспорт —
+   кнопка CSV (`POST /api/compare/export`, строка на пакет). Размеры каталогов
+   в сравнение не входят: каталог — отдельная сущность с собственным экраном.
 7. **Настройки**. Пороги (`ALIVE_*`, `DEAD_*`, `STALE_DAYS`), ключевые слова (несколько),
    каталог данных, расписание, тёмная тема.
 
@@ -525,6 +580,20 @@ Hermes не подключается к живому приложению — о
   P2 (закрыт): полный ≤ 40 с, быстрый ≤ 20 с. Факт (2c): 27.58 / 11.09.
   Мутационная проверка гейтов (alive>=dead, navigation) — оба краснеют при
   поломке. Под нагрузкой — 37.6 / 21.3, gotcha 29.
+
+  P3: полный ≤ 60 с, быстрый ≤ 30 с. Факт (3b): 32.53 / 18.11. Мутационная
+  проверка фильтра alive — 2 теста краснеют. Под нагрузкой — gotcha 29.
+
+  Факт 3c (19.10.2026, та же машина): полный 36.01 с (cap 60), быстрый 18.41 с
+  (cap 30). База перед шагом — 31.63 / 15.10: 30 новых тестов дали +4.4 с
+  полного и +3.3 с быстрого цикла. Вклад — веб-тесты с lifespan: compare 12,
+  export 10, store-миграции 4, CLI diff 2, шаблоны 4; каждый такой тест несёт
+  `create_app` + чистый SQLite, и это цена изоляции (см. выше). Мутационная
+  проверка: убран fallback имён из `--diff` — `test_diff_fills_names_from_prev_file`
+  краснеет (восстановлено). Все тесты шага in-memory, ни одного подпроцесса.
+  Под нагрузкой (живое окно WebView2, Chromium, PyCharm, Kaspersky, Docker)
+  те же прогоны давали 69–75 с полного при тех же 18–19 с быстрого: медленные
+  тесты шага — не они, а `test_jobs_recover` и compat-L2 (gotcha 29).
 
 ## 12. Упаковка и запуск
 

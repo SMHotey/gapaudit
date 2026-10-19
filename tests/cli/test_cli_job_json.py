@@ -240,3 +240,83 @@ def test_diff_with_missing_baseline_is_quiet_for_humans(
     assert code == 0
     assert "ИЗМЕНЕНИЯ" not in captured.out
     assert isinstance(json.loads(out_path.read_text(encoding="utf-8")), list)
+
+
+# --- --diff без позиционных имён: задача monitor.diff (шаг 3c) ----------------
+
+
+def test_diff_fills_names_from_prev_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Имена берутся из prev.json, если в argv их нет (дефект 3b).
+
+    Именно так запускает мониторинг очередь задач: ``_default_runner``
+    собирает argv из параметров ``monitor.diff``, а там только ``diff_from``.
+    До фикса CLI отвечал «нечего проверять» и не доходил до сравнения, поэтому
+    событий в ``events`` не появлялось никогда.
+    """
+    monkeypatch.setenv(_common.ENV_FAKE_HTTP, "1")
+    prev_path = tmp_path / "prev.json"
+    prev_path.write_text(
+        json.dumps(
+            [
+                {"name": "requests", "src": "pypi", "ver": "0.0.1", "date": "2020-01-01",
+                 "month": 1, "week": 1, "flag": False, "mcp": False, "verdict": "ЖИВОЙ"},
+                {"name": "flask", "src": "pypi", "ver": "3.0.0", "date": "2024-04-01",
+                 "month": 5, "week": 1, "flag": False, "mcp": False, "verdict": "ЖИВОЙ"},
+                {"name": "urllib3", "src": "pypi", "ver": "2.2.0", "date": "2024-01-01",
+                 "month": 7, "week": 2, "flag": False, "mcp": False, "verdict": "ЖИВОЙ"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result_path = tmp_path / "jobs" / "monitor.result.json"
+
+    code = check_predecessors.main([
+        "--job-json", "--json-out", str(result_path), "--diff", str(prev_path),
+    ])
+    messages = protocol(capsys.readouterr().out)
+
+    assert code == 0
+    assert messages[0]["type"] == "hello"
+    assert messages[-1] == {"type": "done"}
+    assert [message["type"] for message in messages].count("progress") >= 1
+
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert set(payload) >= {"events", "observations"}
+    # три наблюдения — по одному на имя из baseline (порядок — sorted, как у --diff)
+    assert [row["name"] for row in payload["observations"]] == [
+        "flask", "requests", "urllib3",
+    ]
+    assert any(
+        event["kind"] == "release" and event["name"] == "requests"
+        for event in payload["events"]
+    )
+
+
+def test_diff_with_empty_prev_without_names_reports_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Пустой baseline без имён — ``emit_error`` и код 2, а не тихий ``done``.
+
+    Иначе очередь записала бы в events ноль строк и показала «готово»: задача
+    выглядела бы выполненной, хотя ничего не проверено.
+    """
+    monkeypatch.setenv(_common.ENV_FAKE_HTTP, "1")
+    prev_path = tmp_path / "empty.json"
+    prev_path.write_text("[]", encoding="utf-8")
+    result_path = tmp_path / "jobs" / "empty.result.json"
+
+    code = check_predecessors.main([
+        "--job-json", "--json-out", str(result_path), "--diff", str(prev_path),
+    ])
+    messages = protocol(capsys.readouterr().out)
+
+    assert code == 2
+    assert messages[0]["type"] == "hello"
+    assert messages[-1]["type"] == "error"
+    assert "нечего проверять" in messages[-1]["error"]
+    assert not result_path.exists()
+

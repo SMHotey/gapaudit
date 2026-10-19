@@ -2,9 +2,9 @@
    Таблица «параметр x пакет» из GET /api/compare?names=a,b,c. Колонки — пакеты,
    строки — метрики последнего замера; 2–3 имени, границу проверяет сервер (400).
 
-   Данные рисуются DOM-методами (createElement/textContent), innerHTML для них
-   запрещён (gotcha 37): имя пакета приходит из сети, и кавычка в нём сломала бы
-   разметку. innerHTML здесь нет вообще — даже для статики.
+   Данные рисуются DOM-методами (createElement/textContent), разметка строкой
+   для них не собирается вообще (gotcha 37): имя пакета приходит из сети, и
+   кавычка в нём сломала бы атрибут.
 
    Экспорт: POST /api/compare/export — тот же набор имён, что на экране, файл в
    ответе. Ссылку создаём сами и отзываем после клика (blob-URL живёт до отзыва,
@@ -14,14 +14,18 @@
   const $ = (id) => document.getElementById(id);
 
   /* Что показать в строках: те же поля, что отдаёт /api/compare. Порядок —
-     порядок вопросов при выборе ниши (что, насколько живое, занято ли). */
+     порядок вопросов при выборе ниши (что, насколько живое, занято ли).
+
+     Признак — не `flag_label`: там метка ключевого слова («MCP») и она есть у
+     ВСЕХ пакетов, поэтому колонка из одного слова врала бы («MCP» у пакета без
+     MCP). Строка собирается из двух полей: `flag` (булево) и `flag_label`. */
   const ROWS = [
     ['source', 'Источник'],
     ['version', 'Версия'],
     ['released_at', 'Релиз'],
     ['adoption_week', 'Скачиваний/нед'],
     ['adoption_month', 'Скачиваний/мес'],
-    ['flag_label', 'Признак (MCP)'],
+    ['flag', 'Признак (MCP)'],
     ['verdict', 'Вердикт'],
     ['measured_at', 'Замер'],
   ];
@@ -32,6 +36,17 @@
     if (value === null || value === undefined || value === '') return '—';
     if (typeof value === 'number') return value.toLocaleString('ru-RU');
     return String(value);
+  }
+
+  /* Значение ячейки: у признака булево превращается в «да (MCP)» / «нет», у
+     остальных — как есть. Отдельная функция, а не флаг в fmt: «да/нет» — это
+     ответ на вопрос экрана, а не форматирование типа. */
+  function cellText(pkg, key) {
+    if (key === 'flag') {
+      if (!pkg.flag) return 'нет';
+      return pkg.flag_label ? 'да (' + pkg.flag_label + ')' : 'да';
+    }
+    return fmt(pkg[key]);
   }
 
   function message(text, kind) {
@@ -93,7 +108,7 @@
       packages.forEach(function (pkg) {
         const cell = document.createElement('td');
         cell.className = 'mono';
-        cell.textContent = fmt(pkg[key]);
+        cell.textContent = cellText(pkg, key);
         row.appendChild(cell);
       });
       body.appendChild(row);

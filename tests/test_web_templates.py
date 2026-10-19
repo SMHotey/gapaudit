@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 
 def test_index_renders_base_layout(client: TestClient) -> None:
-    """GET / — каркас: навигация, активный пункт «Задачи», отключённые — P3."""
+    """GET / — каркас: вся навигация из семи живых пунктов, «Задачи» активны."""
     response = client.get("/")
 
     assert response.status_code == 200
@@ -29,9 +29,9 @@ def test_index_renders_base_layout(client: TestClient) -> None:
     assert '<a href="/monitor">Мониторинг</a>' in response.text
     # 3b: «Каталоги» тоже стала живой ссылкой
     assert '<a href="/catalogs">Каталоги</a>' in response.text
-    # выключенным остался только «Сравнение» (3c): ссылки нет, есть aria-disabled
-    assert 'class="disabled" title="P3: сравнение"' in response.text
-    assert "Сравнение" in response.text
+    # 3c: «Сравнение» — последний выключенный пункт P3 стал ссылкой
+    assert '<a href="/compare">Сравнение</a>' in response.text
+    assert "disabled" not in response.text
 
 
 def test_index_nav_marks_current_page(client: TestClient) -> None:
@@ -189,7 +189,7 @@ def test_f5_refresh_hook_is_wired_on_every_screen(client: TestClient) -> None:
     for script_path in ("/static/jobs.js", "/static/matrix.js",
                         "/static/settings.js", "/static/packages.js",
                         "/static/monitor.js", "/static/catalogs.js",
-                        "/static/catalog_detail.js"):
+                        "/static/catalog_detail.js", "/static/compare.js"):
         script = client.get(script_path).text
         assert "window.__gapauditRefresh = load" in script, script_path
 
@@ -332,4 +332,70 @@ def test_catalogs_js_uses_dom_not_innerhtml_for_data(client: TestClient) -> None
     assert "URL.createObjectURL" in detail
     # каталога может ещё не быть: экран смотрит статус задачи с тем же id
     assert "/api/jobs/" in detail
+
+
+def test_monitor_screen_has_export_buttons(client: TestClient) -> None:
+    """«Мониторинг» выгружает таймлайн: кнопки CSV/JSON + эндпоинт в скрипте.
+
+    §9 п. 5 требует «выгрузку» на экране: эндпоинт без кнопки — это
+    возможность, которой нельзя воспользоваться из окна.
+    """
+    page = client.get("/monitor").text
+
+    assert 'id="export-csv"' in page
+    assert 'id="export-json"' in page
+    script = client.get("/static/monitor.js").text
+    assert "/api/events/export" in script
+    # фильтры экрана переносятся в выгрузку — «выгрузить то, что вижу»
+    assert "state.kind" in script
+    assert "state.name" in script
+    assert "X-GapAudit-Token" in script
+
+
+def test_matrix_screen_has_export_button(client: TestClient) -> None:
+    """«Сейчас решать» выгружает точки матрицы: кнопка CSV + эндпоинт в скрипте."""
+    page = client.get("/matrix").text
+
+    assert 'id="export-csv"' in page
+    script = client.get("/static/matrix.js").text
+    assert "/api/matrix/export" in script
+    assert "X-GapAudit-Token" in script
+
+
+# --- экран «Сравнение» (шаг 3c) ----------------------------------------------
+
+
+def test_compare_screen_renders_form_and_table(client: TestClient) -> None:
+    """GET /compare: форма имён, шапка/тело таблицы, экспорт, скрипт экрана.
+
+    Колонки рисует compare.js — в шаблоне только контейнеры. Тест держит их id:
+    ``compare.js`` падает в ``null.value``/``null.appendChild``, и экран
+    остаётся пустым молча (ошибка живёт в консоли WebView2, не в ответе).
+    """
+    response = client.get("/compare")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<a href="/compare" class="active">Сравнение</a>' in response.text
+    assert response.text.count('class="active"') == 1
+    for element_id in ("compare-form", "compare-msg", "compare-head",
+                       "compare-body", "export-csv", "refresh"):
+        assert f'id="{element_id}"' in response.text, element_id
+    assert 'name="names"' in response.text
+    assert "/static/compare.js" in response.text
+    assert response.text.count("/static/card.js") == 1
+
+
+def test_compare_js_uses_dom_not_innerhtml_for_data(client: TestClient) -> None:
+    """compare.js собирает таблицу DOM-методами и умеет экспорт (gotcha 37)."""
+    script = client.get("/static/compare.js").text
+
+    assert "createElement" in script
+    assert "textContent" in script
+    # для данных innerHTML не используется вообще — даже как очистка
+    assert "innerHTML" not in script
+    assert "/api/compare" in script
+    assert "/api/compare/export" in script
+    assert "X-GapAudit-Token" in script
+    assert "URL.createObjectURL" in script
 

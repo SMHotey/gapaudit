@@ -187,9 +187,20 @@ def _run(
         names += _top_names(args.top)
 
     names = sorted(dict.fromkeys(names))
+    if not names and args.diff:
+        # --diff без позиционных имён (шаг 3c): задача monitor.diff запускается
+        # с одним --diff=<файл>, имён в argv нет — берём их из прошлого прогона.
+        # До этого CLI отвечал «нечего проверять» и не читал baseline вообще,
+        # поэтому ни одна задача мониторинга не доходила до событий.
+        names = sorted(dict.fromkeys(_names_from_baseline(args.diff)))
     if not names:
         message = "нечего проверять: передай имена, --from FILE, --top N, --check-name или --similar"
         _say(args, message)
+        if args.job_json:
+            # Под протоколом пустой список — ошибка задачи, а не «успех с нулём
+            # строк»: иначе очередь запишет пустой result.json и покажет done.
+            emit_error(message)
+            return 2
         return 1
 
     rows = _check_all(names, client, cfg, args)
@@ -232,6 +243,33 @@ def _run(
     if args.job_json:
         emit_done()
     return exit_code(args.strict, has_live, has_flag)
+
+
+def _names_from_baseline(path: str) -> list[str]:
+    """Имена пакетов из прошлого прогона — fallback ``--diff`` без позиционных имён.
+
+    Baseline — файл, который CLI пишет сам: без ``--job-json`` это список
+    наблюдений, под ``--job-json`` — объект ``{"events", "observations"}``.
+    Старый (до 3b) файл задачи мог называть наблюдения ``items`` — ключ тоже
+    принимаем, чтобы фикс работал и на уже накопленных файлах.
+
+    Нечитаемый или битый файл не валит прогон: причина уходит в stderr, список
+    остаётся пустым, и дальше срабатывает обычная проверка «нечего проверять»
+    (под ``--job-json`` — ``emit_error`` + код 2).
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            previous = json.load(handle)
+        if isinstance(previous, dict):
+            previous = previous.get("observations", previous.get("items", []))
+        return [
+            str(row["name"])
+            for row in (previous or [])
+            if isinstance(row, dict) and row.get("name")
+        ]
+    except Exception as error:  # noqa: BLE001 - причина уходит в stderr, не в трейсбек
+        print(f"[gapaudit] не удалось прочитать {path}: {error}", file=sys.stderr)
+        return []
 
 
 def _check_all(

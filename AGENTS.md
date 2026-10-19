@@ -293,6 +293,34 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
 44. LIKE в SQLite: `%` и `_` — wildcard, `\` — escape. При поиске по подстроке —
     экранировать (`search_packages` и `_catalog_items_where` уже это делают через
     `_like_escape`). Иначе поиск «100%» вернёт всё, а «_» сматчит любой символ.
+45. monitor.diff как задача: `_default_runner` собирает argv без имён
+    (`--diff=<файл>`), а cli/check_predecessors.py падал на «нечего проверять»
+    до того, как прочитать prev. Фикс (3c): при `--diff` без позиционных имён —
+    брать имена из prev.json (ключи `observations` или `items`), дедуплицировать
+    и отсортировать. Если prev пуст/нечитаем — `emit_error` + exit 2 (под
+    `--job-json`), без флага — прежняя строка и код 1. Тест
+    `test_diff_fills_names_from_prev_file`.
+46. catalog_items: name берётся из `item["name"]`, при отсутствии — из
+    `item["id"]` (CLI каталога кладёт проект в id). sources (список) склеиваются
+    в source (строка через запятую). url — из `item["url"]` (миграция 2):
+    gh_search даёт html_url, npm_search_full — pkg.links.npm, registry —
+    server.repository.url (у записей реестра он пустой). Пустая строка
+    хранится как NULL. Если url нет — экран строит ссылку из имени (owner/repo
+    → страница GitHub, одиночное имя → поиск GitHub).
+47. Экспорт каталога (`POST /api/catalogs/{id}/export`) выгружает ВЕСЬ каталог,
+    не текущую страницу/фильтр. Это осознанно: экспорт = «сохранить всё».
+    Экспорт текущего фильтра — отдельная опция в P4, если попросят. То же
+    правило у событий (`POST /api/events/export`, фильтры kind/name/since
+    переносятся, пагинация — нет) и матрицы (`POST /api/matrix/export`).
+48. catalogs.path — служебное поле (путь к result.json), не выводится в UI.
+    Пригодится для «открыть исходный JSON» в P4. Не удалять, не удалять из схемы.
+49. Миграции: версию `meta.schema_version` пишет `migrate()` после КАЖДОЙ
+    ступени, а не только migrate_1. Раньше номер ставила migrate_1 из
+    `SCHEMA_VERSION` — при второй версии схемы БД с version=1 навсегда осталась
+    бы единицей, и `migrate_2` (ALTER TABLE) прогонялся бы на каждом старте.
+    Каждая миграция обязана быть идемпотентной: ALTER с проверкой
+    `PRAGMA table_info` (пример — `migrate_2`, колонка url). Тест на повторный
+    `__enter__` файловой БД — `test_reenter_version_2_db_does_not_rerun_migration`.
 
 ---
 

@@ -163,9 +163,47 @@
     }
   }
 
+  /* Экспорт таймлайна (шаг 3c): POST /api/events/export?format=csv|json с
+     текущими фильтрами экрана. Сервер отдаёт ВСЕ события под фильтром, а не
+     страницу: выгрузка — это «забрать таймлайн целиком» (DEVPLAN §9 п. 5).
+     Ссылку создаём сами и отзываем после клика — blob-URL живёт до отзыва. */
+  async function exportFile(format) {
+    const params = new URLSearchParams({ format: format });
+    if (state.kind) params.set('kind', state.kind);
+    if (state.name) params.set('name', state.name);
+    const token = (window.GapAudit && window.GapAudit.token) || '';
+    try {
+      const resp = await fetch('/api/events/export?' + params.toString(), {
+        method: 'POST',
+        headers: { 'X-GapAudit-Token': token },
+      });
+      if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+      const blob = await resp.blob();
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = 'events.' + format;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () {
+        URL.revokeObjectURL(href);
+      }, 1000);
+    } catch (e) {
+      $('monitor-counter').textContent = 'экспорт не удался: ' + e.message;
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     /* F5 = «Обновить» (AGENTS gotcha 39). */
     window.__gapauditRefresh = load;
+
+    $('export-csv').addEventListener('click', function () {
+      exportFile('csv');
+    });
+    $('export-json').addEventListener('click', function () {
+      exportFile('json');
+    });
 
     $('kind-filter').addEventListener('click', function (ev) {
       const btn = ev.target.closest('.chip');

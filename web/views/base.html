@@ -17,8 +17,7 @@
       {# Каталоги (шаг 3b): активны и список, и детальный экран каталога —
          пункт не должен гаснуть, когда открыт /catalogs/{id}. #}
       <a href="/catalogs"{% if path == '/catalogs' or path.startswith('/catalogs/') %} class="active"{% endif %}>Каталоги</a>
-      <a class="disabled" title="P3: сравнение"
-         aria-disabled="true">Сравнение</a>
+      <a href="/compare"{% if path == '/compare' %} class="active"{% endif %}>Сравнение</a>
       <a href="/settings"{% if path == '/settings' %} class="active"{% endif %}>Настройки</a>
     </nav>
     <div class="health" id="health">

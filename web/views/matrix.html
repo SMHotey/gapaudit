@@ -13,6 +13,9 @@
   </div>
   <div class="toolbar-right">
     <span class="muted" id="matrix-updated">—</span>
+    {# Выгрузка точек матрицы (шаг 3c): POST /api/matrix/export — CSV с теми же
+       точками, что на экране (общий построитель _matrix_points). #}
+    <button class="btn" id="export-csv" type="button">CSV</button>
     <button class="btn" id="refresh" type="button">Обновить</button>
   </div>
 </section>
