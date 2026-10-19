@@ -196,6 +196,12 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     паритетные тесты, L2 — legacy (in-process, подмена транспорта) против new
     (subprocess) на одинаковых фикстурах; allowlist известных отклонений — в
     `tools/compat_allowlist.py` (правка только с записью в DEVPLAN §4).
+19. core/ не импортирует sqlite3 и не знает про app/. Персистентность живёт в app/store.py.
+    CacheBackend protocol в core/cache.py — контракт, реализации: DictCache/FileCache (core, для CLI)
+    и SqliteCache (app, для UI/jobs). При добавлении кэш-бэкенда — следовать этому правилу.
+20. L2 в compat_check = in-process legacy + subprocess new. Для legacy-модулей с побочными
+    эффектами на импорте (catalog_scan.py) — сравнивать с legacy-экстрактом из паритетного теста,
+    не импортировать legacy-модуль.
 
 ---
 

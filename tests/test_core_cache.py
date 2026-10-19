@@ -8,9 +8,7 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
-
-from core.cache import DEFAULT_TTL_HOURS, DictCache, FileCache, SqliteCache
+from core.cache import DEFAULT_TTL_HOURS, DictCache, FileCache
 
 
 def test_default_ttl_is_12_hours() -> None:
@@ -131,8 +129,3 @@ def test_clear_empties_cache(tmp_path) -> None:
     file_cache.clear()
     file_cache.save()
     assert FileCache(str(path)).get("k") is None
-
-
-def test_sqlite_cache_is_a_step_2_placeholder() -> None:
-    with pytest.raises(NotImplementedError, match="шаг 2"):
-        SqliteCache(conn=None)

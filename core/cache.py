@@ -4,7 +4,11 @@
 
 * CLI — :class:`FileCache`, JSON-файл (как ``raw/.pcache.json`` в legacy, но с явной
   версией формата);
-* приложение — :class:`SqliteCache` (шаг 2, пока заглушка).
+* приложение — SqliteCache поверх таблицы ``cache`` (шаг 2).
+
+**SqliteCache живёт в app/store.py — core не знает про sqlite3.** Здесь остаётся
+только контракт :class:`CacheBackend`: DictCache/FileCache (core, для CLI)
+и SqliteCache (app, для UI/jobs) — см. AGENTS.md, gotcha 19.
 
 Требования DEVPLAN §4: импорт модуля ничего не читает и не пишет, глобалов нет.
 Конструктор тоже ничего не читает: файл загружается лениво при первом ``get``/``put``,
@@ -29,7 +33,6 @@ __all__ = [
     "CacheBackend",
     "DictCache",
     "FileCache",
-    "SqliteCache",
 ]
 
 DEFAULT_TTL_HOURS = 12.0
@@ -223,10 +226,3 @@ class FileCache(_TtlCache):
     def __len__(self) -> int:
         self._load()
         return len(self._entries)
-
-
-class SqliteCache:
-    """Кэш на таблице ``cache`` в SQLite — реализуется на шаге 2 (DEVPLAN §5)."""
-
-    def __init__(self, conn: Any) -> None:  # noqa: ANN401 — тип появится вместе с core/store.py
-        raise NotImplementedError("шаг 2")

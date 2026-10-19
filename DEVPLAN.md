@@ -52,7 +52,8 @@ C:\Users\malik\gapaudit\
     diffing.py          diff_observations() -> события (релиз, скачок adoption, появился MCP)
     settings.py         конфиг: пороги, ключевые слова, каталог данных, расписание
   app/                  приложение: импортирует core и sqlite3
-    store.py            SQLite: схема, миграции, запись наблюдений, выборки для экранов
+    store.py            Store: SQLite-схема, миграции, запись/чтение observations/events/
+                        packages/cache. SqliteCache живёт здесь (не в core/).
     jobs.py             очередь, статусы, запуск подпроцессов, отмена, логи
     web.py              FastAPI: эндпоинты + SSE
   web/                  только представление, Python-кода здесь нет
@@ -104,7 +105,10 @@ C:\Users\malik\gapaudit\
   `([], None)` для совместимости с `catalog.py`;
 - `collect` (1g): элементы `catalog.json` — развёрнутые объекты серверов (`list_servers_raw`),
   а не записи формы `{"server": {...}}`, как писал legacy; потребители (`coverage.py`, `scan.py`)
-  принимают обе формы, сравнение в `compat_check` идёт по именам серверов.
+  принимают обе формы, сравнение в `compat_check` идёт по именам серверов;
+- `catalog.json` в `collect.py` хранит нормализованные элементы, не `{"server":{...}}`
+  (следствие `list_servers_raw`). Флаг `--legacy-catalog-format` в P4 вернёт legacy-форму
+  для внешних скриптов, читающих старый формат.
 
 Критерий готовности шага 0: `python cli/check_predecessors.py gerenuk` выдаёт тот же текст, что
 старый скрипт; `core` импортируется без побочных эффектов (никаких сетевых вызовов на импорте);
@@ -267,7 +271,11 @@ JOB_KINDS = {
   ключевых полей JSON с allowlist известных отклонений, ~10 с). Гейт: exit 0 — все зелёные;
   1 — расхождение; 2 — L1 красный; 3 — изменён `legacy/`;
 - правило правок: изменение метода сначала делается в проекте, тестируется, потом уезжает в скилл
-  синхронизацией одним коммитом.
+  синхронизацией одним коммитом;
+- compat_check состоит из: `tools/compat_check.py` (оркестратор), `tools/compat_runner.py`
+  (фейки для new-подпроцесса), `tools/compat_allowlist.py` (известные отклонения). L2 для
+  `catalog_scan` использует legacy-экстракт из `test_core_scan_legacy_contract.py` — legacy-модуль
+  исполняется на импорте, subprocess-изоляция каталогов записи — P4, если понадобится.
 
 ## 11. Тестирование и demo-режим
 
