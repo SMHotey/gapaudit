@@ -242,6 +242,10 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
 30. GAPAUDIT_FAKE_HTTP=1 в cli/_common.py — тестовый бэкдор для сквозных
     тестов POST → CLI → SSE без сети. Фикстуры — tests/fixtures/http.
     В prod не выставляется. Если фикстур нет — RuntimeError, не тихий 404.
+31. `_default_runner` запускает подпроцесс с `cwd=корень проекта`
+    (`_PROJECT_ROOT` в app/jobs.py): `python -m cli.*` требует корень в
+    `sys.path`, иначе запуск из произвольного cwd даёт `ModuleNotFoundError`.
+    argv от cwd не зависит — это только рабочая директория процесса.
 
 ---
 
