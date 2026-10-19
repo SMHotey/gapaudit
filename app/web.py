@@ -29,7 +29,8 @@
 * **эндпоинты** (§7): задачи ``/api/jobs*`` (создание, список, карточка,
   отмена, хвост лога, ``POST /resume`` — реальное продолжение
   ``interrupted``-задачи, шаг 3d-b), SSE ``/api/stream``, пакеты
-  ``/api/packages*``, расширенный ``/api/health``.
+  ``/api/packages*``, матрица ``/api/matrix`` (шаг 2b — агрегат экрана
+  «Сейчас решать»), расширенный ``/api/health``.
 * **восстановление после падения** (шаг 3c): lifespan зовёт
   ``JobQueue.recover_interrupted()`` до ``queue.start()`` — задачи,
   работавшие в упавшем приложении, становятся ``interrupted``.
@@ -694,13 +695,103 @@ def create_app(
             "observations": store.get_observations_history(name, limit=limit),
         }
 
+    # --- матрица «Сейчас решать» (шаг 2b) -------------------------------------
+
+    @application.get("/api/matrix")
+    async def get_matrix(request: Request) -> dict[str, Any]:
+        """Агрегат экрана «Сейчас решать»: точки adoption × признак и квадранты.
+
+        Источник — ``Store.get_latest_observations()``: по одному наблюдению на
+        имя, поэтому на графике одна точка на пакет. В ``points`` попадают
+        только наблюдения с ``adoption_week > 0``: на логарифмической оси
+        ``log10(0)`` не существует, и точка «без adoption» уехала бы в -inf.
+        Такие наблюдения учитываются в ``counts.total``, но не в
+        ``counts.with_week`` — разница и есть ответ на вопрос «почему точек
+        меньше, чем пакетов».
+
+        Квадранты делятся порогом ``settings.alive_weekly`` (по умолчанию 100):
+        ``*_no_flag`` — признака ниши нет (кандидаты «ВОТ СЮДА»), ``*_with_flag``
+        — признак есть (занято). Порядок имён — как его отдал Store (по
+        алфавиту): стабильный ответ без сортировки на клиенте.
+
+        Признак в схеме — две колонки (DEVPLAN §5): ``flag`` TEXT хранит метку
+        ключевого слова (``"MCP"``), ``flag_value`` INTEGER — 0/1. В ответе
+        ``flag`` — булево (так его читает экран), ``flag_label`` — та самая
+        метка; путать их нельзя: ``bool("MCP")`` всегда истинно.
+
+        Только чтение SQLite: сетевой работы в обработчике нет (§7), обновление
+        данных — задачей ``packages.check``.
+        """
+        store = _store(request)
+        settings = getattr(request.app.state, "settings", None) or Settings()
+        thresholds = {
+            "alive_weekly": int(settings.alive_weekly),
+            "alive_monthly": int(settings.alive_monthly),
+        }
+        observations = store.get_latest_observations()
+        quadrants: dict[str, list[str]] = {
+            "high_no_flag": [],
+            "high_with_flag": [],
+            "low_no_flag": [],
+            "low_with_flag": [],
+        }
+        points: list[dict[str, Any]] = []
+        for observation in observations:
+            name = str(observation.get("name") or "")
+            week = observation.get("adoption_week") or 0
+            if not name or not isinstance(week, int) or week <= 0:
+                continue
+            flag = bool(observation.get("flag_value"))
+            high = week >= thresholds["alive_weekly"]
+            if high:
+                bucket = "high_with_flag" if flag else "high_no_flag"
+            else:
+                bucket = "low_with_flag" if flag else "low_no_flag"
+            quadrants[bucket].append(name)
+            points.append(
+                {
+                    "name": name,
+                    "source": observation.get("source"),
+                    "version": observation.get("version"),
+                    "released_at": observation.get("released_at"),
+                    "adoption_week": week,
+                    "adoption_month": observation.get("adoption_month"),
+                    "flag": flag,
+                    "flag_label": observation.get("flag"),
+                    "verdict": observation.get("verdict"),
+                    "measured_at": observation.get("measured_at"),
+                }
+            )
+        return {
+            "points": points,
+            "quadrants": quadrants,
+            "thresholds": thresholds,
+            "counts": {
+                "total": len(observations),
+                "with_week": len(points),
+                "high_no_flag": len(quadrants["high_no_flag"]),
+            },
+        }
+
     # --- экраны ---------------------------------------------------------------
 
     @application.get("/")
     async def index(request: Request):
-        """Единственный экран каркаса: подтверждение, что связка живая."""
+        """Экран «Задачи» (шаг 2a): очередь, прогресс, отмена и продолжение."""
         return templates.TemplateResponse(
             request=request, name="index.html", context={"version": VERSION}
+        )
+
+    @application.get("/matrix")
+    async def matrix(request: Request):
+        """Экран «Сейчас решать» (шаг 2b): матрица adoption × признак.
+
+        Данные рисует ``matrix.js`` из ``GET /api/matrix``; шаблон отдаёт
+        только контейнеры — по той же причине, что и у «Задач»: строки
+        приходят из задачи, а разметка не должна собираться на сервере.
+        """
+        return templates.TemplateResponse(
+            request=request, name="matrix.html", context={"version": VERSION}
         )
 
     return application

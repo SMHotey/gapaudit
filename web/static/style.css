@@ -1,7 +1,7 @@
-/* GapAudit — тёмная тема (шаг 2a).
-   Только то, что нужно экрану «Задачи»: шапка, навигация, таблица, чипсы,
-   кнопки, бейджи статусов, прогресс, empty-state, подвал. Матрицы и графиков
-   здесь нет намеренно — они в 2b. Внешних CDN нет: шрифты системные. */
+/* GapAudit — тёмная тема (шаг 2a; матрица и карточка — шаг 2b).
+   Экран «Задачи»: шапка, навигация, таблица, чипсы, кнопки, бейджи статусов,
+   прогресс, empty-state, подвал. В 2b добавлены матрица (SVG) и карточка
+   пакета (модальное окно). Внешних CDN нет: шрифты системные. */
 
 :root[data-theme="dark"] {
   --bg: #0f1419; --bg-elev: #171d24; --bg-elev2: #1e2731;
@@ -258,3 +258,93 @@ a:hover { color: var(--accent-hover); }
   color: var(--text);
 }
 .table .empty { border: none; }
+
+/* --- матрица «Сейчас решать» (шаг 2b) ------------------------------------- */
+
+.matrix-summary { font-size: 13px; color: var(--text-dim); }
+#count-high-no-flag { color: var(--accent); font-size: 15px; }
+
+.matrix-wrap {
+  position: relative;
+  width: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  margin-bottom: var(--gap);
+}
+
+#matrix-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 400px;
+}
+
+.matrix-point { transition: r .15s, stroke .15s; cursor: pointer; }
+.matrix-point:hover,
+.matrix-point:focus { r: 8; stroke: var(--text); outline: none; }
+
+/* --- карточка пакета (модальное окно) ------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .7);
+}
+.modal-overlay[hidden] { display: none; }
+
+.card {
+  width: 100%;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow: auto;
+  padding: 20px;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+.card h2 {
+  margin: 0 0 var(--gap);
+  font-size: 1.1rem;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.card-info {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: .88rem;
+  margin-bottom: var(--gap);
+}
+.card-info > div:nth-child(odd) { font-size: .8rem; }
+
+.card-graph {
+  margin: 12px 0;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.card-graph.muted { font-size: .85rem; }
+.mini-graph { display: block; width: 100%; height: auto; }
+
+.card-events {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  max-height: 200px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.card-events li { padding: 3px 0; border-bottom: 1px solid var(--border); }
+.card-events li:last-child { border-bottom: none; }
+
+.card-actions { display: flex; gap: 8px; margin-top: 12px; }

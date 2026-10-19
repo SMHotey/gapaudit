@@ -53,6 +53,7 @@
             (h.gh_ok === true ? 'ok' : (h.gh_ok === false ? 'err' : ''));
         }
         setText('health-text', 'v' + h.version);
+        setText('version', 'GapAudit v' + h.version);
         setText('data-dir', h.data_dir || '—');
         const dir = document.getElementById('data-dir');
         if (dir) dir.title = h.data_dir || '';

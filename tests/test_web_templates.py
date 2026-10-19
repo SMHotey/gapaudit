@@ -15,16 +15,18 @@ from fastapi.testclient import TestClient
 
 
 def test_index_renders_base_layout(client: TestClient) -> None:
-    """GET / — каркас: навигация, активный пункт «Задачи», отключённые — 2b/P3."""
+    """GET / — каркас: навигация, активный пункт «Задачи», отключённые — P3/2c."""
     response = client.get("/")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "<nav" in response.text
     assert "Задачи" in response.text
+    # «Сейчас решать» — рабочий пункт с шага 2b (раньше был disabled P2b)
+    assert '<a href="/matrix">Сейчас решать</a>' in response.text
     # будущие экраны: ссылка есть, но выключена (aria-disabled + title)
-    assert 'class="disabled" title="P2b: матрица adoption x flag"' in response.text
-    assert "Сейчас решать" in response.text
+    assert 'class="disabled" title="P3: экран пакетов"' in response.text
+    assert "Пакеты" in response.text
 
 
 def test_index_nav_marks_current_page(client: TestClient) -> None:
@@ -81,3 +83,57 @@ def test_index_has_jobs_containers_and_empty_state(client: TestClient) -> None:
     script = client.get("/static/jobs.js").text
     assert "Нет задач" in script
     assert "POST /api/jobs" in script
+
+
+# --- экран «Сейчас решать» (шаг 2b) -----------------------------------------
+
+
+def test_matrix_screen_renders_containers(client: TestClient) -> None:
+    """GET /matrix: контейнеры матрицы, таблицы кандидатов и карточки на месте."""
+    response = client.get("/matrix")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Сейчас решать" in response.text
+    # навигация: матрица активна, «Задачи» — нет
+    assert '<a href="/matrix" class="active">Сейчас решать</a>' in response.text
+    assert response.text.count('class="active"') == 1
+
+    assert 'id="matrix-svg"' in response.text
+    assert 'id="card-overlay"' in response.text
+    assert 'id="candidates-body"' in response.text
+    assert 'id="matrix-empty"' in response.text
+    assert 'id="count-high-no-flag"' in response.text
+    # скрипт экрана подключён, sse.js не дублируется (он в base.html)
+    assert "/static/matrix.js" in response.text
+    assert response.text.count("/static/sse.js") == 1
+
+
+def test_matrix_js_is_served(client: TestClient) -> None:
+    """Экранный скрипт ходит в /api/matrix, карточку и умеет SSE."""
+    response = client.get("/static/matrix.js")
+
+    assert response.status_code == 200
+    assert "/api/matrix" in response.text
+    assert "/api/packages/" in response.text
+    assert "GapAuditSSE.subscribe" in response.text
+    # логарифмическая ось и порог из ответа, а не зашитые в скрипт числа
+    assert "Math.log10" in response.text
+    assert "thresholds.alive_weekly" in response.text
+
+
+def test_sse_js_is_served(client: TestClient) -> None:
+    """Общий модуль SSE отдаётся локально и ходит в /api/stream с токеном."""
+    response = client.get("/static/sse.js")
+
+    assert response.status_code == 200
+    assert "GapAuditSSE" in response.text
+    assert "/api/stream?token=" in response.text
+
+
+def test_app_js_fills_footer_version(client: TestClient) -> None:
+    """Подвал показывает версию из /api/health, а не статичный «GapAudit» (§0.1)."""
+    script = client.get("/static/app.js").text
+
+    assert "setText('version', 'GapAudit v' + h.version)" in script
+

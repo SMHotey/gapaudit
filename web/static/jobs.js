@@ -1,5 +1,7 @@
 /* Экран «Задачи» (шаг 2a): список, фильтр по статусу, отмена/продолжение,
-   ручное обновление. Живого обновления (SSE) здесь нет намеренно — оно в 2b. */
+   ручное обновление. Живое обновление — SSE (шаг 2b): progress обновляет
+   строку точечно, created/started/done/failed/cancelled перечитывают список. */
+
 (function () {
   const $ = (id) => document.getElementById(id);
   const api = window.GapAudit.api;
@@ -52,6 +54,7 @@
 
   function progressCell(job) {
     const td = document.createElement('td');
+    td.className = 'progress-cell';
     const wrap = document.createElement('span');
     wrap.className = 'progress-wrap';
     const bar = document.createElement('progress');
@@ -96,6 +99,9 @@
   function renderRow(job) {
     const tr = document.createElement('tr');
     tr.dataset.status = job.status;
+    /* id — адрес строки для точечных SSE-обновлений (started/progress):
+       по нему обработчик находит строку, не перестраивая таблицу. */
+    tr.dataset.jobId = job.id;
     tr.appendChild(cell(fmtId(job.id), 'mono'));
     tr.appendChild(cell(job.kind));
     const statusTd = document.createElement('td');
@@ -105,7 +111,7 @@
     statusTd.appendChild(badge);
     tr.appendChild(statusTd);
     tr.appendChild(progressCell(job));
-    tr.appendChild(cell(job.message || '—', 'muted'));
+    tr.appendChild(cell(job.message || '—', 'muted msg-cell'));
     tr.appendChild(cell(fmtTime(job.started_at), 'mono'));
     tr.appendChild(actionsCell(job));
     tr.title = job.id;   /* полный id — по наведению */
@@ -172,6 +178,53 @@
     return window.confirm(what + 'Остановить и выйти?');
   };
 
+  /* Строка по id задачи. Перебор, а не селектор: id приходит из события,
+     и подставлять его в querySelector без экранирования не нужно (gotcha 37). */
+  function findRow(jobId) {
+    const rows = document.querySelectorAll('#jobs-body tr');
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].dataset.jobId === jobId) return rows[i];
+    }
+    return null;
+  }
+
+  /* Точечное обновление по SSE: прогресс и сообщение без перезагрузки списка.
+     Строки нет в DOM (фильтр скрыл, id чужой) — перечитываем список. */
+  function applyProgress(data) {
+    if (!data || !data.job_id) return;
+    const tr = findRow(data.job_id);
+    if (!tr) { load(); return; }
+    const cell = tr.querySelector('.progress-cell');
+    if (cell) {
+      const bar = cell.querySelector('progress');
+      const pct = cell.querySelector('.pct');
+      if (bar && typeof data.progress === 'number') {
+        bar.value = Math.max(0, Math.min(1, data.progress));
+      }
+      if (pct) pct.textContent = fmtProgress(data.progress);
+    }
+    const msg = tr.querySelector('.msg-cell');
+    if (msg && typeof data.message === 'string') msg.textContent = data.message;
+  }
+
+  /* Подписка на события очереди (шаг 2b). Какие события — что делаем:
+     created/started/done/failed/cancelled меняют статус, «старт» и набор
+     кнопок → перечитываем список; progress — только точечно, иначе таблица
+     перестраивалась бы несколько раз в секунду. */
+  function bindSSE() {
+    if (!window.GapAuditSSE) return;
+    window.GapAuditSSE.subscribe(function (event, data) {
+      if (event === 'progress') {
+        applyProgress(data);
+        return;
+      }
+      if (event === 'created' || event === 'started' || event === 'done' ||
+          event === 'failed' || event === 'cancelled') {
+        load();
+      }
+    });
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     $('refresh').addEventListener('click', load);
 
@@ -206,5 +259,6 @@
     });
 
     load();
+    bindSSE();
   });
 })();

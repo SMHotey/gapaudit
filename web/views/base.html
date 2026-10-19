@@ -10,9 +10,8 @@
     <h1><a href="/">GapAudit</a></h1>
     {% set path = request.url.path %}
     <nav class="app-nav">
-      <a href="/" class="{{ 'active' if path == '/' else '' }}">Задачи</a>
-      <a class="disabled" title="P2b: матрица adoption x flag"
-         aria-disabled="true">Сейчас решать</a>
+      <a href="/"{% if path == '/' %} class="active"{% endif %}>Задачи</a>
+      <a href="/matrix"{% if path == '/matrix' %} class="active"{% endif %}>Сейчас решать</a>
       <a class="disabled" title="P3: экран пакетов"
          aria-disabled="true">Пакеты</a>
       <a class="disabled" title="P3: каталоги"
@@ -37,6 +36,10 @@
     <span class="data-dir" id="data-dir" title="каталог данных">—</span>
   </footer>
   <script src="/static/app.js"></script>
+  {# sse.js после app.js: модуль читает window.GapAudit.token, который
+     выставляет app.js. Экранные скрипты живут в block scripts и сами
+     подписываются на события через window.GapAuditSSE. #}
+  <script src="/static/sse.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

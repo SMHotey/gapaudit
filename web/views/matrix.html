@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Сейчас решать — GapAudit{% endblock %}
+{% block content %}
+{# Экран-ответ на вопрос «что делать» (DEVPLAN §9, п. 1): матрица adoption x
+   признак ниши + таблица «живые и без признака». Всё содержимое рисует
+   matrix.js из GET /api/matrix — шаблон отдаёт только контейнеры, чтобы
+   имена пакетов не попадали в разметку (AGENTS gotcha 37). #}
+<section class="toolbar">
+  <div class="matrix-summary" id="matrix-summary">
+    <span id="count-total">—</span> <span id="count-total-word">пакетов</span> ·
+    <span id="count-with-week">—</span> с adoption ·
+    <strong id="count-high-no-flag">—</strong> в «ВОТ СЮДА»
+  </div>
+  <div class="toolbar-right">
+    <span class="muted" id="matrix-updated">—</span>
+    <button class="btn" id="refresh" type="button">Обновить</button>
+  </div>
+</section>
+<section class="matrix-wrap">
+  <div id="matrix-empty" class="empty" hidden>
+    Нет данных с adoption. Запустите проверку:
+    <code>POST /api/jobs {"kind": "packages.check", "params": {"names": [...]}}</code>.
+  </div>
+  <svg id="matrix-svg" viewBox="0 0 1000 400" preserveAspectRatio="xMidYMid meet"
+       role="img" aria-label="Матрица adoption и признака ниши"></svg>
+</section>
+<section>
+  <h2>Живые и без признака — кандидаты</h2>
+  <table class="table" id="candidates-table">
+    <thead>
+      <tr>
+        <th>Пакет</th><th>Adoption/нед</th><th>Вердикт</th>
+        <th>Замер</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="candidates-body">
+      <tr><td colspan="5"><div class="empty">Загрузка…</div></td></tr>
+    </tbody>
+  </table>
+</section>
+{# Карточка пакета: скрыта атрибутом hidden, клик по фону закрывает. #}
+<div id="card-overlay" class="modal-overlay" hidden>
+  <div class="card" id="card-content" role="dialog" aria-modal="true"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+{# sse.js уже подключён в base.html (после app.js) — здесь только экранный
+   скрипт, иначе поток событий открывался бы дважды. #}
+<script src="/static/matrix.js"></script>
+{% endblock %}
