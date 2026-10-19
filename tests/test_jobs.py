@@ -418,13 +418,23 @@ def test_progress_events_are_throttled(make_queue) -> None:
 
     queue.subscribe(callback)
     log = io.StringIO()  # сюда _handle_progress пишет битые сообщения
+    started = time.monotonic()
     for step in range(100):
         queue._handle_progress(
             job_id, {"progress": step / 100, "message": f"step {step}"}, log
         )
+    elapsed = time.monotonic() - started
 
-    # без троттлинга было бы 100; первый + максимум один через 100 мс цикла
-    assert 1 <= len(progress_events) <= 5, len(progress_events)
+    # Контракт: не чаще 10 эмитов в секунду. За elapsed максимально
+    # 1 + floor(elapsed/0.1) эмитов (первый в момент 0, дальше — раз в 100 мс);
+    # допуск +1 на погрешность. Считаем от фактической длительности цикла:
+    # на загруженной машине 100 sqlite-UPDATE могут растянуться, и тест не
+    # должен путать медленный цикл со сломанным троттлингом.
+    allowed = int(elapsed / 0.1) + 2
+    assert 1 <= len(progress_events) <= allowed, (
+        f"эмитов {len(progress_events)} при допуске {allowed} "
+        f"(цикл {elapsed:.3f} с)"
+    )
     job = queue.get(job_id)
     assert job is not None and abs(job.progress - 0.99) < 1e-9  # в Store пишется всегда
     assert counter == []  # подпроцесс не запускался
