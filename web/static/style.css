@@ -539,3 +539,81 @@ a:hover { color: var(--accent-hover); }
   left: 0;
   background: var(--bg-elev);
 }
+
+/* --- вкладки и карточки провайдеров (шаг P4b, §0.3) ----------------------
+   Экран «Настройки» получил вторую вкладку («API-ключи», шаг P4a), и до P4b
+   активную вкладку показывала заливка .btn-primary: кнопка «Сохранить» внизу
+   формы выглядела так же, и «где я» читалось только по тексту. Теперь вкладка
+   — это подчёркивание (класс .tab-active), а кнопки в форме остаются кнопками.
+   Класс называется tab-active, а не active: «class="active"» в разметке — это
+   пункт навигации, и тест шаблонов считает его ровно один на страницу. */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  padding: 8px 16px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn.tab-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* Карточка провайдера: раньше это был голый fieldset, и шесть ключей в столбик
+   читались как одна форма. */
+.provider-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: var(--bg-elev);
+}
+.provider-card h3 { margin: 0 0 8px 0; font-size: 15px; }
+
+.status-configured { color: var(--ok); }
+.status-not-configured { color: var(--text-muted); }
+.status-check-ok { color: var(--ok); }
+.status-check-error { color: var(--error); }
+
+.provider-card input[type=password],
+.provider-card input[type=text] {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  font: inherit;
+  width: 240px;
+}
+
+/* Блок «Momentum» в карточке пакета (шаг P4b): цвет — тот же, что у точки в
+   матрице (зелёный/серый/красный по Δ за 30 дней), чтобы экраны читались
+   одинаково. */
+.card-momentum { margin: 8px 0; }
+.momentum-value { font-size: 18px; font-weight: 600; }
+.momentum-green { color: var(--ok); }
+.momentum-gray { color: var(--text-dim); }
+.momentum-red { color: var(--error); }
+.momentum-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 4px 0 12px 0;
+}
+.momentum-legend .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}

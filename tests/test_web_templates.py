@@ -399,3 +399,76 @@ def test_compare_js_uses_dom_not_innerhtml_for_data(client: TestClient) -> None:
     assert "X-GapAudit-Token" in script
     assert "URL.createObjectURL" in script
 
+
+
+# --- momentum в матрице, карточке и вкладках настроек (шаг P4b) --------------
+
+
+def test_matrix_screen_uses_momentum_color(client: TestClient) -> None:
+    """Точка матрицы красится по momentum: цвет приходит из API, JS его рисует.
+
+    Проверяется связка «страница отдаёт скрипт» + «скрипт знает про
+    momentum_color»: сам рендер в SVG проверяется живым прогоном, здесь — что
+    шаблон и модуль не разъехались (``matrix.js`` подключён, поле читается).
+    """
+    page = client.get("/matrix")
+
+    assert page.status_code == 200
+    assert "/static/matrix.js" in page.text
+
+    script = client.get("/static/matrix.js").text
+    assert "momentum_color" in script
+    assert "momentumFill(point)" in script
+    # До P4b цвет означал признак ниши: старый тернарник не должен вернуться.
+    assert "point.flag ? '#f87171' : '#4ade80'" not in script
+
+
+def test_card_script_renders_momentum_block(client: TestClient) -> None:
+    """Карточка пакета показывает блок «Momentum» из signals.momentum."""
+    script = client.get("/static/card.js").text
+
+    assert "card-momentum" in script
+    assert "signals.momentum" in script
+    assert "label_30d" in script
+    assert "Мало данных" in script
+
+
+def test_settings_tabs_switch(client: TestClient) -> None:
+    """Две вкладки настроек: активная ровно одна, переключение — классом.
+
+    Класс активной вкладки — ``tab-active``, а не ``active``: ``class="active"``
+    на странице ровно один и принадлежит пункту навигации (тест выше это
+    проверяет), и вторая «активная» сущность сломала бы его счёт.
+    """
+    page = client.get("/settings")
+
+    assert page.text.count('data-tab="thresholds"') == 1
+    assert page.text.count('data-tab="api-keys"') == 1
+    assert page.text.count("tab-active") == 1
+    assert 'class="tab-btn tab-active"' in page.text
+    assert page.text.count('class="active"') == 1      # только пункт навигации
+
+    script = client.get("/static/settings.js").text
+    # Переключение живёт в showTab: активная получает tab-active, снятая — нет.
+    assert "button.className = on ? 'tab-btn tab-active' : 'tab-btn'" in script
+    assert "panel.hidden = panel.getAttribute('data-tab-panel') !== name" in script
+
+
+def test_settings_links_to_api_keys_docs_with_anchor(client: TestClient) -> None:
+    """Ссылка «как получить ключ» ведёт на якорь провайдера в API-KEYS.md."""
+    script = client.get("/static/settings.js").text
+
+    assert "'/docs/API-KEYS.md'" in script
+    assert "'#' + anchor" in script
+    # Документ существует и отдаётся (шаг P4a), а якоря появились в P4b.
+    doc = client.get("/docs/API-KEYS.md")
+    assert doc.status_code == 200
+    for anchor in ("adzuna", "patentsview", "sec-edgar",
+                   "yandex-wordstat", "google-trends", "apify"):
+        assert f'<a id="{anchor}"></a>' in doc.text, anchor
+
+
+def test_other_docs_files_are_not_served(client: TestClient) -> None:
+    """``/docs/{file}`` — белый список: остальные файлы ``docs/`` отдают 404."""
+    assert client.get("/docs/DEVPLAN.md").status_code == 404
+    assert client.get("/docs/screenshots/step-p4b-matrix-momentum.png").status_code == 404

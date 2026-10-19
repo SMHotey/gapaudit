@@ -158,6 +158,36 @@
     row('замер', latest.measured_at, stats);
     card.appendChild(stats);
 
+    /* Momentum (шаг P4b, §18.3): Δ adoption за 7/30/90 дней. Данные — из
+       signals.momentum того же ответа /api/packages/{name} (вариант A шага:
+       один запрос на карточку). Подпись '↑ +42.0%/30д' и цвет считает сервер
+       (core.collectors.momentum): второй расчёт в JS разошёлся бы с матрицей
+       при первой правке порога. */
+    const signals = payload.signals || {};
+    if (signals.momentum) {
+      const m = signals.momentum;
+      const block = document.createElement('div');
+      block.className = 'card-momentum';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Momentum';
+      const value = document.createElement('div');
+      value.className = 'momentum-value momentum-' + (m.color || 'gray');
+      value.textContent = (m.label_30d || '—') +
+        (m.delta_7d != null ? ' · 7д ' + m.delta_7d.toFixed(1) + '%' : '') +
+        (m.delta_90d != null ? ' · 90д ' + m.delta_90d.toFixed(1) + '%' : '');
+      block.appendChild(label);
+      block.appendChild(value);
+      if (m.samples < 2) {
+        const note = document.createElement('div');
+        note.className = 'muted';
+        note.style.fontSize = '12px';
+        note.textContent = 'Мало данных: ' + m.samples + ' замер(а)';
+        block.appendChild(note);
+      }
+      card.appendChild(block);
+    }
+
     card.appendChild(miniGraph(history));
 
     const eventsTitle = document.createElement('div');

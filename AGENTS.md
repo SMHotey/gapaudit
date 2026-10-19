@@ -363,6 +363,17 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     ответственность за соблюдение — на пользователе. Это не
     техническое ограничение, а юридическое — graceful degradation
     не помогает.
+56. api_keys.json — файловый store (не SQLite). meta — публичный канал:
+    только несекретные поля (client_id, actor_id, user_agent). Всё, что
+    является паролем или его половиной (adzuna.app_id+app_key,
+    uspto.api_key, yandex_wordstat.token, google_trends.api_key,
+    apify.api_token), — в encrypted_value (base64). GET
+    /api/settings/api-keys возвращает meta_fields и meta_public (без
+    секретов). Битый файл — load_error (не «тихо пусто»).
+57. При указании P-cap в промте — явно фаза (P4 fast ≤45, P4 full ≤90).
+    Не копировать «≤20» из предыдущего шага: гейт должен соответствовать
+    текущей фазе из DEVPLAN §11. Пример: P4a был с гейтом ≤20 (P2 cap) —
+    19.9-20.6 в него еле влезал, хотя P4 cap 45 с запасом.
 
 ---
 

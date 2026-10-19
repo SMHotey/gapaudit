@@ -23,6 +23,7 @@ momentum, cross-ecosystem. Ключи нужны только для сигна�
 - dev-режим (запуск из клона): `data/api_keys.json`;
 - обычный режим: `%USERPROFILE%\GapAudit-data\api_keys.json`.
 
+<a id="adzuna"></a>
 ## Adzuna (jobs — спрос на труд по странам)
 
 **Что даёт:** количество вакансий по ключевому слову в 11 странах (UK, US, DE,
@@ -63,6 +64,7 @@ https://api.adzuna.com/v1/api/jobs/{country}/search/1
 
 **Без ключа:** сигнал «не настроен».
 
+<a id="patentsview"></a>
 ## PatentsView (patents — патентный импульс)
 
 **Что даёт:** количество патентных заявок по ключевому слову / CPC-классу за
@@ -93,6 +95,7 @@ https://search.patentsview.org/api/v1/patent/?q={запрос}&api_key={API_KEY}
 
 **Без ключа:** сигнал «не настроен».
 
+<a id="sec-edgar"></a>
 ## SEC EDGAR (funding — раунды финансирования)
 
 **Что даёт:** официальные уведомления о привлечении капитала (США). Form D
@@ -120,6 +123,7 @@ https://efts.sec.gov/LATEST/search-index?q={запрос}&forms=D
 
 **Без User-Agent:** сигнал «не настроен» (403 от EDGAR).
 
+<a id="yandex-wordstat"></a>
 ## Yandex Wordstat (search_interest — поисковый интерес, РФ)
 
 **Что даёт:** частотность запросов, динамика интереса, срезы по регионам и
@@ -156,6 +160,7 @@ API в Yandex Cloud — если старый endpoint перестанет от
 
 **Без ключа:** сигнал «не настроен».
 
+<a id="google-trends"></a>
 ## Google Trends (search_interest — глобальный поисковый интерес)
 
 **Что даёт:** индекс поискового интереса, динамика, разбивка по странам и
@@ -177,6 +182,7 @@ API в Yandex Cloud — если старый endpoint перестанет от
   Данные не нормированы 0–100, как в веб-интерфейсе Trends, — это абсолютный
   объём интереса.
 
+<a id="apify"></a>
 ### Вариант B: Apify (Google Trends Scraper)
 
 - **Доступ:** сразу, по API-токену Apify.

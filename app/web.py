@@ -123,6 +123,7 @@ from app.jobs import (
 )
 from app.store import Store
 from core.api_keys import META_FIELDS, PROVIDERS, ApiKeysStore
+from core.collectors.momentum import compute_momentum
 from core.settings import (
     SETTINGS_FILENAME,
     Settings,
@@ -226,8 +227,29 @@ VIEWS_DIR = ROOT / "web" / "views"
 STATIC_DIR = ROOT / "web" / "static"
 #: Документация для окна: ссылка «как получить ключ» в «Настройках → API-ключи»
 #: ведёт на ``docs/API-KEYS.md`` (шаг P4a), а файл лежит не среди шаблонов —
-#: поэтому каталог монтируется отдельно (см. ``create_app``).
+#: поэтому он отдаётся отдельным маршрутом (см. ``create_app``).
 DOCS_DIR = ROOT / "docs"
+
+#: Белый список файлов ``docs/``, доступных по ``/docs/{filename}`` (шаг P4b, §7).
+#: Один файл, а не каталог: остальное в ``docs/`` — внутренние заметки проекта.
+DOCS_PUBLIC = frozenset({"API-KEYS.md"})
+
+#: Сколько наблюдений читать на пакет для momentum (шаг P4b): окно 90 дней
+#: покрывается десятками замеров, а 100 — потолок, после которого история
+#: одного пакета начала бы заметно утяжелять ``GET /api/matrix``.
+MOMENTUM_HISTORY_LIMIT = 100
+
+#: Сигналы §18.3, которых в P4b ещё нет (P4c/P5). Отдаются в
+#: ``signals_unavailable``, чтобы UI честно показывал «сигнал будет позже», а не
+#: «сигнала нет»: ``cross_eco`` — P4c, остальные — P5. ``gap_score`` здесь нет:
+#: это агрегат по сигналам, а не сигнал (§18.3).
+SIGNALS_PENDING: tuple[str, ...] = (
+    "cross_eco",
+    "jobs",
+    "patents",
+    "funding",
+    "search_interest",
+)
 
 _ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -881,6 +903,38 @@ def _matrix_points(
     return points, quadrants
 
 
+# --- momentum (шаг P4b) -------------------------------------------------------
+
+
+def _momentum_payload(store: Store, name: str) -> dict[str, Any]:
+    """Momentum пакета словарём — то, что уезжает в ``/api/signals`` и в карточку.
+
+    ``name`` подставляется из запроса, а не берётся из первого наблюдения:
+    у пакета без истории поля ``name`` в наблюдении нет, и ответ «про пакет X»
+    с пустым ``name`` выглядел бы как чужой сигнал.
+    """
+    history = store.get_observations_history(name, limit=MOMENTUM_HISTORY_LIMIT)
+    payload = compute_momentum(history).as_dict()
+    payload["name"] = name
+    return payload
+
+
+def _attach_momentum(store: Store, points: list[dict[str, Any]]) -> None:
+    """Дописать в точки матрицы ``momentum_30d``/``momentum_color``/``samples``.
+
+    Правит точки на месте, а не возвращает копию: ``_matrix_points`` — общий
+    построитель с ``POST /api/matrix/export``, и у экспорта свой фиксированный
+    набор колонок (шаг 3c). Расширение здесь, а не в построителе, оставляет CSV
+    ровно тем же, что был, — иначе «экспорт = картинка» перестал бы выполняться
+    по числу колонок.
+    """
+    for point in points:
+        payload = _momentum_payload(store, str(point.get("name") or ""))
+        point["momentum_30d"] = payload["delta_30d"]
+        point["momentum_color"] = payload["color"]
+        point["momentum_samples"] = payload["samples"]
+
+
 def _queue(request: Request) -> JobQueue:
     queue = getattr(request.app.state, "queue", None)
     if queue is None:
@@ -1243,12 +1297,32 @@ def create_app(
     if STATIC_DIR.is_dir():
         # Локальная статика вместо CDN (правило из плана: никаких внешних CDN).
         application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    if DOCS_DIR.is_dir():
-        # ``docs/API-KEYS.md`` — цель ссылки «Инструкции по получению» в
-        # «Настройках → API-ключи» (шаг P4a, §18.6). Без этого монтирования
-        # ссылка вела бы в никуда (404): документация лежит в каталоге проекта,
-        # а не среди шаблонов или статики.
-        application.mount("/docs", StaticFiles(directory=str(DOCS_DIR)), name="docs")
+
+    @application.get("/docs/{filename}")
+    def docs_file(filename: str) -> Response:
+        """``docs/`` наружу — только белый список (шаг P4b, §7: ``API-KEYS.md``).
+
+        До P4b каталог ``docs/`` монтировался целиком, и любой файл проекта
+        (внутренние заметки, скриншоты, черновики) отдавался бы по адресу
+        ``/docs/<имя>`` без токена. Шаг P4a уже сделал ``API-KEYS.md`` целью
+        ссылки «Инструкции по получению» (§18.6), поэтому нужен ровно один
+        файл: всё остальное — 404, а не «нет такого маршрута», чтобы спец.
+        документ не искали перебором имён.
+
+        Токен здесь не требуется (это не ``/api/*``): документация — это
+        инструкция «как получить ключ», в ней нет ни данных приложения, ни
+        значений ключей.
+        """
+        if filename not in DOCS_PUBLIC:
+            raise HTTPException(status_code=404, detail=f"документа нет: {filename}")
+        path = DOCS_DIR / filename
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise HTTPException(
+                status_code=404, detail=f"документа нет: {filename}"
+            ) from error
+        return Response(text, media_type="text/markdown; charset=utf-8")
 
     @application.get(HEALTH_PATH)
     async def health(request: Request) -> dict[str, Any]:
@@ -1561,6 +1635,11 @@ def create_app(
             "package": package,
             "observations": store.get_latest_observations([name]),
             "events": events,
+            # Сигналы — в карточке (шаг P4b): momentum считается из истории,
+            # которую карточка и так запрашивает отдельно для мини-графика.
+            # Один ответ вместо двух запросов: card.js получает полную картину
+            # из /api/packages/{name} (вариант A шага).
+            "signals": {"momentum": _momentum_payload(store, name)},
         }
 
     @application.get("/api/packages/{name}/history")
@@ -1576,6 +1655,38 @@ def create_app(
         return {
             "name": name,
             "observations": store.get_observations_history(name, limit=limit),
+        }
+
+    # --- сигналы ниш (шаг P4b: momentum) --------------------------------------
+
+    @application.get("/api/signals/{package}")
+    def get_signals(package: str, request: Request) -> dict[str, Any]:
+        """Все сигналы по пакету; в P4b реализован только ``momentum`` (§18.3).
+
+        Ответ — расширяемый конверт: ``momentum`` рядом с двумя списками имён.
+        ``signals_available`` перечисляет то, что реально посчитано сейчас, а
+        ``signals_unavailable`` — то, что появится в P4c/P5. Так UI отличает
+        «сигнала нет» от «сигнал ещё не сделан» без знания календаря шагов:
+        список непустых сигналов никогда не выдаёт отсутствующий за ноль.
+
+        ``gap_score`` в списках нет: это агрегат по сигналам, а не сигнал.
+
+        404 — пакет без единого замера. Отдавать «momentum = None» значило бы
+        отвечать «пакет есть, данных мало» на имя, которого приложение не
+        знает: сигналы считаются только из истории наблюдений, а строка в
+        ``packages`` без замеров не создаётся вовсе (``_upsert_package`` пишет
+        её из того же замера).
+        """
+        store = _store(request)
+        history = store.get_observations_history(package, limit=MOMENTUM_HISTORY_LIMIT)
+        if not history:
+            raise HTTPException(status_code=404, detail=f"package not found: {package}")
+        momentum = compute_momentum(history)
+        return {
+            "package": package,
+            "momentum": momentum.as_dict(),
+            "signals_available": ["momentum"],
+            "signals_unavailable": list(SIGNALS_PENDING),
         }
 
     # --- матрица «Сейчас решать» (шаг 2b) -------------------------------------
@@ -1613,6 +1724,7 @@ def create_app(
         }
         observations = store.get_latest_observations()
         points, quadrants = _matrix_points(observations, thresholds["alive_weekly"])
+        _attach_momentum(store, points)
         return {
             "points": points,
             "quadrants": quadrants,
@@ -2034,7 +2146,7 @@ def create_app(
                     "meta_public": store.public_meta(provider),
                 }
             )
-        return {"providers": providers}
+        return {"providers": providers, "load_error": store.load_error}
 
     @application.put("/api/settings/api-keys")
     def save_api_key(payload: dict[str, Any], request: Request) -> dict[str, Any]:

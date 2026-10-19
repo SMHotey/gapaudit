@@ -442,3 +442,55 @@ def test_status_is_configured_only_when_all_fields_present(tmp_path: Path) -> No
 
     assert store.status("adzuna").configured is False
     assert store.get("adzuna") is None
+
+
+# --- load_error (шаг P4b, §0.7) ----------------------------------------------
+
+
+def test_broken_json_sets_load_error_and_reports_not_configured(tmp_path: Path) -> None:
+    """Битый файл: ``load_error`` с причиной, статусы — «не настроен».
+
+    Разница принципиальна: «файла нет» — это норма (ключей ещё не вводили),
+    «файл есть, но не читается» — авария, о которой UI обязан сказать. Без
+    этого поля обе ситуации выглядели одинаково — пустым списком карточек.
+    """
+    store = store_for(tmp_path)
+    store.path.write_text("{ это не JSON", encoding="utf-8", newline="\n")
+
+    statuses = store.status_all()
+
+    assert store.load_error is not None
+    assert "JSON" in store.load_error
+    assert all(not status.configured for status in statuses)
+
+
+def test_foreign_format_version_sets_load_error(tmp_path: Path) -> None:
+    """Чужая версия формата — тоже ``load_error`` (P5 сменит base64 на Fernet)."""
+    store = store_for(tmp_path)
+    store.path.write_text(
+        json.dumps({"version": 99, "providers": {}}), encoding="utf-8", newline="\n"
+    )
+
+    assert store.status_all()  # не падает
+    assert store.load_error is not None
+    assert "99" in store.load_error
+
+
+def test_load_error_is_cleared_by_successful_save(tmp_path: Path) -> None:
+    """Сохранение перезаписывает файл целиком — старая ошибка больше не актуальна."""
+    store = store_for(tmp_path)
+    store.path.write_text("{ это не JSON", encoding="utf-8", newline="\n")
+    assert store.status_all() and store.load_error is not None
+
+    store.save("edgar", {"user_agent": "GapAudit me@example.com"})
+
+    assert store.load_error is None
+    assert store.status("edgar").configured is True
+
+
+def test_missing_file_is_not_a_load_error(tmp_path: Path) -> None:
+    """Отсутствие файла — штатное состояние, а не повреждение."""
+    store = store_for(tmp_path)
+
+    assert store.status_all()
+    assert store.load_error is None

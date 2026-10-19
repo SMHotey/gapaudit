@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -48,6 +49,20 @@ def matrix(client: TestClient) -> dict[str, Any]:
     response = client.get("/api/matrix", headers=auth())
     assert response.status_code == 200
     return response.json()
+
+
+def seed_at(
+    client: TestClient, measured_at: str, *observations: dict[str, Any]
+) -> None:
+    """Батч наблюдений с явным временем замера — для истории momentum."""
+    app_state(client).store.record_observations(
+        list(observations), run_id=f"run-{measured_at}", measured_at=measured_at
+    )
+
+
+def momentum_point(client: TestClient, name: str) -> dict[str, Any]:
+    points = matrix(client)["points"]
+    return next(point for point in points if point["name"] == name)
 
 
 def test_empty_store_gives_empty_quadrants(client: TestClient) -> None:
@@ -154,3 +169,73 @@ def test_threshold_comes_from_settings(
 
     monkeypatch.setattr(settings, "alive_weekly", 61)
     assert matrix(client)["quadrants"]["low_no_flag"] == ["sixty"]
+
+
+# --- momentum точки (шаг P4b) ------------------------------------------------
+
+
+def days_ago_iso(days: int) -> str:
+    """``measured_at`` на N дней назад от текущего момента (формат Store)."""
+    moment = datetime.now(timezone.utc) - timedelta(days=days)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_momentum_color_splits_growing_and_falling(client: TestClient) -> None:
+    """Растущий пакет — зелёный, падающий — красный (§18.3).
+
+    До P4b цвет точки означал признак ниши («MCP есть/нет») и читался как
+    «хорошо/плохо»; теперь он про тренд, и это главный смысл шага.
+    """
+    # быстрый: 100 -> 140 за 29 дней (+40%)
+    seed_at(client, days_ago_iso(29), observation("fast", week=100, flag=0))
+    seed_at(client, days_ago_iso(0), observation("fast", week=140, flag=0))
+    # медленный: 100 -> 90 за 5 дней (-10%)
+    seed_at(client, days_ago_iso(5), observation("slow", week=100, flag=1))
+    seed_at(client, days_ago_iso(0), observation("slow", week=90, flag=1))
+
+    fast = momentum_point(client, "fast")
+    slow = momentum_point(client, "slow")
+
+    assert fast["momentum_30d"] == pytest.approx(40.0)
+    assert fast["momentum_color"] == "green"
+    assert slow["momentum_30d"] == pytest.approx(-10.0)
+    assert slow["momentum_color"] == "red"
+
+
+def test_single_measurement_has_gray_momentum(client: TestClient) -> None:
+    """Один замер — ``momentum_30d = None`` и серый цвет, точка остаётся."""
+    seed(client, observation("lonely", week=5000, flag=0))
+
+    point = momentum_point(client, "lonely")
+
+    assert point["momentum_30d"] is None
+    assert point["momentum_color"] == "gray"
+
+
+def test_momentum_samples_counts_history(client: TestClient) -> None:
+    """``momentum_samples`` — сколько замеров в истории имени."""
+    seed_at(client, days_ago_iso(50), observation("many", week=80))
+    seed_at(client, days_ago_iso(20), observation("many", week=90))
+    seed_at(client, days_ago_iso(0), observation("many", week=100))
+
+    point = momentum_point(client, "many")
+
+    assert point["momentum_samples"] == 3
+    assert point["momentum_30d"] == pytest.approx(11.11)   # (100-90)/90
+    assert point["momentum_color"] == "green"
+
+
+def test_existing_point_fields_survive_momentum(client: TestClient) -> None:
+    """Поля точки 2b на месте: momentum добавлен, а не заменил adoption/flag."""
+    seed_at(client, days_ago_iso(0), observation("ruff", week=12_000, flag=1))
+
+    point = momentum_point(client, "ruff")
+
+    for key in (
+        "name", "source", "version", "released_at", "adoption_week",
+        "adoption_month", "flag", "flag_label", "verdict", "measured_at",
+        "momentum_30d", "momentum_color", "momentum_samples",
+    ):
+        assert key in point, key
+    assert point["adoption_week"] == 12_000
+    assert point["flag"] is True

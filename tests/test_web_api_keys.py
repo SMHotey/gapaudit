@@ -356,3 +356,32 @@ def test_settings_js_uses_api_keys_endpoints_without_innerhtml(client: TestClien
     assert "window.confirm" in script
     # F5 перечитывает и ключи, и пороги
     assert "window.__gapauditRefresh = load" in script
+
+
+def test_list_reports_load_error_for_broken_file(client: TestClient) -> None:
+    """Битый ``api_keys.json`` виден в API как ``load_error`` (§0.7, шаг P4b).
+
+    До P4b ответ был неотличим от «ключей не вводили»: все провайдеры
+    «не настроены», и пользователь вводил бы ключи заново поверх
+    повреждённого файла. Причина уезжает в UI, который рисует баннер.
+    """
+    path = keys_path(client)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ это не JSON", encoding="utf-8", newline="\n")
+
+    payload = list_keys(client)
+
+    assert payload["load_error"] is not None
+    assert all(item["configured"] is False for item in payload["providers"])
+    # Ни одно значение файла не уехало в ответ: это по-прежнему только статус.
+    assert "это не JSON" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_list_load_error_is_null_for_healthy_store(client: TestClient) -> None:
+    """Здоровый файл: ``load_error = None`` — UI баннер не рисует."""
+    put_key(client, {"provider": "edgar", "values": {"user_agent": "GapAudit me@example.com"}})
+
+    payload = list_keys(client)
+
+    assert payload["load_error"] is None
+    assert by_id(payload, "edgar")["configured"] is True

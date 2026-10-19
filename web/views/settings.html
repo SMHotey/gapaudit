@@ -16,12 +16,15 @@
    не может — их не отдаёт API. #}
 <section class="settings-wrap">
   <div class="tabs" role="tablist">
-    {# Классы вкладок — существующие (.btn/.btn-primary): style.css на этом шаге
-       не меняется, а «активная» вкладка и так видна по заливке. #}
-    <button type="button" class="btn btn-primary tab-btn" data-tab="thresholds"
-            role="tab" aria-selected="true">Пороги</button>
-    <button type="button" class="btn tab-btn" data-tab="api-keys"
-            role="tab" aria-selected="false">API-ключи</button>
+    {# Классы вкладок — .tab-btn / .tab-active (шаг P4b, §0.3). До этого активную
+       вкладку показывала заливка .btn-primary: она спорила с кнопкой
+       «Сохранить» внизу формы. Класс именно tab-active, а не active:
+       «class="active"» на странице — это пункт навигации, и тест шаблонов
+       считает его ровно один. #}
+    <button type="button" class="tab-btn tab-active" data-tab="thresholds"
+            role="tab" aria-selected="true" aria-controls="tab-thresholds">Пороги</button>
+    <button type="button" class="tab-btn" data-tab="api-keys"
+            role="tab" aria-selected="false" aria-controls="tab-api-keys">API-ключи</button>
   </div>
 
   <section id="tab-thresholds" class="tab-panel" data-tab-panel="thresholds">

@@ -77,10 +77,12 @@
     Array.prototype.forEach.call(panels, function (panel) {
       panel.hidden = panel.getAttribute('data-tab-panel') !== name;
     });
+    /* Класс — .tab-btn / .tab-active (шаг P4b, §0.3): активная вкладка
+       подчёркнута, а не залита, и не спорит с кнопкой «Сохранить». */
     const tabs = document.querySelectorAll('[data-tab]');
     Array.prototype.forEach.call(tabs, function (button) {
       const on = button.getAttribute('data-tab') === name;
-      button.className = on ? 'btn btn-primary tab-btn' : 'btn tab-btn';
+      button.className = on ? 'tab-btn tab-active' : 'tab-btn';
       button.setAttribute('aria-selected', on ? 'true' : 'false');
     });
   }
@@ -306,12 +308,26 @@
     return card;
   }
 
+  /* Баннер «файл ключей не прочитался» (шаг P4b, §0.7): без него битый
+     api_keys.json выглядел бы как «ключи не вводили» — все карточки
+     «не настроен», и пользователь вводил бы ключи заново поверх повреждённого
+     файла, не зная, что старые ещё можно восстановить из бэкапа. */
+  function loadErrorBanner(reason) {
+    const banner = document.createElement('div');
+    banner.className = 'settings-msg err';
+    banner.setAttribute('data-load-error', '1');
+    banner.textContent = 'Файл ключей повреждён: ' + reason +
+      '. Сохранённые ключи не загружены. Сохраните заново или восстановите из бэкапа.';
+    return banner;
+  }
+
   async function loadProviders() {
     const list = document.getElementById('providers-list');
     if (!list) return;
     try {
       const data = await api('GET', '/api/settings/api-keys');
       clear(list);
+      if (data.load_error) list.appendChild(loadErrorBanner(data.load_error));
       (data.providers || []).forEach(function (provider) {
         list.appendChild(providerCard(provider));
       });

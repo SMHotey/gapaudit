@@ -19,7 +19,9 @@
 * **модуль ничего не печатает** (правило ``core``): битый файл читается как
   «ничего не настроено», и файл при этом не перезаписывается до явного
   :meth:`ApiKeysStore.save` — иначе одна опечатка в ручной правке стёрла бы
-  все ключи.
+  все ключи. Причина, по которой файл не прочитался, не теряется: она лежит в
+  :attr:`ApiKeysStore.load_error` и уезжает в API как ``load_error`` (шаг P4b):
+  «тихо пусто» выглядело бы как «ключей не вводили», а это разные состояния;
 
 Шифрование — base64, то есть НЕ криптография (DEVPLAN §18.2): значения защищены
 правами файла (0600 на POSIX, ``icacls`` на Windows), а не ключом. Честная
@@ -180,6 +182,11 @@ class ApiKeysStore:
 
     def __init__(self, data_dir: str | Path) -> None:
         self.path = Path(data_dir) / KEY_FILE_NAME
+        #: Почему файл не прочитался (битый JSON, не та версия формата) — или
+        #: ``None``. Поле, а не исключение: битый файл не должен валить экран
+        #: настроек, но и «тихо пусто» — ложь, которую видно только по пустым
+        #: полям. API отдаёт причину как ``load_error`` (§7), UI рисует баннер.
+        self.load_error: str | None = None
 
     # --- чтение ---------------------------------------------------------------
 
@@ -380,6 +387,44 @@ class ApiKeysStore:
         """Все объявленные поля провайдера заполнены непустыми строками."""
         return all(values.get(name) for name in PROVIDERS[provider]["fields"])
 
+    def _read(self) -> dict[str, Any]:
+        """Документ файла целиком; битый/чужой файл — ``load_error`` и пустой.
+
+        Три состояния, которые нельзя смешивать (шаг P4b, §0.7):
+
+        * файла нет — это норма (ключей ещё не вводили), ``load_error = None``;
+        * файл есть, но не читается (не JSON / не объект / ``version`` не та) —
+          ``load_error`` с причиной и пустой документ: статусы показываются как
+          «не настроен», но UI обязан сказать, что ключи не загружены, а не
+          делать вид, что их не было;
+        * файл читается — документ как есть, ``load_error = None``.
+
+        ``version`` проверяется строго: P5 обещает Fernet вместо base64, и
+        читать чужой формат как свой значило бы показать «не настроено» вместо
+        «файл от другой версии».
+        """
+        self.load_error = None
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"version": FORMAT_VERSION, "providers": {}}
+        except OSError as error:  # нет прав, каталог вместо файла, битая кодировка
+            self.load_error = f"файл не читается: {error}"
+            return {"version": FORMAT_VERSION, "providers": {}}
+        try:
+            document = json.loads(text)
+        except ValueError as error:
+            self.load_error = f"не JSON: {error}"
+            return {"version": FORMAT_VERSION, "providers": {}}
+        if not isinstance(document, dict):
+            self.load_error = "ожидался объект {version, providers}"
+            return {"version": FORMAT_VERSION, "providers": {}}
+        version = document.get("version")
+        if version != FORMAT_VERSION:
+            self.load_error = f"версия формата {version!r}, ожидалась {FORMAT_VERSION}"
+            return {"version": FORMAT_VERSION, "providers": {}}
+        return document
+
     def _providers(self) -> dict[str, dict[str, Any]]:
         """Записи провайдеров из файла; нет файла или мусор — пустой словарь.
 
@@ -387,18 +432,10 @@ class ApiKeysStore:
         следующую запись: файл может быть правлен новой версией приложения, и
         терять её данные при сохранении чужого ключа нельзя.
         """
-        try:
-            text = self.path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            return {}
-        try:
-            document = json.loads(text)
-        except ValueError:
-            return {}
-        if not isinstance(document, dict):
-            return {}
-        stored = document.get("providers")
+        stored = self._read().get("providers")
         if not isinstance(stored, dict):
+            if stored is not None and self.load_error is None:
+                self.load_error = "поле providers не объект"
             return {}
         return {
             str(name): entry
@@ -433,6 +470,10 @@ class ApiKeysStore:
                 pass
             raise
         _restrict_permissions(self.path)
+        # Запись удалась — прежней ошибки чтения больше нет (шаг P4b): иначе
+        # баннер «файл повреждён» висел бы после того, как пользователь сохранил
+        # ключ заново и файл перезаписан целиком.
+        self.load_error = None
 
 
 # --- кодирование значений -----------------------------------------------------

@@ -73,9 +73,49 @@
     };
   }
 
+  /* --- momentum (шаг P4b, §18.3) ------------------------------------------
+     Цвет точки — это Δ adoption за 30 дней, а не признак ниши. До P4b
+     зелёная точка означала «MCP нет» и читалась как «хорошо»; теперь «высокий
+     adoption» перестал быть синонимом «хорошо»: зелёный — растёт, красный —
+     падает, серый — стабилен или данных мало. Порог ±5% и подписи приходят с
+     сервера (momentum_color), здесь только три цвета. */
+  const MOMENTUM_COLORS = { green: '#4ade80', gray: '#94a3b8', red: '#f87171' };
+  const MOMENTUM_LEGEND = [
+    ['green', 'растёт (momentum > +5%)'],
+    ['gray', 'стабилен'],
+    ['red', 'падает (< -5%)'],
+  ];
+
+  function momentumFill(point) {
+    return MOMENTUM_COLORS[point.momentum_color] || MOMENTUM_COLORS.gray;
+  }
+
+  /* Легенда живёт в DOM под матрицей, а не в SVG: viewBox занят до 400 по
+     высоте, и третья строка подписей вылезла бы за край. Элемент один:
+     перечитывание экрана (SSE/«Обновить») не должно плодить копии. */
+  function renderMomentumLegend() {
+    const svg = $('matrix-svg');
+    if (!svg || !svg.parentNode) return;
+    if ($('momentum-legend')) return;
+    const box = document.createElement('div');
+    box.id = 'momentum-legend';
+    box.className = 'momentum-legend';
+    MOMENTUM_LEGEND.forEach(function (item) {
+      const span = document.createElement('span');
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = MOMENTUM_COLORS[item[0]];
+      span.appendChild(dot);
+      span.appendChild(document.createTextNode(item[1]));
+      box.appendChild(span);
+    });
+    svg.parentNode.insertBefore(box, svg.nextSibling);
+  }
+
   function renderMatrix(data) {
     const svg = $('matrix-svg');
     svg.innerHTML = '';
+    renderMomentumLegend();
     if (!data.points.length) {
       $('matrix-empty').hidden = false;
       return;
@@ -140,16 +180,21 @@
       const cy = rowY + ROW_H / 2 + shift;
       const circle = svgEl('circle', {
         cx: cx.toFixed(1), cy: cy.toFixed(1), r: '6',
-        fill: point.flag ? '#f87171' : '#4ade80',
+        fill: momentumFill(point),
         stroke: '#0f1419', 'stroke-width': '1',
         class: 'matrix-point',
+        'data-momentum': point.momentum_color || 'gray',
       }, svg);
       circle.dataset.name = point.name;
       circle.setAttribute('tabindex', '0');
       circle.setAttribute('role', 'button');
       const title = svgEl('title', {}, circle);
       title.textContent = point.name + ' — ' + fmtNum(point.adoption_week) +
-        '/нед, ' + (point.flag ? 'MCP есть' : 'MCP нет');
+        '/нед, ' + (point.flag ? 'MCP есть' : 'MCP нет') +
+        (point.momentum_30d != null
+          ? ', momentum ' + (point.momentum_30d > 0 ? '+' : '') +
+            point.momentum_30d.toFixed(1) + '%/30д'
+          : ', momentum: мало данных');
       circle.addEventListener('click', () => window.GapAuditCard.open(point.name));
       circle.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter' || ev.key === ' ') {

@@ -343,7 +343,7 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | GET | `/jobs/{id}/log` | хвост лога задачи |
 | GET | `/api/jobs?status=` | используется в P3 (мониторинг) и будущей пагинации; на экране «Задачи» фильтр клиентский (2a) — чтобы `confirmClose` видел running-задачи при активном фильтре «Готово». При >10k задач — переключиться на серверную пагинацию + отдельный endpoint `active_count` для `confirmClose` |
 | GET | `/api/stream` | SSE: прогресс задач и события |
-| GET | `/api/matrix` | агрегат экрана «Сейчас решать» (шаг 2b): точки adoption × признак из `get_latest_observations`, 4 квадранта по `alive_weekly`, пороги, счётчики |
+| GET | `/api/matrix` | агрегат экрана «Сейчас решать» (шаг 2b): точки adoption × признак из `get_latest_observations`, 4 квадранта по `alive_weekly`, пороги, счётчики. С шага P4b каждая точка несёт `momentum_30d` (Δ adoption за 30 дней, `null` — мало данных), `momentum_color` (`green`/`red`/`gray` по порогу ±5%) и `momentum_samples` |
 | POST | `/api/packages/check` | прогон имён (adoption × признак) |
 | GET | `/api/packages/search?q=` | поиск по имени/описанию с пагинацией (шаг 3a): `q`, `limit` 1..200 (50), `offset`; ответ `{packages, total, limit, offset, q}`. Роут объявлен до `/api/packages/{name}` — иначе «search» стало бы именем пакета |
 | GET | `/api/packages/{name}` | карточка пакета с историей (события — через `Store.get_events(name=...)`) |
@@ -362,14 +362,23 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | GET | `/api/gap-score?names=a,b,c` | gap_score по списку пакетов (P5): `{names, scores: [{name, score, breakdown}]}` |
 | POST | `/api/niche/find` | Niche Finder (P5): тело `{q, filters, limit}`; 202 `{job_id}` — работа идёт задачей |
 | GET | `/api/niche/result/{job_id}` | результат Niche Finder: `{q, total, results: [{name, gap_score, momentum_30d, flag, adoption_week, jobs_total, patents_percent, funding_count}]}` |
-| GET | `/api/settings/api-keys` | список провайдеров + статус (P4). НЕ значения ключей: только `{provider, configured, last_check, last_check_ok, meta_public}` |
+| GET | `/api/settings/api-keys` | список провайдеров + статус (P4). НЕ значения ключей: только `{provider, configured, last_check, last_check_ok, meta_public, meta_fields}` + `load_error` всего ответа |
 | PUT | `/api/settings/api-keys` | сохранить ключ (P4): `{provider, value, meta?}` |
 | POST | `/api/settings/api-keys/{provider}/check` | тестовый запрос к провайдеру (P4): `{ok, detail}` |
 | DELETE | `/api/settings/api-keys/{provider}` | удалить ключ (P4) |
 | GET | `/api/health` | готовность бэкенда (для окна) |
+| GET | `/docs/{file}` | документация для окна: белый список из одного файла — `API-KEYS.md` (шаг P4b, §18.6). Остальные файлы `docs/` — 404: каталог целиком наружу не отдаётся, там внутренние заметки. Токен не требуется (это не `/api/*`), значений ключей в файле нет |
 
 Коллекторы сигналов (P4/P5):
 
+- `GET /api/settings/api-keys` возвращает поле `meta_fields` (список
+  несекретных полей, которые UI рендерит как `text`, а не `password`) и
+  `meta_public` (значения этих полей). Секреты в `meta_public` не попадают:
+  `meta` — публичный канал, `save` пускает туда только объявленные поля.
+  `load_error` — причина, по которой файл ключей не прочитался (`null`, если
+  всё в порядке); UI показывает её баннером, а не «тихо пусто» (шаг P4b).
+- `GET /docs/{file}` — whitelist: только `API-KEYS.md`. Остальные файлы
+  `docs/` — 404. Это защита от случайной отдачи внутренних документов.
 - `GET /api/signals/{package}` — только чтение из SQLite/кэша, сети нет.
 - `POST /api/signals/collect` — kind `signals.collect`, работа идёт задачей
   (подпроцесс), прогресс — через SSE, запись — в `signal_observations`.
@@ -730,6 +739,18 @@ Hermes не подключается к живому приложению — о
   те же прогоны давали 69–75 с полного при тех же 18–19 с быстрого: медленные
   тесты шага — не они, а `test_jobs_recover` и compat-L2 (gotcha 29).
 
+  P4 (в работе): полный ≤ 90 с, быстрый ≤ 45 с. Факт (P4a): 36.26 / 19.90.
+  P4b добавил momentum (3 часа + тесты): core/collectors/momentum.py,
+  /api/signals/{package}, поля точки матрицы, UI карточки и матрицы.
+  Все тесты шага in-memory, ни одного подпроцесса.
+
+  Факт P4b (20.10.2026, машина под нагрузкой — IDE, антивирус, живой сервер):
+  полный 49.15 с (cap 90), быстрый 29.07–34.67 с (cap 45). База перед шагом,
+  тот же прогон в worktree коммита P4a: 29.85 / 32.75 — то есть 47 новых
+  тестов не сдвинули тренд (вклад ~+1.5 с быстрого цикла: matrix 10, signals 4,
+  core momentum 28, шаблоны 5, ключи 6), а разница с 19.96 с в начале сессии —
+  загрузка машины в этот час, а не регрессия (AGENTS gotcha 29).
+
 Коллекторы сигналов (P4/P5):
 
 - Каждый коллектор — отдельный модуль с инжектируемым транспортом; тесты на
@@ -779,6 +800,8 @@ Hermes не подключается к живому приложению — о
 Итого до P4: **около 17 рабочих дней** (было 14 — добавлены API Keys Store,
 momentum, cross-ecosystem), из них половина — P0–P1, то есть не UI. До P5 — ещё
 13–14 дней, до P6 — ещё 3–5.
+
+P4a (закрыт 2026-10-20) — API Keys Store, 792 теста.
 
 ## 14. Риски и что с ними делать
 
@@ -870,8 +893,8 @@ momentum, cross-ecosystem), из них половина — P0–P1, то ес�
 {
   "version": 1,
   "providers": {
-    "adzuna": {"encrypted_value": "<base64>", "added_at": "...",
-                "meta": {"app_id": "..."}},
+    "adzuna": {"encrypted_value": "<base64: app_id + app_key>", "added_at": "...",
+                "meta": {}},
     "patentsview": {"encrypted_value": "<base64>", "added_at": "...", "meta": {}},
     "edgar": {"encrypted_value": "", "added_at": "...",
               "meta": {"user_agent": "GapAudit your-email@example.com"}},
@@ -888,6 +911,15 @@ momentum, cross-ecosystem), из них половина — P0–P1, то ес�
 **Шифрование:** P4 — base64 (не крипто, но не plaintext). P5 — опционально
 Fernet с ключом, производным от machine-id. Честно документировать: «ключи
 защищены правами файла, не шифрованием».
+
+**Что секретное, а что `meta`:** `meta` — несекретные поля
+(`yandex_wordstat.client_id`, `apify.actor_id`, `edgar.user_agent`). Всё, что
+является паролем или его половиной (`adzuna.app_id`, `adzuna.app_key`,
+`uspto.api_key`, `yandex_wordstat.token`, `google_trends.api_key`,
+`apify.api_token`) — в `encrypted_value`. Adzuna использует `app_id` + `app_key`
+как пару секретов: `app_id` не даёт доступа отдельно, но и открытым текстом не
+хранится. `meta` — публичный канал (возвращается в `GET` как `meta_public`),
+секреты туда не попадают.
 
 **Провайдеры и зачем:**
 
@@ -1064,7 +1096,7 @@ jobs/patents/funding/search_interest.
 
 | Этап | Что | Оценка |
 |---|---|---|
-| P4a | API Keys Store (файл, base64, UI, тесты) | 1 день |
+| P4a | API Keys Store (файл, base64, UI, тесты) — ЗАКРЫТ 2026-10-20 | 1 день |
 | P4b | Momentum (core + UI + matrix) | 3 часа |
 | P4c | Cross-ecosystem (mapping + UI) | 1–2 дня |
 | P5a | Jobs (Adzuna) | 2 дня |
