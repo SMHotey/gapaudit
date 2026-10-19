@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Сравнение — GapAudit{% endblock %}
+{% block content %}
+{# Экран «Сравнение» (шаг 3c, DEVPLAN §9 п. 6). Таблица «параметр x пакет»:
+   колонки — пакеты из GET /api/compare, строки — метрики одного замера.
+   Данные в разметку не впечатываются (gotcha 37): таблицу целиком рисует
+   compare.js, здесь только форма и пустое состояние. #}
+<section class="toolbar">
+  <h2>Сравнение</h2>
+  <div class="toolbar-right">
+    <button class="btn" id="export-csv" type="button">CSV</button>
+    <button class="btn" id="refresh" type="button">Обновить</button>
+  </div>
+</section>
+
+<section class="compare-form">
+  <form id="compare-form">
+    <label>Имена через запятую (2–3):
+      <input type="text" name="names" class="search-input"
+             placeholder="requests, flask, urllib3" required>
+    </label>
+    <button type="submit" class="btn btn-primary">Сравнить</button>
+  </form>
+  <div id="compare-msg" class="settings-msg" hidden></div>
+</section>
+
+<section>
+  <table class="table compare-table" id="compare-table">
+    <thead id="compare-head"><tr><th>Параметр</th></tr></thead>
+    <tbody id="compare-body">
+      <tr><td><div class="empty">Введите имена и нажмите «Сравнить»</div></td></tr>
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/compare.js"></script>
+{% endblock %}
