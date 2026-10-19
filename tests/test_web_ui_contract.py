@@ -1,4 +1,4 @@
-"""Контракт экранов (шаг 2a, расширен в 2b и 2c): защита от мёртвых веток.
+"""Контракт экранов (шаг 2a, расширен в 2b, 2c и 3a): защита от мёртвых веток.
 
 История: в шаге 3c ``POST /api/jobs/{id}/resume`` отвечал 501, и экран
 показывал «продолжение не реализовано». В 3d-b эндпоинт стал настоящим,
@@ -10,10 +10,12 @@
   или нет лога») описаны в шаблоне, а не только в JS: ``jobs.js`` читает их
   из ``window.GapAuditJobsConfig``;
 * у каждого живого экрана на месте его контейнеры (матрица — SVG, оверлей
-  карточки, таблица кандидатов, счётчик «ВОТ СЮДА»);
-* каждая живая ссылка навигации ведёт на существующий маршрут, а после 2c
-  живых пунктов три: «Задачи», «Сейчас решать», «Настройки»;
-* выключенные пункты (экраны P3) помечены ``aria-disabled`` и не имеют
+  карточки — один на все экраны в ``base.html``, таблица кандидатов, счётчик
+  «ВОТ СЮДА», поиск и пагинация «Пакетов», таймлайн «Мониторинга»);
+* каждая живая ссылка навигации ведёт на существующий маршрут, а после 3a
+  живых пунктов пять: «Задачи», «Сейчас решать», «Пакеты», «Мониторинг»,
+  «Настройки»;
+* выключенные пункты (экраны 3b/3c) помечены ``aria-disabled`` и не имеют
   ``href`` — «серая» ссылка без этих признаков читается как рабочая.
 """
 
@@ -31,18 +33,35 @@ RENDERED_FILES = (
     WEB / "views" / "base.html",
     WEB / "views" / "index.html",
     WEB / "views" / "matrix.html",
+    WEB / "views" / "monitor.html",
+    WEB / "views" / "packages.html",
     WEB / "views" / "settings.html",
     WEB / "static" / "app.js",
+    WEB / "static" / "card.js",
     WEB / "static" / "jobs.js",
     WEB / "static" / "matrix.js",
+    WEB / "static" / "monitor.js",
+    WEB / "static" / "packages.js",
     WEB / "static" / "settings.js",
     WEB / "static" / "sse.js",
     WEB / "static" / "style.css",
 )
 
 #: Пункты навигации: подпись -> маршрут. Остальные обязаны быть выключены.
-#: В 2c «Настройки» перестали быть выключенной заглушкой — экран появился.
-NAV_ROUTES = {"Задачи": "/", "Сейчас решать": "/matrix", "Настройки": "/settings"}
+#: 3a: «Пакеты» и «Мониторинг» стали живыми — экраны появились.
+NAV_ROUTES = {
+    "Задачи": "/",
+    "Сейчас решать": "/matrix",
+    "Пакеты": "/packages",
+    "Мониторинг": "/monitor",
+    "Настройки": "/settings",
+}
+
+#: Порядок пунктов в шапке — часть контракта: он совпадает с §9 DEVPLAN.
+NAV_ORDER = [
+    "Задачи", "Сейчас решать", "Пакеты", "Каталоги",
+    "Мониторинг", "Сравнение", "Настройки",
+]
 
 _ANCHOR = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.DOTALL)
 _HREF = re.compile(r'href="([^"]+)"')
@@ -79,7 +98,7 @@ def test_no_501_in_any_rendered_file(client: TestClient) -> None:
         assert path.exists(), path
         assert "501" not in path.read_text(encoding="utf-8"), path
 
-    for url in ("/", "/matrix", "/settings"):
+    for url in ("/", "/matrix", "/packages", "/monitor", "/settings"):
         response = client.get(url)
         assert response.status_code == 200, url
         assert "501" not in response.text, url
@@ -103,12 +122,12 @@ def test_matrix_page_keeps_its_containers(client: TestClient) -> None:
 
 
 def test_navigation_active_and_disabled_sets(client: TestClient) -> None:
-    """Живых пунктов ровно три, выключенных — три, и они не пересекаются.
+    """Живых пунктов ровно пять, выключенных — два, и они не пересекаются.
 
-    После 2c выключенными остались только экраны P3. Тест держит обе стороны:
-    забытая активация (пункт остался ``disabled``) и самовольная ссылка на
-    несуществующий маршрут (``href`` без страницы) — обе ломают навигацию
-    одинаково тихо.
+    После 3a выключенными остались только экраны 3b/3c. Тест держит обе
+    стороны: забытая активация (пункт остался ``disabled``) и самовольная
+    ссылка на несуществующий маршрут (``href`` без страницы) — обе ломают
+    навигацию одинаково тихо.
     """
     page = client.get("/").text
     anchors = [
@@ -121,8 +140,10 @@ def test_navigation_active_and_disabled_sets(client: TestClient) -> None:
         if label and label not in NAV_ROUTES and label != "GapAudit"
     ]
 
-    assert [label for _, label in nav] == ["Задачи", "Сейчас решать", "Настройки"]
-    assert [label for _, label in others] == ["Пакеты", "Каталоги", "Мониторинг"]
+    assert [label for _, label in nav] == [
+        "Задачи", "Сейчас решать", "Пакеты", "Мониторинг", "Настройки",
+    ]
+    assert [label for _, label in others] == ["Каталоги", "Сравнение"]
     for attrs, label in nav:
         href = _HREF.search(attrs)
         assert href is not None, f"пункт {label!r} без href"
@@ -168,5 +189,29 @@ def test_navigation_links_point_to_existing_routes(client: TestClient) -> None:
         assert "disabled" in attrs, label
         assert "href" not in attrs, label
 
-    for url in ("/", "/matrix", "/settings"):
+    for url in ("/", "/matrix", "/packages", "/monitor", "/settings"):
         assert client.get(url).text.count('class="active"') == 1, url
+
+
+def test_nav_order_matches_plan(client: TestClient) -> None:
+    """Порядок пунктов шапки — как в DEVPLAN §9 (это порядок вопросов, не алфавит)."""
+    page = client.get("/").text
+    labels = [
+        re.sub(r"<[^>]+>", "", label).strip()
+        for _attrs, label in _ANCHOR.findall(page)
+    ]
+    assert [label for label in labels if label in NAV_ORDER] == NAV_ORDER
+
+
+def test_card_overlay_exists_once_on_every_screen(client: TestClient) -> None:
+    """Оверлей карточки — один на страницу (шаг 3a: переехал в base.html).
+
+    Два элемента с ``id="card-overlay"`` (копия в base.html плюс копия в
+    шаблоне экрана) дали бы пустую вторую карточку: ``getElementById`` находит
+    первую, а вторая остаётся висеть поверх страницы.
+    """
+    for url in ("/", "/matrix", "/packages", "/monitor", "/settings"):
+        page = client.get(url).text
+        assert page.count('id="card-overlay"') == 1, url
+        assert page.count('id="card-content"') == 1, url
+        assert page.count("/static/card.js") == 1, url

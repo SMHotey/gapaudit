@@ -18,6 +18,11 @@
   ``GET /``, ``/static/*``        без токена
   =============================  ==========================
 
+  HTML-страницы (шаг 3a): запрос с валидным ``?token=`` получает cookie
+  ``gapaudit_token`` (HttpOnly, SameSite=Strict, сессионная) — дальше вся
+  навигация работает без query, потому что ни браузер, ни WebView2 не
+  переносят `?token=` при клике по ссылке (AGENTS gotcha 40).
+
   Query для мутаций запрещен намеренно: ``?token=`` понадобился только
   EventSource (SSE), он умеет читать GET-стрим и не умеет ставить заголовки;
   POST из ``<form>``/``curl`` с токеном в строке запроса — признак того, что
@@ -29,7 +34,9 @@
 * **эндпоинты** (§7): задачи ``/api/jobs*`` (создание, список, карточка,
   отмена, хвост лога, ``POST /resume`` — реальное продолжение
   ``interrupted``-задачи, шаг 3d-b), SSE ``/api/stream``, пакеты
-  ``/api/packages*``, матрица ``/api/matrix`` (шаг 2b — агрегат экрана
+  ``/api/packages*`` (шаг 3a: ``/search`` — поиск с пагинацией),
+  события ``/api/events`` (шаг 3a: таймлайн «Мониторинга»),
+  матрица ``/api/matrix`` (шаг 2b — агрегат экрана
   «Сейчас решать»), настройки ``GET/PUT /api/settings`` (шаг 2c —
   пороги и ключевые слова, запись в ``<data_dir>/settings.json``),
   расширенный ``/api/health``.
@@ -140,6 +147,18 @@ STREAM_PATH = "/api/stream"
 
 #: Хвост лога задачи, отдаваемый ``GET /api/jobs/{id}/log``.
 LOG_TAIL_BYTES = 10_000
+
+#: Границы пагинации ``GET /api/events`` (шаг 3a). Верх — не «на всякий
+#: случай»: экран листает по 50, а 500 — потолок для внешнего клиента,
+#: которому нужен разовый срез без постраничного обхода.
+EVENTS_LIMIT_DEFAULT = 100
+EVENTS_LIMIT_MAX = 500
+
+#: Границы пагинации ``GET /api/packages/search`` (шаг 3a). Ниже, чем у
+#: событий: строка пакета несёт summary, и ответ на 500 строк — это уже
+#: десятки килобайт на один поисковый запрос с клавиатуры.
+PACKAGES_SEARCH_LIMIT_DEFAULT = 50
+PACKAGES_SEARCH_LIMIT_MAX = 200
 
 #: Пауза SSE-heartbeat. Тесты опускают константу в 0.1 с вместо реальных 15.
 SSE_HEARTBEAT_INTERVAL = 15.0
@@ -295,7 +314,47 @@ class LocalGuardMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(
                     {"ok": False, "detail": f"forbidden: {problem}"}, status_code=403
                 )
-        return await call_next(request)
+            return await call_next(request)
+        return await self._page(request, call_next)
+
+    async def _page(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """HTML-страница: ``?token=`` валиден → ставим cookie сессии (шаг 3a).
+
+        Cookie — то, на чём живёт навигация: ссылки в шапке идут без ``?token=``,
+        и ни WebView2, ни браузер его при клике не переносят (AGENTS gotcha 40).
+        До 3a токен подставлялся из ``sessionStorage`` в JS; теперь сервер сам
+        подтверждает сессию, а JS остаётся запасным путём для заголовка.
+
+        Невалидный ``?token=`` — 403 прямо на странице: иначе окно открылось бы
+        пустым, а причина (старый токен после перезапуска) осталась бы в консоли.
+        Без ``?token=`` страница отдаётся как раньше (200) — её запросы к
+        ``/api/*`` сами получат 403.
+
+        ``/static/*`` не трогаем: статике токен не нужен, и 403 на неё сломал бы
+        страницу, уже отданную с просроченным ``?token=`` в адресе картинки.
+        """
+        if request.url.path.startswith("/static/"):
+            return await call_next(request)
+        supplied = request.query_params.get(TOKEN_QUERY)
+        if not supplied:
+            return await call_next(request)
+        if not secrets.compare_digest(supplied, self.token):
+            return JSONResponse(
+                {"ok": False, "detail": "forbidden: неверный токен сессии"},
+                status_code=403,
+            )
+        response = await call_next(request)
+        response.set_cookie(
+            TOKEN_COOKIE,
+            self.token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+            max_age=None,  # сессионная: живёт до закрытия окна
+        )
+        return response
 
 
 # --- здоровье ----------------------------------------------------------------
@@ -402,6 +461,38 @@ def _job_public(job: Job) -> dict[str, Any]:
         "finished_at": job.finished_at,
         "error": job.error,
     }
+
+
+def _query_int(
+    name: str,
+    raw: str | None,
+    *,
+    default: int,
+    low: int,
+    high: int | None = None,
+) -> int:
+    """Целочисленный query-параметр с проверкой границ; нарушение — 400.
+
+    Не ``Query(ge=…, le=…)``: FastAPI на такой параметр отвечает 422, а контракт
+    экранов (шаг 3a) ждёт 400 «плохой запрос» — ``limit=1000`` это не ошибка
+    схемы тела, а просьба больше, чем API готов отдать. Пустая строка
+    (``?limit=``) — как отсутствие параметра: ``URLSearchParams`` в JS не
+    различает «не задано» и «пусто».
+    """
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail=f"{name}: ожидалось целое, пришло {raw!r}"
+        ) from None
+    if value < low or (high is not None and value > high):
+        allowed = f"от {low} до {high}" if high is not None else f"не меньше {low}"
+        raise HTTPException(
+            status_code=400, detail=f"{name}: допустимо {allowed}, пришло {value}"
+        )
+    return value
 
 
 def _store(request: Request) -> Store:
@@ -833,6 +924,43 @@ def create_app(
             queue.unsubscribe(on_event)
             raise
 
+    # --- события «Мониторинг» (шаг 3a) ----------------------------------------
+
+    @application.get("/api/events")
+    async def get_events(request: Request) -> dict[str, Any]:
+        """Таймлайн событий: ``since``, ``kind``, ``name`` + пагинация.
+
+        ``total`` считается тем же набором фильтров, что и страница (общий
+        построитель WHERE в ``Store._events_where``): экран рисует «N событий»
+        и число страниц, и расхождение счётчика со списком заметно сразу.
+
+        Пустые значения фильтров — как отсутствие фильтра: ``monitor.js``
+        отправляет ``kind=`` и ``name=`` всегда, даже когда чипс «Все» активен.
+        """
+        params = request.query_params
+        limit = _query_int(
+            "limit",
+            params.get("limit"),
+            default=EVENTS_LIMIT_DEFAULT,
+            low=1,
+            high=EVENTS_LIMIT_MAX,
+        )
+        offset = _query_int("offset", params.get("offset"), default=0, low=0)
+        since = params.get("since") or None
+        kind = params.get("kind") or None
+        name = params.get("name") or None
+        store = _store(request)
+        events = store.get_events(
+            since=since, kind=kind, name=name, limit=limit, offset=offset
+        )
+        total = store.count_events_filtered(since=since, kind=kind, name=name)
+        return {
+            "events": events,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
     # --- пакеты ---------------------------------------------------------------
 
     @application.get("/api/packages")
@@ -847,23 +975,52 @@ def create_app(
         )
         return {"packages": packages}
 
+    @application.get("/api/packages/search")
+    async def search_packages(request: Request) -> dict[str, Any]:
+        """Поиск по имени и описанию с пагинацией (экран «Пакеты», шаг 3a).
+
+        Роут объявлен ДО ``/api/packages/{name}``: FastAPI сверяет маршруты в
+        порядке регистрации, и в обратном порядке слово ``search`` стало бы
+        именем пакета — экран получал бы 404 на каждый поисковый запрос.
+
+        Пустой ``q`` — все пакеты (пагинация без поиска), поэтому ``q``
+        возвращается эхом: экран показывает, по какой строке собран ответ.
+        """
+        params = request.query_params
+        q = (params.get("q") or "").strip()
+        limit = _query_int(
+            "limit",
+            params.get("limit"),
+            default=PACKAGES_SEARCH_LIMIT_DEFAULT,
+            low=1,
+            high=PACKAGES_SEARCH_LIMIT_MAX,
+        )
+        offset = _query_int("offset", params.get("offset"), default=0, low=0)
+        store = _store(request)
+        packages = store.search_packages(q, limit=limit, offset=offset)
+        total = store.count_packages_filtered(q)
+        return {
+            "packages": packages,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "q": q,
+        }
+
     @application.get("/api/packages/{name}")
     async def get_package(name: str, request: Request) -> dict[str, Any]:
         """Карточка: строка пакета, последнее наблюдение, его события.
 
-        Фильтр событий по имени делается здесь, а не в Store: у
-        ``Store.get_events`` нет параметра ``name``, и менять Store ради
-        одного фильтра (шаг 9) не нужно.
+        Фильтр событий по имени — в Store (``get_events(name=...)``, шаг 3a):
+        раньше здесь читались все события и отбирались в Python, из-за чего
+        у пакета с давней историей карточка показывала чужие 200 событий и
+        теряла свои (``LIMIT`` срабатывал до фильтра).
         """
         store = _store(request)
         package = store.get_package(name)
         if package is None:
             raise HTTPException(status_code=404, detail=f"пакет {name} не найден")
-        events = [
-            event
-            for event in store.get_events()
-            if str(event.get("name")) == name
-        ]
+        events = store.get_events(name=name)
         return {
             "package": package,
             "observations": store.get_latest_observations([name]),
@@ -1071,6 +1228,29 @@ def create_app(
         """
         return templates.TemplateResponse(
             request=request, name="matrix.html", context={"version": VERSION}
+        )
+
+    @application.get("/packages")
+    async def packages_screen(request: Request):
+        """Экран «Пакеты» (шаг 3a): поиск, таблица с пагинацией, карточка.
+
+        Как и прочие экраны, шаблон отдаёт только контейнеры: строки (имена,
+        summary) приходят из ``/api/packages/search`` и рисуются в ``packages.js``
+        — данные из задачи/PyPI не должны попадать в разметку (gotcha 37).
+        """
+        return templates.TemplateResponse(
+            request=request, name="packages.html", context={"version": VERSION}
+        )
+
+    @application.get("/monitor")
+    async def monitor_screen(request: Request):
+        """Экран «Мониторинг» (шаг 3a): таймлайн ``events`` с фильтрами.
+
+        Данные — ``GET /api/events``; сервер не впечатывает события в HTML по
+        той же причине, что и «Пакеты».
+        """
+        return templates.TemplateResponse(
+            request=request, name="monitor.html", context={"version": VERSION}
         )
 
     @application.get("/settings")

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Мониторинг — GapAudit{% endblock %}
+{% block content %}
+{# Экран «Мониторинг» (шаг 3a, DEVPLAN §9 п. 5). Таймлайн событий из таблицы
+   events с фильтрами по виду события и по имени пакета; данные — GET
+   /api/events, рисует monitor.js. Клик по имени открывает общую карточку
+   пакета (base.html + card.js).
+
+   Чипсы перечисляют виды событий из core/diffing.py: release, flag_appeared,
+   flag_removed, adoption_change, verdict_change, new, missing. #}
+<section class="toolbar">
+  <div class="chips" id="kind-filter">
+    <button class="chip active" data-kind="" type="button">Все</button>
+    <button class="chip" data-kind="release" type="button">Релизы</button>
+    <button class="chip" data-kind="flag_appeared" type="button">MCP появился</button>
+    <button class="chip" data-kind="flag_removed" type="button">MCP убран</button>
+    <button class="chip" data-kind="adoption_change" type="button">Δ adoption</button>
+    <button class="chip" data-kind="verdict_change" type="button">Вердикт</button>
+    <button class="chip" data-kind="new" type="button">Новые</button>
+    <button class="chip" data-kind="missing" type="button">Пропали</button>
+  </div>
+  <div class="toolbar-right">
+    <input type="search" id="monitor-name" placeholder="Фильтр по имени"
+           class="search-input">
+    <span id="monitor-counter" class="muted">—</span>
+    <button class="btn" id="refresh" type="button">Обновить</button>
+  </div>
+</section>
+<section>
+  <div class="timeline" id="monitor-timeline">
+    <div class="empty">Загрузка…</div>
+  </div>
+  <div class="pagination" id="monitor-pagination"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/monitor.js"></script>
+{% endblock %}

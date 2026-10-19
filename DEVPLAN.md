@@ -55,7 +55,9 @@ C:\Users\malik\gapaudit\
     store.py            Store: SQLite-схема, миграции, запись/чтение observations/events/
                         packages/cache. SqliteCache живёт здесь (не в core/).
     jobs.py             очередь, статусы, запуск подпроцессов, отмена, логи
-    web.py              FastAPI: эндпоинты + SSE
+    web.py              FastAPI: create_app, lifespan, миддлварь (token из header/cookie/query),
+                        _merge_saved_settings (settings.json при старте), все /api/* эндпоинты;
+                        settings_path — в app.state
   web/                  только представление, Python-кода здесь нет
     views/              Jinja2-шаблоны
     static/             CSS, минимальный JS, локальные Chart.js/htmx (без CDN)
@@ -136,11 +138,11 @@ shutdown-order). Resume / recover_interrupted / отмена / SSE /
 токен-миддлварь работают. Следующий — P2 (экраны).
 
 Статус P2: закрыт 2026-10-19. 626 тестов. Экраны «Задачи» (таблица,
-фильтр, отмена/продолжение, SSE) и «Сейчас решать» (матрица
-adoption x flag, карточка пакета с SVG mini-graph и timeline events,
-SSE-refresh) работают в WebView2. Экран «Настройки» (пороги, keywords,
-readonly-поля) + GET/PUT /api/settings. F5 = Обновить. Следующий — P3
-(Пакеты, Каталоги, Мониторинг, Сравнение, экспорт CSV/MD).
+фильтр отмены/продолжения, SSE), «Сейчас решать» (матрица adoption x flag,
+карточка пакета, SSE-refresh) и «Настройки» (пороги, keywords, readonly)
+работают в WebView2. GET/PUT /api/settings, F5 = Обновить, токен через
+sessionStorage (в 3a — HttpOnly cookie, gotcha 40). Следующий — P3
+(Пакеты, Мониторинг, Каталоги, Сравнение, экспорт CSV/MD).
 
 Критерий готовности шага 0: `python cli/check_predecessors.py gerenuk` выдаёт тот же текст, что
 старый скрипт; `core` импортируется без побочных эффектов (никаких сетевых вызовов на импорте);
@@ -235,11 +237,12 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | GET | `/api/stream` | SSE: прогресс задач и события |
 | GET | `/api/matrix` | агрегат экрана «Сейчас решать» (шаг 2b): точки adoption × признак из `get_latest_observations`, 4 квадранта по `alive_weekly`, пороги, счётчики |
 | POST | `/api/packages/check` | прогон имён (adoption × признак) |
-| GET | `/api/packages/{name}` | карточка пакета с историей |
+| GET | `/api/packages/search?q=` | поиск по имени/описанию с пагинацией (шаг 3a): `q`, `limit` 1..200 (50), `offset`; ответ `{packages, total, limit, offset, q}`. Роут объявлен до `/api/packages/{name}` — иначе «search» стало бы именем пакета |
+| GET | `/api/packages/{name}` | карточка пакета с историей (события — через `Store.get_events(name=...)`) |
 | GET/POST | `/api/catalogs` | список и сборка каталога по фразам |
 | GET | `/api/catalogs/{id}` | элементы каталога с фильтрами и пагинацией |
 | POST | `/api/catalogs/{id}/export` | выгрузка CSV/Markdown |
-| GET | `/api/monitor` | таймлайн событий (релизы, adoption, появился MCP) |
+| GET | `/api/events` | таймлайн событий (шаг 3a; в плане назывался `/api/monitor`): `since`, `kind`, `name`, `limit` 1..500 (100), `offset`; ответ `{events, total, limit, offset}`, `total` — по тем же фильтрам |
 | GET | `/api/compare` | сравнение 2–3 ниш по метрикам |
 | GET/PUT | `/api/settings` | пороги, ключевые слова, TTL, лимиты (шаг 2c). GET отдаёт `settings` + `readonly` (`data_dir`, `db_path`, `version`, `api_token_required`) + `editable_keys` (10 ключей); PUT валидирует тип/диапазон/инвариант `alive_weekly >= dead_weekly`, пишет `<data_dir>/settings.json` и возвращает `warnings`. `data_dir` и `language` через API не меняются — это readonly |
 | GET | `/api/health` | готовность бэкенда (для окна) |
@@ -472,6 +475,10 @@ Hermes не подключается к живому приложению — о
   шума). Под нагрузкой (PyCharm, Kaspersky, Docker Desktop, живое окно WebView2)
   те же прогоны давали 37.6 / 21.3–22.1 — это gotcha 29, а не регрессия.
   Все тесты шага in-memory, ни одного подпроцесса.
+
+  P2 (закрыт): полный ≤ 40 с, быстрый ≤ 20 с. Факт (2c): 27.58 / 11.09.
+  Мутационная проверка гейтов (alive>=dead, navigation) — оба краснеют при
+  поломке. Под нагрузкой — 37.6 / 21.3, gotcha 29.
 
 ## 12. Упаковка и запуск
 

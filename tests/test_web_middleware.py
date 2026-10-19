@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from app.web import TOKEN_QUERY
+from app.web import TOKEN_COOKIE, TOKEN_QUERY
 from tests.conftest import PORT, TOKEN, auth, cookie_header
 
 VALID_JOB = {"kind": "monitor.diff", "params": {"diff_from": "raw/predecessors.json"}}
@@ -171,6 +171,71 @@ def test_index_without_token_is_200(client: TestClient) -> None:
     assert "GapAudit" in response.text
     assert 'id="counter"' in response.text  # индикатор «N задач»
     assert 'id="refresh"' in response.text  # кнопка «Обновить»
+
+
+# --- cookie сессии: HTML-страница выдаёт, /api/* читает (шаг 3a) -------------
+
+
+def test_page_with_valid_token_sets_cookie(client: TestClient) -> None:
+    """Первый переход с ``?token=`` ставит HttpOnly-cookie сессии.
+
+    Без неё навигация мертва: ссылки в шапке идут без query, и после клика
+    токен было неоткуда взять — экран получал 403 (AGENTS gotcha 40).
+    """
+    response = client.get(f"/?{TOKEN_QUERY}={TOKEN}")
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"]
+    assert f"{TOKEN_COOKIE}={TOKEN}" in cookie
+    assert "HttpOnly" in cookie
+    assert "samesite=strict" in cookie.lower()
+    assert "path=/" in cookie.lower()
+
+
+def test_cookie_from_page_visit_authorizes_api_without_token(client: TestClient) -> None:
+    """После открытия страницы ``/api/*`` работает без header и без ``?token=``."""
+    assert client.get(f"/?{TOKEN_QUERY}={TOKEN}").status_code == 200
+
+    response = client.get("/api/jobs")
+
+    assert response.status_code == 200
+    assert client.cookies.get(TOKEN_COOKIE) == TOKEN
+
+
+def test_api_without_cookie_or_header_is_forbidden(client: TestClient) -> None:
+    """Без страницы cookie нет — запрос к API отбивается (а не «пускает всех»)."""
+    assert client.cookies.get(TOKEN_COOKIE) is None
+
+    response = client.get("/api/jobs")
+
+    assert response.status_code == 403
+    assert "токен" in response.json()["detail"]
+
+
+def test_page_with_invalid_token_is_403_without_cookie(client: TestClient) -> None:
+    """Невалидный ``?token=`` — ошибка на странице, а не пустой экран с 200."""
+    response = client.get(f"/?{TOKEN_QUERY}=wrong-token")
+
+    assert response.status_code == 403
+    assert "токен" in response.json()["detail"]
+    assert "set-cookie" not in response.headers
+    assert client.cookies.get(TOKEN_COOKIE) is None
+
+
+def test_page_without_token_is_200_and_sets_no_cookie(client: TestClient) -> None:
+    """Страница без ``?token=`` открывается как раньше — cookie не появляется."""
+    response = client.get("/matrix")
+
+    assert response.status_code == 200
+    assert "set-cookie" not in response.headers
+
+
+def test_health_never_sets_cookie(client: TestClient) -> None:
+    """``/api/health`` — единственный путь без токена: cookie там не выдают."""
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert "set-cookie" not in response.headers
 
 
 # --- Host / Origin -----------------------------------------------------------

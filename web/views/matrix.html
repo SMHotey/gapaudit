@@ -45,13 +45,9 @@
     </tbody>
   </table>
 </section>
-{# Карточка пакета: скрыта атрибутом hidden, клик по фону закрывает. #}
-<div id="card-overlay" class="modal-overlay" hidden>
-  <div class="card" id="card-content" role="dialog" aria-modal="true"></div>
-</div>
 {% endblock %}
 {% block scripts %}
-{# sse.js уже подключён в base.html (после app.js) — здесь только экранный
+{# sse.js и card.js уже подключены в base.html — здесь только экранный
    скрипт, иначе поток событий открывался бы дважды. #}
 <script src="/static/matrix.js"></script>
 {% endblock %}

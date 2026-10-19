@@ -410,3 +410,49 @@ a:hover { color: var(--accent-hover); }
 /* «Последний замер: … · Обновить» под матрицей (шаг 2c). */
 .last-measured { font-size: 12px; margin: -4px 0 var(--gap); }
 .last-measured[hidden] { display: none; }
+
+/* --- поиск, пагинация, таймлайн (шаг 3a) ---------------------------------- */
+
+.search-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: .85rem;
+  width: 240px;
+}
+.search-input::placeholder { color: var(--text-muted); }
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.timeline { display: flex; flex-direction: column; gap: 8px; }
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.timeline-item:last-child { border-bottom: none; }
+
+.timeline-time { color: var(--text-muted); font-size: 12px; }
+.timeline-body { font-size: 14px; }
+.timeline-kind { font-weight: 600; margin-right: 4px; }
+.timeline a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}

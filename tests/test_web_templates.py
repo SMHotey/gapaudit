@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 
 def test_index_renders_base_layout(client: TestClient) -> None:
-    """GET / — каркас: навигация, активный пункт «Задачи», отключённые — P3/2c."""
+    """GET / — каркас: навигация, активный пункт «Задачи», отключённые — P3."""
     response = client.get("/")
 
     assert response.status_code == 200
@@ -24,9 +24,12 @@ def test_index_renders_base_layout(client: TestClient) -> None:
     assert "Задачи" in response.text
     # «Сейчас решать» — рабочий пункт с шага 2b (раньше был disabled P2b)
     assert '<a href="/matrix">Сейчас решать</a>' in response.text
-    # будущие экраны: ссылка есть, но выключена (aria-disabled + title)
-    assert 'class="disabled" title="P3: экран пакетов"' in response.text
-    assert "Пакеты" in response.text
+    # 3a: «Пакеты» и «Мониторинг» стали живыми ссылками
+    assert '<a href="/packages">Пакеты</a>' in response.text
+    assert '<a href="/monitor">Мониторинг</a>' in response.text
+    # будущий экран: ссылка есть, но выключена (aria-disabled + title)
+    assert 'class="disabled" title="P3: каталоги"' in response.text
+    assert "Каталоги" in response.text
 
 
 def test_index_nav_marks_current_page(client: TestClient) -> None:
@@ -110,12 +113,13 @@ def test_matrix_screen_renders_containers(client: TestClient) -> None:
 
 
 def test_matrix_js_is_served(client: TestClient) -> None:
-    """Экранный скрипт ходит в /api/matrix, карточку и умеет SSE."""
+    """Экранный скрипт ходит в /api/matrix, карточку отдаёт card.js, умеет SSE."""
     response = client.get("/static/matrix.js")
 
     assert response.status_code == 200
     assert "/api/matrix" in response.text
-    assert "/api/packages/" in response.text
+    # карточка с шага 3a живёт в общем модуле: матрица только зовёт его
+    assert "GapAuditCard.open" in response.text
     assert "GapAuditSSE.subscribe" in response.text
     # логарифмическая ось и порог из ответа, а не зашитые в скрипт числа
     assert "Math.log10" in response.text
@@ -181,9 +185,71 @@ def test_f5_refresh_hook_is_wired_on_every_screen(client: TestClient) -> None:
     assert "location.reload()" in app_js
 
     for script_path in ("/static/jobs.js", "/static/matrix.js",
-                        "/static/settings.js"):
+                        "/static/settings.js", "/static/packages.js",
+                        "/static/monitor.js"):
         script = client.get(script_path).text
         assert "window.__gapauditRefresh = load" in script, script_path
+
+
+# --- экраны «Пакеты» и «Мониторинг» (шаг 3a) --------------------------------
+
+
+def test_packages_screen_renders_containers(client: TestClient) -> None:
+    """GET /packages: поиск, тело таблицы, пагинация, скрипт экрана."""
+    response = client.get("/packages")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<a href="/packages" class="active">Пакеты</a>' in response.text
+    assert response.text.count('class="active"') == 1
+    for element_id in ("packages-q", "packages-body", "packages-pagination",
+                       "packages-counter", "refresh"):
+        assert f'id="{element_id}"' in response.text, element_id
+    assert "/static/packages.js" in response.text
+    # card.js общий и подключён в base.html — второй раз его быть не должно
+    assert response.text.count("/static/card.js") == 1
+
+
+def test_monitor_screen_renders_containers(client: TestClient) -> None:
+    """GET /monitor: чипсы видов событий, таймлайн, пагинация, скрипт экрана."""
+    response = client.get("/monitor")
+
+    assert response.status_code == 200
+    assert '<a href="/monitor" class="active">Мониторинг</a>' in response.text
+    assert response.text.count('class="active"') == 1  # только пункт навигации
+    for element_id in ("kind-filter", "monitor-timeline", "monitor-pagination",
+                       "monitor-name", "monitor-counter"):
+        assert f'id="{element_id}"' in response.text, element_id
+    for kind in ("release", "flag_appeared", "flag_removed", "adoption_change",
+                 "verdict_change", "new", "missing"):
+        assert f'data-kind="{kind}"' in response.text, kind
+    assert "/static/monitor.js" in response.text
+
+
+def test_card_js_is_served_and_exports_module(client: TestClient) -> None:
+    """Общий модуль карточки: оверлей берётся из base.html, API — три метода."""
+    response = client.get("/static/card.js")
+
+    assert response.status_code == 200
+    assert "GapAuditCard" in response.text
+    assert "card-overlay" in response.text
+    assert "/api/packages/" in response.text
+    # данные — только через textContent (gotcha 37): innerHTML для них нет
+    assert "innerHTML" in response.text  # очистка контейнера, не данные
+    assert "createTextNode" in response.text or "textContent" in response.text
+
+
+def test_packages_and_monitor_js_are_served(client: TestClient) -> None:
+    """Экранные скрипты ходят в свои эндпоинты и открывают общую карточку."""
+    packages = client.get("/static/packages.js")
+    monitor = client.get("/static/monitor.js")
+
+    assert packages.status_code == 200
+    assert "/api/packages/search" in packages.text
+    assert "GapAuditCard.open" in packages.text
+    assert monitor.status_code == 200
+    assert "/api/events" in monitor.text
+    assert "GapAuditCard.open" in monitor.text
 
 
 def test_token_survives_navigation_between_screens(client: TestClient) -> None:

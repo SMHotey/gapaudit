@@ -88,6 +88,15 @@ def utcnow_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _like_escape(text: str) -> str:
+    """Экранировать ``%``/``_``/``\\`` для ``LIKE … ESCAPE '\\'``.
+
+    Поиск на экране «Пакеты» — по подстроке; без экранирования запрос «100%»
+    вернул бы всё, а «a_b» совпало бы с «axb».
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @contextmanager
 def _transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """Явная транзакция: ``BEGIN`` … ``COMMIT``, при исключении — ``ROLLBACK``.
@@ -566,34 +575,71 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    @staticmethod
+    def _events_where(
+        since: str | None, kind: str | None, name: str | None
+    ) -> tuple[str, list[Any]]:
+        """WHERE для ``events`` по трём фильтрам — один текст на выборку и счёт.
+
+        Общий построитель, а не две копии: ``GET /api/events`` отдаёт страницу и
+        ``total``, и если фильтры разойдутся, счётчик начнёт врать («3 события»,
+        а в списке 2). Замок не берёт: вызывается уже под ``self._lock``.
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if since is not None:
+            where.append("at >= ?")
+            params.append(since)
+        if kind is not None:
+            where.append("kind = ?")
+            params.append(kind)
+        if name is not None:
+            where.append("name = ?")
+            params.append(name)
+        return (" WHERE " + " AND ".join(where)) if where else "", params
+
     def get_events(
         self,
         *,
         since: str | None = None,
         kind: str | None = None,
+        name: str | None = None,
         limit: int = 200,
+        offset: int = 0,
     ) -> list[dict]:
         """События для экрана «Мониторинг»: по убыванию ``at``, с фильтрами.
 
-        ``since`` — ISO-строка включается в выборку (``at >= since``).
+        ``since`` — ISO-строка включается в выборку (``at >= since``);
+        ``name`` — точное имя пакета (шаг 3a: раньше фильтр по имени жил в
+        ``app/web.py`` и читал все события ради карточки одного пакета).
+        ``offset`` — пагинация экрана «Мониторинг» (порядок ``at DESC, id DESC``
+        стабилен между страницами).
         """
         with self._lock:
             conn = self._require_conn()
-            where: list[str] = []
-            params: list[Any] = []
-            if since is not None:
-                where.append("at >= ?")
-                params.append(since)
-            if kind is not None:
-                where.append("kind = ?")
-                params.append(kind)
-            sql = f"SELECT {_EVENT_COLUMNS} FROM events"
-            if where:
-                sql += " WHERE " + " AND ".join(where)
-            sql += " ORDER BY at DESC, id DESC LIMIT ?"
-            params.append(limit)
+            clause, params = self._events_where(since, kind, name)
+            sql = (
+                f"SELECT {_EVENT_COLUMNS} FROM events{clause} "
+                "ORDER BY at DESC, id DESC LIMIT ? OFFSET ?"
+            )
+            params.extend([limit, offset])
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
+
+    def count_events_filtered(
+        self,
+        *,
+        since: str | None = None,
+        kind: str | None = None,
+        name: str | None = None,
+    ) -> int:
+        """Сколько событий под теми же фильтрами — ``total`` для пагинации."""
+        with self._lock:
+            conn = self._require_conn()
+            clause, params = self._events_where(since, kind, name)
+            return int(
+                conn.execute(f"SELECT COUNT(*) FROM events{clause}", params).fetchone()[0]
+            )
 
     def get_package(self, name: str) -> dict | None:
         """Одна строка ``packages`` или None, если пакета нет."""
@@ -620,6 +666,60 @@ class Store:
             sql += " ORDER BY last_seen DESC LIMIT ?"
             rows = conn.execute(sql, (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def _packages_where(q: str) -> tuple[str, list[Any]]:
+        """WHERE поиска по имени/описанию — один текст на страницу и счёт.
+
+        Пустой ``q`` — пустое условие (все пакеты). Подстрока сравнивается
+        через ``LOWER`` с обеих сторон: регистр должен игнорироваться и для
+        имени, и для summary, а не только для ASCII-имён.
+        """
+        text = (q or "").strip()
+        if not text:
+            return "", []
+        pattern = "%" + _like_escape(text.lower()) + "%"
+        return (
+            " WHERE (LOWER(name) LIKE ? ESCAPE '\\'"
+            " OR LOWER(COALESCE(summary, '')) LIKE ? ESCAPE '\\')",
+            [pattern, pattern],
+        )
+
+    def search_packages(
+        self, q: str = "", *, limit: int = 50, offset: int = 0
+    ) -> list[dict]:
+        """Поиск пакетов по имени и описанию (экран «Пакеты», шаг 3a).
+
+        ``q`` — подстрока без учёта регистра (``LOWER`` с обеих сторон: в SQLite
+        ``LIKE`` регистронезависим только для ASCII). Пустой ``q`` — все пакеты,
+        поэтому пагинация работает и без поиска. Порядок — ``last_seen DESC,
+        name``: он же у ``list_packages``, и ``offset`` даёт стабильные страницы.
+
+        Символы ``%``/``_`` в запросе экранируются: без этого строка «100%»
+        нашла бы всё подряд, а поиск по подстроке молча превратился бы в
+        поиск по шаблону.
+        """
+        with self._lock:
+            conn = self._require_conn()
+            clause, params = self._packages_where(q)
+            sql = (
+                "SELECT name, source, summary, last_seen FROM packages"
+                f"{clause} ORDER BY last_seen DESC, name LIMIT ? OFFSET ?"
+            )
+            params.extend([limit, offset])
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_packages_filtered(self, q: str = "") -> int:
+        """Сколько пакетов под тем же поиском — ``total`` для пагинации."""
+        with self._lock:
+            conn = self._require_conn()
+            clause, params = self._packages_where(q)
+            return int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM packages{clause}", params
+                ).fetchone()[0]
+            )
 
     def count_observations(self) -> int:
         """Сколько строк в observations."""

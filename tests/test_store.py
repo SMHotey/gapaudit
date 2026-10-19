@@ -398,6 +398,63 @@ def test_events_kind_filter(store: Store) -> None:
     assert sorted(row["name"] for row in releases) == ["a", "c"]
 
 
+# --- фильтр по имени и пагинация событий (шаг 3a) ---------------------------
+
+
+def _seed_events(store: Store) -> None:
+    """Три события: два релиза requests, один новый flask (общая база для тестов)."""
+    store.record_events(
+        [
+            {"kind": "release", "name": "requests", "detail": "2.32.0"},
+            {"kind": "release", "name": "requests", "detail": "2.32.1"},
+            {"kind": "new", "name": "flask", "detail": None},
+        ],
+        run_id="r",
+        at="2026-10-19T10:00:00Z",
+    )
+
+
+def test_events_name_filter(store: Store) -> None:
+    """``name`` отбирает события одного пакета (фильтр живёт в SQL, шаг 3a)."""
+    _seed_events(store)
+
+    names = [row["name"] for row in store.get_events(name="requests")]
+
+    assert names == ["requests", "requests"]
+    assert store.get_events(name="нет-такого") == []
+
+
+def test_events_kind_and_name_filters_combine(store: Store) -> None:
+    """Два фильтра складываются через AND, а не перекрывают друг друга."""
+    _seed_events(store)
+
+    both = store.get_events(kind="release", name="requests")
+    mismatch = store.get_events(kind="new", name="requests")
+
+    assert [row["detail"] for row in both] == ["2.32.1", "2.32.0"]
+    assert mismatch == []
+
+
+def test_events_offset_paginates_without_repeats(store: Store) -> None:
+    """``offset`` листает по ``at DESC, id DESC``: страницы не пересекаются."""
+    for index in range(12):
+        store.record_event(
+            run_id="r",
+            kind="release",
+            name=f"p{index:02d}",
+            at=f"2026-10-19T10:{index:02d}:00Z",
+        )
+
+    first = [row["name"] for row in store.get_events(limit=5, offset=0)]
+    second = [row["name"] for row in store.get_events(limit=5, offset=5)]
+    last = [row["name"] for row in store.get_events(limit=5, offset=10)]
+
+    assert first == ["p11", "p10", "p09", "p08", "p07"]
+    assert len(second) == 5 and not set(first) & set(second)
+    assert len(last) == 2
+    assert store.get_events() == store.get_events(limit=200, offset=0)
+
+
 def test_get_package_returns_row_or_none(store: Store) -> None:
     assert store.get_package("requests") is None
     store.record_observation(observation(), run_id="r", measured_at="2026-10-19T10:00:00Z")
@@ -425,6 +482,31 @@ def test_list_packages_order_limit_and_filter(store: Store) -> None:
     filtered = [row["name"] for row in store.list_packages(only_with_observations=True)]
     assert "lonely" not in filtered
     assert sorted(filtered) == ["p-mid", "p-new", "p-old"]
+
+
+def test_search_packages_substring_and_escaping(store: Store) -> None:
+    """Поиск по подстроке в name и summary; ``%`` — символ, а не шаблон."""
+    for name in ("requests", "urllib3", "flask"):
+        store.record_observation(
+            observation(name, summary=f"description of {name}"),
+            run_id="r",
+            measured_at="2026-10-19T10:00:00Z",
+        )
+    store.record_observation(
+        observation("percent", summary="shares 100% of the market"),
+        run_id="r",
+        measured_at="2026-10-19T10:00:00Z",
+    )
+
+    assert len(store.search_packages("")) == 4
+    assert store.count_packages_filtered("") == 4
+    assert [row["name"] for row in store.search_packages("REQ")] == ["requests"]
+    # "lib" есть только в summary у urllib3
+    assert [row["name"] for row in store.search_packages("lib")] == ["urllib3"]
+    # «%» — буква: без экранирования LIKE вернул бы все четыре пакета
+    assert [row["name"] for row in store.search_packages("%")] == ["percent"]
+    assert store.count_packages_filtered("%") == 1
+    assert store.search_packages("zzz") == []
 
 
 def test_counts(store: Store) -> None:

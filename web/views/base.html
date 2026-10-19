@@ -12,12 +12,12 @@
     <nav class="app-nav">
       <a href="/"{% if path == '/' %} class="active"{% endif %}>Задачи</a>
       <a href="/matrix"{% if path == '/matrix' %} class="active"{% endif %}>Сейчас решать</a>
-      <a class="disabled" title="P3: экран пакетов"
-         aria-disabled="true">Пакеты</a>
+      <a href="/packages"{% if path == '/packages' %} class="active"{% endif %}>Пакеты</a>
       <a class="disabled" title="P3: каталоги"
          aria-disabled="true">Каталоги</a>
-      <a class="disabled" title="P3: мониторинг"
-         aria-disabled="true">Мониторинг</a>
+      <a href="/monitor"{% if path == '/monitor' %} class="active"{% endif %}>Мониторинг</a>
+      <a class="disabled" title="P3: сравнение"
+         aria-disabled="true">Сравнение</a>
       <a href="/settings"{% if path == '/settings' %} class="active"{% endif %}>Настройки</a>
     </nav>
     <div class="health" id="health">
@@ -34,11 +34,21 @@
     <span class="spacer"></span>
     <span class="data-dir" id="data-dir" title="каталог данных">—</span>
   </footer>
+  {# Карточка пакета (шаг 3a): оверлей один на все экраны — его наполняет
+     /static/card.js (window.GapAuditCard). Экраны «Сейчас решать», «Пакеты»
+     и «Мониторинг» открывают карточку одним и тем же вызовом, поэтому
+     дублировать разметку в шаблонах нельзя: два оверлея с одним id дали бы
+     пустой второй. #}
+  <div id="card-overlay" class="modal-overlay" hidden>
+    <div class="card" id="card-content" role="dialog" aria-modal="true"></div>
+  </div>
   <script src="/static/app.js"></script>
   {# sse.js после app.js: модуль читает window.GapAudit.token, который
      выставляет app.js. Экранные скрипты живут в block scripts и сами
      подписываются на события через window.GapAuditSSE. #}
   <script src="/static/sse.js"></script>
+  {# card.js — тоже после app.js: модуль берёт window.GapAudit.api при загрузке. #}
+  <script src="/static/card.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

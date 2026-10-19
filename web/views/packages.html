@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Пакеты — GapAudit{% endblock %}
+{% block content %}
+{# Экран «Пакеты» (шаг 3a, DEVPLAN §9 п. 3). Поиск по имени и описанию,
+   таблица с пагинацией, клик «Карточка» — общий оверлей из base.html
+   (window.GapAuditCard, /static/card.js).
+
+   Строки рисует packages.js из GET /api/packages/search: имена и summary —
+   данные из задачи/PyPI, в разметку они не попадают (AGENTS gotcha 37). #}
+<section class="toolbar">
+  <input type="search" id="packages-q" placeholder="Поиск по имени или описанию"
+         class="search-input" autofocus>
+  <div class="toolbar-right">
+    <span id="packages-counter" class="muted">—</span>
+    <button class="btn" id="refresh" type="button">Обновить</button>
+  </div>
+</section>
+<section>
+  <table class="table" id="packages-table">
+    <thead><tr>
+      <th>Имя</th><th>Источник</th><th>Описание</th>
+      <th>Последний замер</th><th></th>
+    </tr></thead>
+    <tbody id="packages-body">
+      <tr><td colspan="5"><div class="empty">Загрузка…</div></td></tr>
+    </tbody>
+  </table>
+  <div class="pagination" id="packages-pagination"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/packages.js"></script>
+{% endblock %}

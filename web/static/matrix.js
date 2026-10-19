@@ -2,7 +2,8 @@
 
    Данные — GET /api/matrix (точки, квадранты, пороги, счётчики). Матрица
    рисуется в SVG «руками»: логарифмическая ось X (недельные скачивания),
-   две строки по признаку ниши. Клик по точке — карточка пакета.
+   две строки по признаку ниши. Клик по точке — карточка пакета: с шага 3a
+   её рисует общий модуль card.js (window.GapAuditCard), а не этот файл.
 
    Правило экрана (AGENTS gotcha 37): имена пакетов, вердикты и summary —
    данные из задачи/PyPI. Они попадают в DOM только через textContent /
@@ -149,11 +150,11 @@
       const title = svgEl('title', {}, circle);
       title.textContent = point.name + ' — ' + fmtNum(point.adoption_week) +
         '/нед, ' + (point.flag ? 'MCP есть' : 'MCP нет');
-      circle.addEventListener('click', () => openCard(point.name));
+      circle.addEventListener('click', () => window.GapAuditCard.open(point.name));
       circle.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter' || ev.key === ' ') {
           ev.preventDefault();
-          openCard(point.name);
+          window.GapAuditCard.open(point.name);
         }
       });
     });
@@ -221,7 +222,7 @@
       btn.type = 'button';
       btn.className = 'btn';
       btn.textContent = 'Карточка';
-      btn.addEventListener('click', () => openCard(point.name));
+      btn.addEventListener('click', () => window.GapAuditCard.open(point.name));
       actionTd.appendChild(btn);
       tr.appendChild(actionTd);
 
@@ -277,178 +278,10 @@
     }
   }
 
-  /* --- карточка пакета ---------------------------------------------------- */
-
-  function row(label, value, parent) {
-    const labelEl = document.createElement('div');
-    labelEl.className = 'muted';
-    labelEl.textContent = label;
-    const valueEl = document.createElement('div');
-    valueEl.textContent = value || '—';
-    parent.appendChild(labelEl);
-    parent.appendChild(valueEl);
-  }
-
-  /* Мини-график adoption по истории. История приходит новыми сверху —
-     для линии разворачиваем: время слева направо. */
-  function miniGraph(observations) {
-    const wrap = document.createElement('div');
-    wrap.className = 'card-graph';
-    const points = observations.slice().reverse();
-    if (points.length < 2) {
-      wrap.className = 'card-graph muted';
-      wrap.textContent = 'История adoption: ' +
-        points.length + ' замер(а) — линия появится со второго.';
-      return wrap;
-    }
-    const weeks = points.map((p) => p.adoption_week || 0);
-    const maxW = Math.max.apply(null, weeks.concat([1]));
-    const n = points.length;
-    const coords = points.map((p, i) => {
-      const x = 20 + i * (360 / Math.max(1, n - 1));
-      const y = 100 - ((p.adoption_week || 0) / maxW) * 80;
-      return x.toFixed(1) + ',' + y.toFixed(1);
-    }).join(' ');
-
-    const svg = document.createElementNS(SVGNS, 'svg');
-    svg.setAttribute('viewBox', '0 0 400 120');
-    svg.setAttribute('class', 'mini-graph');
-    svgEl('polyline', {
-      points: coords, fill: 'none', stroke: '#4aa3ff', 'stroke-width': '2',
-    }, svg);
-    svgText(400, 14, fmtNum(maxW) + '/нед', {
-      'text-anchor': 'end', fill: '#8b98a5', 'font-size': '11',
-    }, svg);
-    wrap.appendChild(svg);
-    return wrap;
-  }
-
-  function renderEvents(events, card) {
-    const list = document.createElement('ul');
-    list.className = 'card-events';
-    if (!events.length) {
-      const item = document.createElement('li');
-      item.className = 'muted';
-      item.textContent = 'Событий нет';
-      list.appendChild(item);
-    } else {
-      events.slice(0, 10).forEach((event) => {
-        const item = document.createElement('li');
-        item.textContent = [event.at || '', event.kind || '',
-                            event.detail || event.name || ''].join(' · ');
-        list.appendChild(item);
-      });
-    }
-    card.appendChild(list);
-  }
-
-  function closeCard() {
-    $('card-overlay').hidden = true;
-    $('card-content').innerHTML = '';
-  }
-
-  function renderCard(name, card_data, history) {
-    const pkg = card_data.package || {};
-    const events = card_data.events || [];
-    const card = $('card-content');
-    card.innerHTML = '';
-
-    const title = document.createElement('h2');
-    title.textContent = name;
-    card.appendChild(title);
-
-    const latest = (card_data.observations || [])[0] || {};
-    const info = document.createElement('div');
-    info.className = 'card-info';
-    /* Версия и дата релиза живут в observations, а не в packages (схема §5):
-       в строке пакета только source/url/summary. Поэтому берём из последнего
-       замера и падаем на строку пакета, если замера нет. */
-    row('источник', pkg.source || latest.source, info);
-    row('версия', latest.version, info);
-    row('релиз', latest.released_at, info);
-    row('summary', pkg.summary, info);
-    row('url', pkg.url, info);
-    card.appendChild(info);
-
-    const stats = document.createElement('div');
-    stats.className = 'card-info';
-    row('adoption/нед', latest.adoption_week != null
-      ? fmtNum(latest.adoption_week) : '—', stats);
-    row('adoption/мес', latest.adoption_month != null
-      ? fmtNum(latest.adoption_month) : '—', stats);
-    row('вердикт', latest.verdict, stats);
-    /* В схеме две колонки (DEVPLAN §5): flag — метка ключевого слова (TEXT),
-       flag_value — 0/1. Признак читаем из flag_value: bool("MCP") истинно
-       всегда, и «MCP нет» на экране стало бы «есть». */
-    row('признак ниши', latest.flag_value ? ('есть (' + (latest.flag || '') + ')') : 'нет', stats);
-    row('замер', latest.measured_at, stats);
-    card.appendChild(stats);
-
-    card.appendChild(miniGraph(history));
-
-    const eventsTitle = document.createElement('div');
-    eventsTitle.className = 'muted';
-    eventsTitle.textContent = 'События';
-    card.appendChild(eventsTitle);
-    renderEvents(events, card);
-
-    const actions = document.createElement('div');
-    actions.className = 'card-actions';
-    const verifyBtn = document.createElement('button');
-    verifyBtn.type = 'button';
-    verifyBtn.className = 'btn btn-primary';
-    verifyBtn.textContent = 'Проверить по GitHub';
-    verifyBtn.addEventListener('click', async () => {
-      verifyBtn.disabled = true;
-      verifyBtn.textContent = 'Ставлю задачу…';
-      try {
-        await api('POST', '/api/jobs', {
-          kind: 'github.verify',
-          params: { targets: [name], keyword: 'mcp' },
-        });
-        verifyBtn.textContent = 'Задача создана';
-      } catch (e) {
-        verifyBtn.textContent = 'Проверить по GitHub';
-        verifyBtn.disabled = false;
-        window.alert('Не удалось поставить задачу: ' + e.message);
-      }
-    });
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'btn';
-    closeBtn.textContent = 'Закрыть';
-    closeBtn.addEventListener('click', closeCard);
-    actions.appendChild(verifyBtn);
-    actions.appendChild(closeBtn);
-    card.appendChild(actions);
-  }
-
-  async function openCard(name) {
-    const card = $('card-content');
-    card.innerHTML = '';
-    const loading = document.createElement('div');
-    loading.className = 'muted';
-    loading.textContent = 'Загружаю карточку…';
-    card.appendChild(loading);
-    $('card-overlay').hidden = false;
-    try {
-      const encoded = encodeURIComponent(name);
-      /* История отдельным запросом: /api/packages/{name} отдаёт только
-         последнее наблюдение (карточка «Пакеты» P3), а мини-графику нужен
-         ряд из /history. Оба эндпоинта уже есть с шага 2 — Store не трогаем. */
-      const [cardData, historyData] = await Promise.all([
-        api('GET', '/api/packages/' + encoded),
-        api('GET', '/api/packages/' + encoded + '/history?limit=50'),
-      ]);
-      renderCard(name, cardData, (historyData && historyData.observations) || []);
-    } catch (e) {
-      card.innerHTML = '';
-      const error = document.createElement('div');
-      error.className = 'empty';
-      error.textContent = 'Не удалось загрузить карточку: ' + e.message;
-      card.appendChild(error);
-    }
-  }
+  /* --- карточка пакета ----------------------------------------------------
+     Переехала в card.js (шаг 3a): тот же оверлей и те же данные нужны экранам
+     «Пакеты» и «Мониторинг». Здесь остаётся только вызов
+     window.GapAuditCard.open(name) — разметку, запросы и ошибки держит модуль. */
 
   document.addEventListener('DOMContentLoaded', function () {
     /* F5 = «Обновить»: app.js перехватывает клавишу и зовёт эту функцию
@@ -463,12 +296,9 @@
       load();
     });
 
-    $('card-overlay').addEventListener('click', function (ev) {
-      if (ev.target === $('card-overlay')) closeCard();
-    });
-    document.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Escape' && !$('card-overlay').hidden) closeCard();
-    });
+    /* Оверлей карточки и Escape — в card.js (шаг 3a): модуль один на все
+       экраны, и навешивать обработчики здесь значило бы открывать карточку
+       двумя путями с разным поведением по Escape. */
 
     if (window.GapAuditSSE) {
       window.GapAuditSSE.subscribe(function (event) {
