@@ -6,8 +6,11 @@
 2. генерируем сессионный токен;
 3. поднимаем uvicorn в демон-потоке, приложение видит токен и порт;
 4. ждём готовности ``/api/health`` (до 10 секунд) — иначе будет белый экран;
-5. открываем окно pywebview (или системный браузер в режиме ``--browser``);
-6. по закрытию окна останавливаем сервер и выходим с кодом 0.
+5. сразу после готовности health пишем токен в ``<data_dir>/session.token``
+   (права 0600) — так его находят внешние клиенты (DEVPLAN §7, шаг 3b);
+6. открываем окно pywebview (или системный браузер в режиме ``--browser``);
+7. по закрытию окна удаляем ``session.token``, останавливаем сервер и выходим
+   с кодом 0 — токен живёт ровно столько, сколько живёт приложение.
 
 ``webview.start()`` вызывается только из ``main()`` и только в главном потоке —
 pywebview этого требует, поэтому бэкенд обязан жить в демоне.
@@ -22,18 +25,22 @@ pywebview этого требует, поэтому бэкенд обязан ж
 from __future__ import annotations
 
 import argparse
+import os
 import secrets
 import socket
 import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 import httpx
 import uvicorn
 import webview
 
+from app.session import remove_token, write_token
 from app.web import VERSION, create_app
+from core.settings import Settings, from_env, resolve_data_dir
 
 HOST = "127.0.0.1"
 WINDOW_TITLE = "GapAudit"
@@ -71,6 +78,20 @@ def start_server(server: uvicorn.Server) -> threading.Thread:
     thread = threading.Thread(target=server.run, name="gapaudit-uvicorn", daemon=True)
     thread.start()
     return thread
+
+
+def data_dir_for(settings: Settings | None = None) -> Path:
+    """Каталог данных текущего запуска.
+
+    Настройки берутся из окружения (``GAPAUDIT_DATA_DIR`` и др.), а не
+    голым ``Settings()``: иначе явно заданный каталог данных пользователем
+    был бы проигнорирован и перезаписан значением по умолчанию.
+    """
+    resolved = resolve_data_dir(settings if settings is not None else from_env())
+    # один каталог на весь шаг: его же читает lifespan приложения
+    # (``GAPAUDIT_DATA_DIR`` → ``core.settings.from_env``) и ``app/session.py``
+    os.environ["GAPAUDIT_DATA_DIR"] = str(resolved)
+    return resolved
 
 
 def health_url(port: int) -> str:
@@ -113,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
 
     token = secrets.token_urlsafe(32)
     port = args.port or free_port()
+    data_dir = data_dir_for()
     app = create_app(token=token, port=port)
     server = make_server(app, port, args.dev)
     thread = start_server(server)
@@ -129,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
         stop_server(server, thread)
         return 1
 
+    # внешний клиент (Cursor/Claude) находит токен только здесь — см. шаг 3b
+    token_path = write_token(data_dir, token)
     print(f"[gapaudit] бэкенд готов: {url}")
+    print(f"[gapaudit] токен для внешних клиентов: {token_path}")
 
     if args.browser:
         webbrowser.open(url)
@@ -152,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         webview.start(debug=args.dev)
 
+    # окно закрыто: токен на диске больше не должен вести к живому бэкенду
+    remove_token(data_dir)
     stop_server(server, thread)
     return 0
 

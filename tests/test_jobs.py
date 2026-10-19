@@ -317,7 +317,7 @@ def test_subscribe_event_order(make_queue) -> None:
     assert events.count("cancelled") == 0
 
 
-# --- 9. unsubscribe (быстрый: без воркеров, события даёт только submit) -------
+# --- 9. unsubscribe (быстрый: все типы событий, включая воркерные) ------------
 
 
 def test_unsubscribe_stops_events(make_queue) -> None:
@@ -335,6 +335,41 @@ def test_unsubscribe_stops_events(make_queue) -> None:
 
     assert events == []  # отписанный не получил даже created
     assert counter == []  # и подпроцесс не понадобился
+
+
+def test_unsubscribe_stops_all_event_types(make_queue) -> None:
+    """Отписка гасит все типы событий, а не только ``created`` от submit.
+
+    Гарантийный тест к ревью 3a (шаг 3b, §0.7): раньше проверялось только
+    событие, которое эмитит сам ``submit``; события воркеров (``started``,
+    ``progress``, ``done``) проверялись лишь косвенно. Воркеры тут не
+    поднимаются — события эмитятся напрямую через ``_emit``, поэтому тест
+    быстрый и без ``slow``-маркера (AGENTS gotcha 23).
+    """
+    counter: list[str] = []
+    queue = make_queue(fake_runner(counter))
+    seen: list[str] = []
+
+    def callback(job_id: str, event_type: str, data: dict) -> None:
+        seen.append(event_type)
+
+    job_id = queue.submit("fake", {})  # до подписки: created этот cb не увидит
+    queue.subscribe(callback)
+
+    queue._emit(job_id, "started", {"status": "running"})
+    queue._emit(job_id, "progress", {"progress": 0.5})
+    queue._emit(job_id, "done", {})
+
+    assert seen == ["started", "progress", "done"]
+
+    queue.unsubscribe(callback)
+
+    queue._emit(job_id, "started", {"status": "running"})
+    queue._emit(job_id, "progress", {"progress": 0.9})
+    queue._emit(job_id, "done", {})
+
+    assert seen == ["started", "progress", "done"]
+    assert counter == []
 
 
 # --- 10. list(status=...) (реальные done/failed) ------------------------------

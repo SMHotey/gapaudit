@@ -239,6 +239,12 @@ Hermes не подключается к живому приложению — о
 3. поднимаем uvicorn в демон-потоке с middleware: все `/api/*` требуют заголовок `X-GapAudit-Token`
    или cookie; проверяем `Host`/`Origin` (защита от DNS-rebinding и от захода чужой страницы в браузере);
 4. ждём `/api/health` (до 10 секунд), только потом открываем окно — иначе будет белый экран;
+4a. сразу после успешного health-чека токен пишется в `<data_dir>/session.token`
+   (права `0600`, на Windows дополнительно `icacls /inheritance:r /grant:r <user>:F`),
+   а при закрытии окна файл удаляется — это единственный способ передать токен
+   внешнему клиенту (§7, «Как клиенты находят GapAudit»). Реализация —
+   `app/session.py`; каталог данных один на весь шаг: `desktop.py` выставляет
+   `GAPAUDIT_DATA_DIR` до запуска uvicorn, и lifespan приложения читает тот же путь.
 5. `webview.create_window("GapAudit", url, width=1280, height=860, min_size=(1024, 720),
    confirm_close=True, text_select=True, js_api=Api())`
 6. `webview.start(debug=args.dev)` — в dev-режиме открываются devtools WebView2;
