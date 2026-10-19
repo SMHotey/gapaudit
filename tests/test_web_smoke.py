@@ -39,12 +39,12 @@ def test_foreign_host_and_origin_are_forbidden(client: TestClient) -> None:
 
 
 def test_index_page_renders(client: TestClient) -> None:
-    """Сборка: главный экран отдаётся и содержит работу шага 3c (таблицу задач)."""
+    """Сборка: главный экран отдаётся и содержит каркас 2a (таблицу задач)."""
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "<h1>GapAudit</h1>" in response.text
-    assert "<tbody id=\"jobs\">" in response.text
+    assert '<h1><a href="/">GapAudit</a></h1>' in response.text
+    assert "<tbody id=\"jobs-body\">" in response.text
 
 
 def test_free_port_is_bindable() -> None:

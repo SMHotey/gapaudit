@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}GapAudit{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1><a href="/">GapAudit</a></h1>
+    {% set path = request.url.path %}
+    <nav class="app-nav">
+      <a href="/" class="{{ 'active' if path == '/' else '' }}">Задачи</a>
+      <a class="disabled" title="P2b: матрица adoption x flag"
+         aria-disabled="true">Сейчас решать</a>
+      <a class="disabled" title="P3: экран пакетов"
+         aria-disabled="true">Пакеты</a>
+      <a class="disabled" title="P3: каталоги"
+         aria-disabled="true">Каталоги</a>
+      <a class="disabled" title="P3: мониторинг"
+         aria-disabled="true">Мониторинг</a>
+      <a class="disabled" title="P2c: настройки"
+         aria-disabled="true">Настройки</a>
+    </nav>
+    <div class="health" id="health">
+      <span class="dot" id="health-db" title="db"></span>
+      <span class="dot" id="health-gh" title="gh"></span>
+      <span class="health-text" id="health-text">—</span>
+    </div>
+  </header>
+  <main class="app-main">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="app-footer">
+    <span id="version">GapAudit</span>
+    <span class="spacer"></span>
+    <span class="data-dir" id="data-dir" title="каталог данных">—</span>
+  </footer>
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

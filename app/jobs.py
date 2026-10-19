@@ -362,8 +362,9 @@ class JobQueue:
           (отмена, не дошедшая до конца перед падением, не должна убить
           возобновлённую задачу), задача кладётся в рабочий deque.
 
-        API-эндпоинт ``POST /api/jobs/{id}/resume`` — заглушка 501 в шаге
-        3c, реальный вызов вместе с ``--job-json`` — в шаге 3d.
+        API-эндпоинт ``POST /api/jobs/{id}/resume`` -> ``app.web.resume_job``
+        (шаг 3d-b). Возвращает 200 если resumed, 404 если job нет,
+        409 если не interrupted или лог отсутствует.
         """
         row = self._store.get_job(job_id)
         if row is None or row["status"] != "interrupted":

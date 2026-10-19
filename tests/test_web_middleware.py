@@ -164,12 +164,12 @@ def test_health_without_token_is_200(client: TestClient) -> None:
 
 
 def test_index_without_token_is_200(client: TestClient) -> None:
-    """Экран шага 3c: список задач, счётчик и кнопка обновления."""
+    """Экран «Задачи» (2a): счётчик, кнопка обновления, фильтр по статусу."""
     response = client.get("/")
 
     assert response.status_code == 200
     assert "GapAudit" in response.text
-    assert 'id="counter"' in response.text  # индикатор «N задач (M в работе)»
+    assert 'id="counter"' in response.text  # индикатор «N задач»
     assert 'id="refresh"' in response.text  # кнопка «Обновить»
 
 

@@ -34,6 +34,22 @@ HOST = f"127.0.0.1:{PORT}"
 TOKEN = "test-token-123"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _env_isolation():
+    """Изолирует тесты от утечки GAPAUDIT_* env из шелла
+    (gotcha 33). На старте сохраняет значения, удаляет; на выходе
+    восстанавливает."""
+    import os
+    keys = ("GAPAUDIT_FAKE_HTTP", "GAPAUDIT_DATA_DIR",
+            "GAPAUDIT_KEYWORDS", "GAPAUDIT_CACHE_TTL_H",
+            "GAPAUDIT_MAX_JOBS", "GAPAUDIT_NO_BROWSER")
+    saved = {k: os.environ.pop(k) for k in keys if k in os.environ}
+    yield
+    for k in keys:
+        os.environ.pop(k, None)
+    os.environ.update(saved)
+
+
 def auth(token: str = TOKEN) -> dict[str, str]:
     """Заголовок с токеном — самое частое действие в веб-тестах."""
     return {"X-GapAudit-Token": token}

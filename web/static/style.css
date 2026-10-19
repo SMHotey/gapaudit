@@ -1,0 +1,260 @@
+/* GapAudit — тёмная тема (шаг 2a).
+   Только то, что нужно экрану «Задачи»: шапка, навигация, таблица, чипсы,
+   кнопки, бейджи статусов, прогресс, empty-state, подвал. Матрицы и графиков
+   здесь нет намеренно — они в 2b. Внешних CDN нет: шрифты системные. */
+
+:root[data-theme="dark"] {
+  --bg: #0f1419; --bg-elev: #171d24; --bg-elev2: #1e2731;
+  --border: #2a3542; --border-strong: #3a4856;
+  --text: #e6edf3; --text-dim: #8b98a5; --text-muted: #6e7b88;
+  --accent: #4aa3ff; --accent-hover: #63b1ff;
+  --ok: #4ade80; --warn: #fbbf24; --error: #f87171; --muted: #94a3b8;
+  --radius: 6px; --gap: 12px; --font: -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Code", "Consolas", monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 var(--font);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+
+.mono { font-family: var(--mono); font-size: .875em; }
+.muted { color: var(--text-dim); }
+.spacer { flex: 1; }
+
+/* --- шапка ---------------------------------------------------------------- */
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 20px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+.app-header h1 a { color: var(--text); }
+
+.app-nav { display: flex; gap: 4px; flex-wrap: wrap; }
+.app-nav a {
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+}
+.app-nav a:hover { color: var(--text); background: var(--bg-elev2); }
+.app-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
+.app-nav a.disabled {
+  color: var(--text-muted);
+  opacity: .5;
+  pointer-events: none;
+  cursor: default;
+}
+
+.health { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.health .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-muted);
+  display: inline-block;
+}
+.health .dot.ok { background: var(--ok); }
+.health .dot.err { background: var(--error); }
+.health-text {
+  font-family: var(--mono);
+  font-size: .8rem;
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+
+/* --- основная область и подвал ------------------------------------------- */
+
+.app-main {
+  flex: 1;
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.app-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 10px 20px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: .8rem;
+}
+.data-dir { font-family: var(--mono); max-width: 60ch; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- панель инструментов -------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+  margin-bottom: var(--gap);
+}
+.toolbar-right { display: flex; align-items: center; gap: var(--gap); margin-left: auto; }
+#counter { font-size: .85rem; }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: .85rem;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--border-strong); color: var(--text); }
+.chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08131f;
+  font-weight: 600;
+}
+
+/* --- кнопки --------------------------------------------------------------- */
+
+.btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elev2);
+  color: var(--text);
+  font: inherit;
+  font-size: .85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-hover); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #08131f; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); color: #08131f; }
+.btn-danger { border-color: var(--error); color: var(--error); background: transparent; }
+.btn-danger:hover:not(:disabled) { background: rgba(248, 113, 113, .12); color: var(--error); }
+
+/* --- таблица -------------------------------------------------------------- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .9rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 9px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: .8rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-dim);
+  background: var(--bg-elev2);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+.table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr:hover { background: var(--bg-elev2); }
+.table td.col-actions { text-align: right; white-space: nowrap; }
+.table td.col-actions .btn + .btn { margin-left: 6px; }
+
+/* --- прогресс ------------------------------------------------------------- */
+
+.progress-wrap { display: flex; align-items: center; gap: 8px; }
+.progress {
+  width: 88px;
+  height: 6px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  border-radius: 999px;
+  background: var(--bg-elev2);
+  overflow: hidden;
+}
+.progress::-webkit-progress-bar { background: var(--bg-elev2); border-radius: 999px; }
+.progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+.progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+.progress-wrap .pct {
+  font-family: var(--mono);
+  font-size: .8rem;
+  color: var(--text-dim);
+  min-width: 3.4em;
+  text-align: right;
+}
+
+/* --- бейджи статусов ------------------------------------------------------ */
+
+.status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: .75rem;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.status-queued      { background: rgba(148, 163, 184, .14); color: #b9c4d2; border-color: rgba(148, 163, 184, .3); }
+.status-running     { background: rgba(74, 163, 255, .16); color: var(--accent-hover); border-color: rgba(74, 163, 255, .35); }
+.status-done        { background: rgba(74, 222, 128, .14); color: var(--ok); border-color: rgba(74, 222, 128, .3); }
+.status-failed      { background: rgba(248, 113, 113, .14); color: var(--error); border-color: rgba(248, 113, 113, .32); }
+.status-interrupted { background: rgba(251, 191, 36, .14); color: var(--warn); border-color: rgba(251, 191, 36, .32); }
+.status-cancelled   { background: rgba(110, 123, 136, .16); color: var(--muted); border-color: rgba(110, 123, 136, .32); }
+
+/* --- пустое состояние ----------------------------------------------------- */
+
+.empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  margin: 4px 0;
+}
+.empty code {
+  font-family: var(--mono);
+  font-size: .85em;
+  background: var(--bg-elev2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text);
+}
+.table .empty { border: none; }
