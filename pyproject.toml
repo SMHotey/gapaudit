@@ -38,5 +38,5 @@ py-modules = ["desktop"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "slow: тяжёлые проверки (реальный L1/L2 compat_check, тесты с реальными подпроцессами) — быстрый цикл: -m \"not slow\" (цель: ≤ +50% к базовому или ≤ 7 с, что больше; DEVPLAN §11)",
+    "slow: тяжёлые проверки (реальный L1/L2 compat_check, тесты с реальными подпроцессами) — быстрый цикл: -m \"not slow\" (цель: см. DEVPLAN §11, P-phase caps)",
 ]
