@@ -256,6 +256,13 @@ SIGNALS_PENDING: tuple[str, ...] = (
 #: «четвёртая» экосистема означала бы опечатку, а не расширение.
 CONCEPT_ECOSYSTEMS: frozenset[str] = frozenset({"pypi", "npm", "github"})
 
+#: Виды сигналов для POST /api/signals/collect (P5a: только jobs). Дубль
+#: ``cli.signals.SIGNAL_KINDS`` осознанно (gotcha 54): web не импортирует
+#: cli, но «согласие слоёв» проверяется тестом «согласие слоёв» — оба
+#: набора обязаны совпадать, иначе API ответит 202 задаче, которая умрёт
+#: в подпроцессе argparse'ом.
+SIGNAL_COLLECT_KINDS: frozenset[str] = frozenset({"jobs"})
+
 _ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -998,6 +1005,37 @@ def _cross_ecosystem_payload(store: Store, package: str) -> dict[str, Any] | Non
     return cross.as_dict() if cross else None
 
 
+# --- jobs (шаг P5a) -----------------------------------------------------------
+
+
+def _jobs_payload(store: Store, package: str) -> tuple[dict[str, Any] | None, str]:
+    """Последнее наблюдение jobs + его статус для UI (§18.3, шаг P5a).
+
+    Возвращает ``(detail | None, status)``:
+
+    * наблюдения нет — ``(None, "not_collected")``: сигнал ещё не собирали;
+    * есть, ``configured=False`` — ``(None, "not_configured")``: ключ Adzuna
+      не введён (в UI — ссылка «Настройки → API-ключи»);
+    * есть, ``configured=True`` — ``(detail, "ok")``: ``total`` /
+      ``by_country`` / ``error`` из ``signal_observations.detail``.
+
+    Три состояния различимы осознанно (шаг P5a, §4.3): «ключ не настроен»
+    и «не собирали» — разные действия пользователя, и одно «jobs: null» не
+    могло бы их развести. ``detail`` без ``configured`` (битая старая
+    запись) считается «не собрано»: показать пустой блок как данные было
+    бы ложью.
+    """
+    rows = store.get_signal_observations(package, signal_kind="jobs", limit=1)
+    if not rows:
+        return None, "not_collected"
+    detail = rows[0].get("detail")
+    if not isinstance(detail, dict):
+        return None, "not_collected"
+    if not detail.get("configured"):
+        return None, "not_configured"
+    return detail, "ok"
+
+
 def _queue(request: Request) -> JobQueue:
     queue = getattr(request.app.state, "queue", None)
     if queue is None:
@@ -1326,6 +1364,48 @@ def create_app(
             except Exception as error:  # noqa: BLE001 - БД не должна ронять приложение
                 logger.error("record_catalog не удался для %s: %s", job_id, error)
 
+        def _record_signals(job_id: str, result_path: Path) -> None:
+            """``signals.collect``: ``{"package", "signals": {...}}`` → signal_observations.
+
+            Формат — то, что пишет ``cli.signals --json-out``: по одному
+            наблюдению на собранный вид сигнала (P5a: jobs). ``value`` —
+            ``total`` (для будущих сортировок/агрегаций), ``detail`` — весь
+            блок (``by_country``/``configured``/``error``): карточка рисует
+            таблицу стран из ``detail``, а не из ``value``. Ошибка одного
+            вида не мешает записи остальных — каждый вид независим.
+            """
+            payload = _read_result(job_id, result_path)
+            if payload is None:
+                return
+            if not isinstance(payload, dict):
+                logger.error(
+                    "результат задачи %s: ожидался объект signals", job_id
+                )
+                return
+            package = str(payload.get("package") or "").strip()
+            signals = payload.get("signals")
+            if not package or not isinstance(signals, dict):
+                logger.error("результат задачи %s: нет package/signals", job_id)
+                return
+            store_ = application.state.store
+            for kind, data in signals.items():
+                if not isinstance(data, dict):
+                    logger.warning(
+                        "задача %s: сигнал %s не объект — пропущен", job_id, kind
+                    )
+                    continue
+                try:
+                    store_.record_signal_observation(
+                        package=package,
+                        signal_kind=str(kind),
+                        value=float(data.get("total") or 0),
+                        detail=data,
+                    )
+                except Exception as error:  # noqa: BLE001 - БД не должна ронять приложение
+                    logger.error(
+                        "record_signal %s/%s failed: %s", package, kind, error
+                    )
+
         #: kind → что делать с result.json. Таблица, а не цепочка ``if``:
         #: новый вид задачи с записью в БД — одна строка, и обработчик виден
         #: целиком в одном месте.
@@ -1333,6 +1413,7 @@ def create_app(
             "packages.check": _record_observations,
             "monitor.diff": _record_events,
             "catalog.build": _record_catalog,
+            "signals.collect": _record_signals,
         }
 
         def _post_process(job_id: str, event_type: str, _data: dict) -> None:
@@ -1733,19 +1814,24 @@ def create_app(
         if package is None:
             raise HTTPException(status_code=404, detail=f"пакет {name} не найден")
         events = store.get_events(name=name)
+        jobs, jobs_status = _jobs_payload(store, name)
         return {
             "package": package,
             "observations": store.get_latest_observations([name]),
             "events": events,
-            # Сигналы — в карточке (шаги P4b/P4c): momentum считается из истории,
+            # Сигналы — в карточке (шаги P4b/P4c/P5a): momentum считается из истории,
             # которую карточка и так запрашивает отдельно для мини-графика.
             # Один ответ вместо двух запросов: card.js получает полную картину
             # из /api/packages/{name} (вариант A шага). cross_ecosystem — None,
-            # если у пакета concept не задан (сигнал «не настроен»).
+            # если у пакета concept не задан (сигнал «не настроен»). jobs —
+            # detail последнего наблюдения (P5a); три состояния jobs видны по
+            # signals_status (собран / ключ не настроен / ещё не собирали).
             "signals": {
                 "momentum": _momentum_payload(store, name),
                 "cross_ecosystem": _cross_ecosystem_payload(store, name),
+                "jobs": jobs,
             },
+            "signals_status": {"jobs": jobs_status},
         }
 
     @application.get("/api/packages/{name}/history")
@@ -1767,8 +1853,8 @@ def create_app(
 
     @application.get("/api/signals/{package}")
     def get_signals(package: str, request: Request) -> dict[str, Any]:
-        """Все сигналы по пакету; в P4c посчитаны ``momentum`` и
-        ``cross_ecosystem`` (§18.3).
+        """Все сигналы по пакету; в P5a посчитаны ``momentum``, ``cross_ecosystem``
+        и ``jobs`` (§18.3).
 
         Ответ — расширяемый конверт: сигналы рядом со списками имён.
         ``signals_available`` перечисляет то, что реально посчитано сейчас, а
@@ -1779,6 +1865,12 @@ def create_app(
         ``cross_ecosystem`` — ``None`` без concept (сигнал «не настроен»), и
         тогда его имя уходит в ``signals_unavailable``: непосчитанный сигнал
         не должен значить «данные есть, соседей нет».
+
+        ``jobs`` — ``None`` и имя в ``signals_unavailable``, пока сигнала нет
+        или ключ Adzuna не введён; три различимых состояния («собран» /
+        «ключ не настроен» / «ещё не собирали») отдаются в
+        ``signals_status``: одно «jobs: null» не могло бы развести действия
+        пользователя (шаг P5a, §4.3).
 
         ``gap_score`` в списках нет: это агрегат по сигналам, а не сигнал.
 
@@ -1794,16 +1886,55 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"package not found: {package}")
         momentum = compute_momentum(history)
         cross = _cross_ecosystem_payload(store, package)
+        jobs, jobs_status = _jobs_payload(store, package)
         available = ["momentum"] + (["cross_ecosystem"] if cross else [])
+        if jobs is not None:
+            available.append("jobs")
         return {
             "package": package,
             "momentum": momentum.as_dict(),
             "cross_ecosystem": cross,
+            "jobs": jobs,
+            "signals_status": {"jobs": jobs_status},
             "signals_available": available,
             "signals_unavailable": [
                 name for name in SIGNALS_PENDING if name not in available
             ],
         }
+
+    @application.post("/api/signals/collect", status_code=202)
+    def collect_signals(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Собрать сигналы: ``{"package": ..., "kinds": ["jobs"]}`` → ``202 {job_id}``.
+
+        Прокси на ``POST /api/jobs`` kind=``signals.collect``: для UI один
+        эндпоинт «собрать сигналы пакета» удобнее, валидация — та же
+        (:func:`_param_errors`), плюс проверка вида сигнала по
+        :data:`SIGNAL_COLLECT_KINDS`: ``kinds`` — список, и таблицы типов
+        элементы не разбирают, а задача с ``kinds=["evil"]`` умерла бы
+        argparse'ом в подпроцессе.
+
+        ``kinds`` необязателен: без него CLI собирает всё, что умеет
+        (P5a — jobs). Пустой ``package`` и неизвестный вид — 400: задача,
+        которая заведомо не запустится, не должна создаваться (fail fast,
+        как у ``/api/jobs``).
+        """
+        params: dict[str, Any] = {
+            "package": str(payload.get("package") or "").strip()
+        }
+        raw_kinds = payload.get("kinds")
+        if raw_kinds is not None:
+            params["kinds"] = raw_kinds
+        errors = _param_errors("signals.collect", params)
+        if isinstance(raw_kinds, list):
+            unknown = sorted({str(kind) for kind in raw_kinds} - SIGNAL_COLLECT_KINDS)
+            if unknown:
+                errors.append(
+                    f"kinds: неизвестный вид сигнала: {', '.join(unknown)}"
+                )
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+        job_id = _queue(request).submit("signals.collect", params)
+        return {"job_id": job_id, "status": "queued"}
 
     # --- концепты (шаг P4c) ----------------------------------------------------
 

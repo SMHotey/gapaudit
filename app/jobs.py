@@ -738,6 +738,7 @@ _KIND_TO_MODULE: dict[str, str] = {
     "registry.scan": "cli.catalog_scan",
     "github.verify": "cli.verify",
     "monitor.diff": "cli.check_predecessors",
+    "signals.collect": "cli.signals",
 }
 
 #: Whitelist ключей ``params`` на каждый kind — ЕДИНСТВЕННЫЙ источник правды о
@@ -749,6 +750,7 @@ KIND_PARAM_KEYS: dict[str, frozenset[str]] = {
     "registry.scan": frozenset({"base_url", "limit", "max_pages"}),
     "github.verify": frozenset({"targets", "keyword"}),
     "monitor.diff": frozenset({"diff_from"}),
+    "signals.collect": frozenset({"package", "kinds"}),
 }
 
 #: Обязательные ключи: без них задача бессмысленна. Проверяется и в API (400),
@@ -762,6 +764,7 @@ KIND_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "registry.scan": frozenset(),
     "github.verify": frozenset({"targets"}),
     "monitor.diff": frozenset({"diff_from"}),
+    "signals.collect": frozenset({"package"}),
 }
 
 #: Типы значений ``params`` — для той же валидации в API (неизвестный ключ
@@ -778,6 +781,7 @@ KIND_PARAM_TYPES: dict[str, dict[str, type | tuple[type, ...]]] = {
     "registry.scan": {"base_url": str, "limit": int, "max_pages": int},
     "github.verify": {"targets": list, "keyword": str},
     "monitor.diff": {"diff_from": str},
+    "signals.collect": {"package": str, "kinds": list},
 }
 
 #: Источники каталога по умолчанию: отсутствие в ``params["sources"]`` даёт
@@ -822,7 +826,10 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
       ``pages``, ``sources`` (``npm``/``registry`` вне списка -> ``--no-*``);
     * ``registry.scan``: ``base_url``, ``limit``, ``max_pages``;
     * ``github.verify``: ``targets`` (обязателен, позиционные), ``keyword``;
-    * ``monitor.diff``: ``diff_from`` (обязателен -> ``--diff=``).
+    * ``monitor.diff``: ``diff_from`` (обязателен -> ``--diff=``);
+    * ``signals.collect``: ``package`` (обязателен) и ``kinds`` (список;
+      пусто -> CLI возьмёт все виды, в P5a — ``jobs``). Подкоманда
+      ``collect`` идёт ПЕРЕД флагами — так устроен argparse ``cli.signals``.
 
     Ошибки — только ``ValueError`` и только до ``subprocess``: задача,
     которая заведомо не запустится, не должна создавать процесс. Обязательные
@@ -874,6 +881,13 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
         argv = positional("targets")
         if "keyword" in params:
             argv.append(f"--keyword={params['keyword']}")
+        return argv
+
+    if kind == "signals.collect":
+        # Подкоманда до флагов: python -m cli.signals collect --package X ...
+        argv = ["collect", "--package", str(params["package"])]
+        for signal_kind in _str_list(params.get("kinds")) or ["jobs"]:
+            argv += ["--kind", signal_kind]
         return argv
 
     # monitor.diff — единственный оставшийся kind: сравнение с прошлым прогоном.

@@ -138,6 +138,30 @@ def test_monitor_diff_uses_diff_flag() -> None:
     ]
 
 
+# --- signals.collect (шаг P5a) ----------------------------------------------
+
+
+def test_signals_collect_default_kind_is_jobs() -> None:
+    """Без kinds — подкоманда collect + --kind jobs (CLI возьмёт все виды)."""
+    assert _params_to_argv("signals.collect", {"package": "requests"}) == [
+        "collect", "--package", "requests", "--kind", "jobs",
+    ]
+
+
+def test_signals_collect_explicit_kinds() -> None:
+    """Явный kinds — тот же argv (P5a: jobs единственный вид)."""
+    assert _params_to_argv(
+        "signals.collect", {"package": "x", "kinds": ["jobs"]}
+    ) == ["collect", "--package", "x", "--kind", "jobs"]
+
+
+def test_signals_collect_missing_package_raises() -> None:
+    """package обязателен — та же missing_required, что в API (400 там, ValueError здесь)."""
+    assert missing_required("signals.collect", {}) == ["package"]
+    with pytest.raises(ValueError, match="package"):
+        _params_to_argv("signals.collect", {"kinds": ["jobs"]})
+
+
 def test_monitor_diff_without_diff_from_raises() -> None:
     with pytest.raises(ValueError, match="diff_from"):
         _params_to_argv("monitor.diff", {})

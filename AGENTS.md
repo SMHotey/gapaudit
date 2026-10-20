@@ -380,15 +380,28 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     видит содержимое, находит раздел. Markdown→HTML рендер не
     тащим: новая зависимость + XSS-риск. Ссылка из UI работает
     (200, файл открывается).
-59. При добавлении нового пакета в core/ (collectors/, signals/
-    и т.п.) — добавить его в pyproject.toml
-    [tool.setuptools.packages.find]. Иначе при PyInstaller onedir
-    (P4d) пакет не попадёт в сборку, тесты этого не поймают
-    (запускаются из source), пользователь получит
-    ModuleNotFoundError. Проверка: `uv pip install -e .` и
-    `python -c "import core.collectors"`. Пример: P4b добавил
-    core/collectors/momentum.py, но pyproject остался с прежним
-    списком — исправлено в P4c.
+59 (исправлено P5a). При добавлении нового пакета в core/ — добавить
+    его в [tool.setuptools] packages = [...] в pyproject.toml
+    (явный список, не find — фактическая форма файла). Иначе при
+    PyInstaller onedir (P4d) пакет не попадёт в сборку, тесты этого
+    не поймают (source), пользователь получит ModuleNotFoundError.
+    Проверка: uv pip install -e . && python -c "import
+    core.collectors" и uv build --wheel -> пакет в wheel. Пример:
+    P4b добавил core/collectors/momentum.py, но pyproject остался с
+    прежним списком — исправлено в P4c.
+60. Репозиторий PUBLIC. Всё, что в git — видно всем, навсегда
+    (даже после удаления файла из HEAD, история остаётся).
+    api_keys.json и data/ — в .gitignore. При добавлении новых
+    файлов с потенциальными секретами — проверить .gitignore и
+    `git log --all --full-history -- <path>` перед push. Секреты —
+    только в <data_dir>/api_keys.json вне репо. При обнаружении
+    утечки — ротация ключа (не только удаление файла).
+61. pytest_block_network с asyncio на Windows ProactorEventLoop
+    -> INTERNALERROR при teardown (socketpair). Не использовать
+    для новых тестов. «Сеть = ноль» проверяется статически: grep
+    по тестам на requests.get / httpx.get / socket.connect /
+    urllib.request.urlopen в тестовом коде — ни одного вызова
+    (кроме тестового транспорта, который инжектируется).
 
 ---
 

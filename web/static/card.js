@@ -263,6 +263,67 @@
       else card.appendChild(div);
     }
 
+    /* Jobs (шаг P5a, §18.3): top-5 стран по вакансиям (Adzuna). Данные — из
+       signals.jobs ответа /api/packages/{name}; имя страны и числа в DOM
+       попадают только через textContent (gotcha 37), innerHTML — только у
+       статической шапки таблицы. Три состояния различаются по signals_status:
+       собран (таблица), ключ не настроен (ссылка в Настройки), ещё не
+       собирали (блок не рисуется — прежнее поведение карточки P4c). */
+    if (signals.jobs) {
+      const j = signals.jobs;
+      const div = document.createElement('div');
+      div.className = 'card-jobs';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Jobs · спрос на труд';
+      div.appendChild(label);
+      if (j.error) {
+        const err = document.createElement('div');
+        err.className = 'muted';
+        err.textContent = 'Ошибка Adzuna: ' + j.error;
+        div.appendChild(err);
+      }
+      const table = document.createElement('table');
+      table.className = 'jobs-table';
+      table.innerHTML = '<thead><tr><th>Страна</th><th>Вакансий</th></tr></thead>';
+      const tbody = document.createElement('tbody');
+      (j.by_country || []).slice(0, 5).forEach((row) => {
+        const tr = document.createElement('tr');
+        const tdC = document.createElement('td');
+        tdC.textContent = row.label;
+        tr.appendChild(tdC);
+        const tdN = document.createElement('td');
+        tdN.textContent = fmtNum(row.count);
+        tdN.className = 'mono';
+        tr.appendChild(tdN);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      div.appendChild(table);
+      const total = document.createElement('div');
+      total.className = 'muted';
+      total.textContent = 'Всего: ' + fmtNum(j.total) + ' · источник: The Adzuna API';
+      div.appendChild(total);
+      const anchor0 = card.querySelector('.card-graph');
+      if (anchor0) card.insertBefore(div, anchor0);
+      else card.appendChild(div);
+    } else if (payload.signals_status &&
+               payload.signals_status.jobs === 'not_configured') {
+      const div = document.createElement('div');
+      div.className = 'card-jobs card-jobs-empty';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Jobs';
+      const msg = document.createElement('div');
+      msg.className = 'muted';
+      msg.textContent = 'API-ключ Adzuna не настроен — см. Настройки → API-ключи';
+      div.appendChild(label);
+      div.appendChild(msg);
+      const anchor1 = card.querySelector('.card-graph');
+      if (anchor1) card.insertBefore(div, anchor1);
+      else card.appendChild(div);
+    }
+
     card.appendChild(miniGraph(history));
 
     const eventsTitle = document.createElement('div');

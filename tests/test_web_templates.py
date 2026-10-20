@@ -454,6 +454,36 @@ def test_style_has_cross_eco_table_rules(client: TestClient) -> None:
     assert ".cross-eco-table .self" in stylesheet
 
 
+# --- блок Jobs в карточке (шаг P5a) ------------------------------------------
+
+
+def test_card_script_renders_jobs_block(client: TestClient) -> None:
+    """Карточка пакета рисует «Jobs · спрос на труд» из signals.jobs (P5a).
+
+    Три состояния: таблица стран (собран), ссылка «Настройки → API-ключи»
+    (ключ не настроен по signals_status), блок не рисуется (ещё не собирали).
+    Строки стран и числа — только textContent (gotcha 37).
+    """
+    script = client.get("/static/card.js").text
+
+    assert "card-jobs" in script
+    assert "jobs-table" in script
+    assert "signals.jobs" in script
+    assert "signals_status" in script
+    assert "API-ключ Adzuna не настроен" in script
+    assert "The Adzuna API" in script  # атрибуция ToS (§14)
+    assert "tdC.textContent = row.label" in script
+
+
+def test_style_has_jobs_table_rules(client: TestClient) -> None:
+    """Стили таблицы jobs подключены: класс из card.js есть в CSS."""
+    stylesheet = client.get("/static/style.css").text
+
+    assert ".card-jobs" in stylesheet
+    assert ".jobs-table" in stylesheet
+    assert ".jobs-table td.mono" in stylesheet
+
+
 def test_settings_tabs_switch(client: TestClient) -> None:
     """Две вкладки настроек: активная ровно одна, переключение — классом.
 

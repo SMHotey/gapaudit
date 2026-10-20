@@ -1,0 +1,17 @@
+{
+  "count": 42,
+  "mean_salary": null,
+  "results": [
+    {
+      "id": "synthetic-0001",
+      "title": "Senior Python Developer",
+      "subtitle": "Synthetic fixture — not a real vacancy",
+      "company": { "display_name": "Synthetic GmbH" },
+      "location": { "display_name": "Berlin, Germany", "area": ["Germany", "Berlin"] },
+      "created": "2026-10-01T09:00:00Z",
+      "redirect_url": "https://example.invalid/jobs/synthetic-0001",
+      "salary_is_predicted": false
+    }
+  ],
+  "__fixture_note": "СИНТЕТИЧЕСКАЯ фикстура по документации Adzuna (поля count + results, results_per_page=1). Реальный ответ снять после получения ключа Adzuna пользователем — follow-up, не блокер P5a. В тестах используется через fake_transport."
+}

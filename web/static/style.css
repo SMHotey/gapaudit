@@ -636,3 +636,22 @@ a:hover { color: var(--accent-hover); }
 .cross-eco-table th { color: var(--text-dim); font-weight: 500; }
 .cross-eco-table .self { background: var(--bg-elev); }
 .card-cross-eco { margin: 8px 0; }
+
+/* Блок «Jobs» в карточке пакета (шаг P5a): top-5 стран по вакансиям Adzuna.
+   Числа — в правом столбце моноширинным; пустое состояние («ключ не
+   настроен») — тот же отступ, без таблицы. */
+.card-jobs { margin: 12px 0; }
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.jobs-table th,
+.jobs-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.jobs-table th { color: var(--text-dim); font-weight: 500; }
+.jobs-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }
