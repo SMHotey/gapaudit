@@ -1,4 +1,4 @@
-"""CLI-обёртка для сигналов (шаг P5a, расширение P5b; DEVPLAN §7/§18.3).
+"""CLI-обёртка для сигналов (шаг P5a, расширение P5b/P5c; DEVPLAN §7/§18.3).
 
 Запуск::
 
@@ -10,12 +10,18 @@
 параметров: CLI автономен (Железное правило 2), каталог данных
 определяется общефлагом ``--data-dir`` как у шести других скриптов.
 
-``--kind`` повторяется (``action="append"``); с P5b допустимы ``jobs`` и
-``patents`` (``choices``): будущие ``funding``/``search_interest`` (P5c/P5d)
-добавляются одной строкой в :data:`SIGNAL_KINDS` (и одной строкой в
+``--kind`` повторяется (``action="append"``); с P5c допустимы ``jobs``,
+``patents`` и ``funding`` (``choices``): будущий ``search_interest`` (P5d)
+добавляется одной строкой в :data:`SIGNAL_KINDS` (и одной строкой в
 :data:`KIND_TO_PROVIDER`). Повтор одного вида — дедупликация, не ошибка:
 задача «jobs дважды» означает «собери jobs», а не «умри». Без ``--kind``
 собираются все виды :data:`SIGNAL_KINDS`.
+
+У провайдера ``edgar`` (funding) нет ключа — SEC требует **User-Agent с
+email**, и он лежит в ``meta``, а не в ``encrypted_value`` (P5c). Поэтому
+для funding читается :meth:`ApiKeysStore.public_meta`, а не
+:meth:`ApiKeysStore.get`: последний вернул бы ``{}`` (у ``edgar``
+``encrypted_value`` пуст), и сигнал навсегда остался бы «не настроен».
 
 Протокол задачи — как у остальных CLI: под ``--job-json`` hello →
 progress (по одной строке на страну/год) → done; таблицы и итоги в stderr
@@ -44,18 +50,24 @@ from cli._common import (
     write_json,
 )
 from core.api_keys import ApiKeysStore
+from core.collectors.funding import compute_funding, default_transport as funding_transport
 from core.collectors.jobs import compute_jobs, default_transport
 from core.collectors.patents import compute_patents, default_post_transport
 
 __all__ = ["SIGNAL_KINDS", "main"]
 
-#: Виды сигналов, которые умеет собирать ``collect`` (P5a: jobs; P5b: +patents).
-#: Тот же набор проверяет ``POST /api/signals/collect`` (app/web.py) —
-#: два слоя не должны разойтись (gotcha 54, тест «согласие слоёв»).
-SIGNAL_KINDS: tuple[str, ...] = ("jobs", "patents")
+#: Виды сигналов, которые умеет собирать ``collect`` (P5a: jobs; P5b:
+#: +patents; P5c: +funding). Тот же набор проверяет ``POST
+#: /api/signals/collect`` (app/web.py) — два слоя не должны разойтись
+#: (gotcha 54, тест «согласие слоёв»).
+SIGNAL_KINDS: tuple[str, ...] = ("jobs", "patents", "funding")
 
 #: Вид сигнала -> провайдер ключей (core.api_keys.PROVIDERS).
-KIND_TO_PROVIDER: dict[str, str] = {"jobs": "adzuna", "patents": "patentsview"}
+KIND_TO_PROVIDER: dict[str, str] = {
+    "jobs": "adzuna",
+    "patents": "patentsview",
+    "funding": "edgar",
+}
 
 #: Куда писать результат без ``--json-out`` (как у legacy-скриптов: raw/).
 DEFAULT_JSON = "raw/signals.json"
@@ -117,7 +129,10 @@ def _main(argv: list[str] | None = None) -> int:
 
     parser = build_argparser(
         prog="signals.py",
-        description="Сбор сигналов ниш по пакету (jobs — Adzuna, patents — PatentsView)",
+        description=(
+            "Сбор сигналов ниш по пакету (jobs — Adzuna, patents — PatentsView, "
+            "funding — SEC EDGAR)"
+        ),
     )
     parser.add_argument(
         "--package",
@@ -162,6 +177,8 @@ def _main(argv: list[str] | None = None) -> int:
                 signals["jobs"] = _collect_jobs(keys, package, on_progress)
             elif kind == "patents":
                 signals["patents"] = _collect_patents(keys, package, on_progress)
+            elif kind == "funding":
+                signals["funding"] = _collect_funding(keys, package, on_progress)
     except Exception as error:  # noqa: BLE001 - тело CLI обязано отчитаться ошибкой
         print(f"[gapaudit] {error}", file=sys.stderr)
         if job_json_requested(argv):
@@ -213,6 +230,26 @@ def _collect_patents(
     return signal.as_dict()
 
 
+def _collect_funding(
+    keys: ApiKeysStore, package: str, on_progress: object
+) -> dict:
+    """Собрать ``funding`` через ``core.collectors.funding``; нет User-Agent — ``configured=False``.
+
+    User-Agent EDGAR НЕ секрет и живёт в ``meta`` провайдера, поэтому
+    читается :meth:`ApiKeysStore.public_meta`, а не :meth:`ApiKeysStore.get`:
+    у ``edgar`` ``encrypted_value`` пуст, и ``get("edgar")`` вернул бы ``{}``
+    — сигнал остался бы «не настроен» даже с введённым User-Agent (P5c, §0.7).
+    """
+    meta = keys.public_meta(KIND_TO_PROVIDER["funding"])
+    signal = compute_funding(
+        package,
+        user_agent=meta.get("user_agent") or None,
+        transport=funding_transport,
+        on_progress=on_progress,  # type: ignore[arg-type]
+    )
+    return signal.as_dict()
+
+
 def _print_summary(signals: dict[str, dict]) -> None:
     """Человекочитаемый итог в stdout (под --job-json он уходит в stderr).
 
@@ -253,6 +290,25 @@ def _print_summary(signals: dict[str, dict]) -> None:
             if impulse is not None:
                 sign = "+" if impulse > 0 else ""
                 print(f"patents: импульс {sign}{impulse:.1f}% за 3 года")
+
+    funding = signals.get("funding")
+    if funding is not None:
+        if not funding.get("configured"):
+            print("funding: User-Agent SEC EDGAR не настроен — см. Настройки → API-ключи")
+        elif funding.get("error"):
+            print(f"funding: ошибка — {funding['error']}")
+        else:
+            rows = [
+                [f"Q{row['quarter']} {row['year']}", str(row["count"])]
+                for row in (funding.get("by_quarter") or [])
+            ]
+            if rows:
+                print_table(["квартал", "раундов"], rows, aligns=["l", "r"])
+            print(f"funding: собрано, всего filing'ов формы D: {funding['total']}")
+            trend = funding.get("trend_pct")
+            if trend is not None:
+                sign = "+" if trend > 0 else ""
+                print(f"funding: тренд {sign}{trend:.1f}% за 4 квартала")
 
 
 def main(argv: list[str] | None = None) -> int:

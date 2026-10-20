@@ -193,6 +193,11 @@ README «Установка на чистой машине», API Keys Store (и
 с ключом, 925 тестов. Graceful degradation: без ключа
 configured=False, приложение работает.
 
+Статус P5b (закрыт 2026-10-20): patents (PatentsView), второй сигнал с
+ключом, 959 тестов. Окно импульса — завершённые календарные годы
+[current−3, current−1] (неполный текущий год дал бы ложный спад).
+Формат PatentsView — `size`, не `per_page` (проверено по исходникам PVAPIViews.py).
+
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
 (Adzuna), patents (PatentsView), funding (SEC EDGAR), search_interest
@@ -400,19 +405,22 @@ flag/verdict/measured), не матрица. Если пользователь �
 - `GET /docs/{file}` — whitelist: только `API-KEYS.md`. Остальные файлы
   `docs/` — 404. Это защита от случайной отдачи внутренних документов.
 - `GET /api/signals/{package}` — только чтение из SQLite/кэша, сети нет.
-  Ответ (§0.3): `momentum` — объект; `cross_ecosystem` — объект | `null`;
-  `jobs` — объект | `null`; `patents` — объект | `null`; плюс списки
+  Ответ (§0.3): `momentum` — объект (всегда, из истории); `cross_ecosystem` —
+  объект | `null`; `jobs` — объект | `null`; `patents` — объект | `null`;
+  `funding` — объект | `null` (P5c); плюс списки
   `signals_available`/`signals_unavailable` и карта `signals_status`
-  `{"jobs": "ok"|"not_configured"|"not_collected", "patents": ...}`.
+  `{"jobs": "ok"|"not_configured"|"not_collected", "patents": ...,
+  "funding": ...}`.
   `signals_status` — различимое состояние для UI: `ok` = есть данные,
-  `not_configured` = ключ не настроен, `not_collected` = ключ есть, но не
-  собирали (у `momentum` отдельного статуса нет — он посчитан из истории,
-  когда эндпоинт не отвечает 404; статусы относятся к видам, которые
-  собираются внешним API).
+  `not_configured` = ключ не настроен (у `funding` — не введён User-Agent
+  EDGAR, провайдер `edgar`), `not_collected` = ключ есть, но не
+  собирали (у `momentum` отдельного статуса нет — он всегда посчитан из
+  истории, статуса «не настроен» не имеет; статусы относятся к видам,
+  которые собираются внешним API).
 - `POST /api/signals/collect` — body `{"package": str, "kinds": [str]}`.
   Submit job `kind="signals.collect"`, ответ `202 {job_id, status}`.
-  `kinds ⊆ SIGNAL_COLLECT_KINDS = ["jobs", "patents"]` (P5b); расширяется
-  в P5c (+funding), P5d (+search_interest). Без `kinds` — все виды набора.
+  `kinds ⊆ SIGNAL_COLLECT_KINDS = ["jobs", "patents", "funding"]` (P5c);
+  расширяется в P5d (+search_interest). Без `kinds` — все виды набора.
   Работа идёт задачей (подпроцесс), прогресс — через SSE, запись — в
   `signal_observations`.
 - `POST /api/niche/find` — kind `niche.find`, конвейер из нескольких шагов
@@ -848,6 +856,8 @@ P4c (закрыт 2026-10-20) — cross-ecosystem, 884 теста.
 
 P5a (закрыт 2026-10-20) — jobs (Adzuna).
 
+P5b (закрыт 2026-10-20) — patents (PatentsView).
+
 ## 14. Риски и что с ними делать
 
 | Риск | Реальность | Что делаем |
@@ -1080,7 +1090,8 @@ POST с JSON `{q, f, o}`, заголовок `X-Api-Key`, лимит 45 запр
 НЕ путать с `api.uspto.gov` — это другой API. Провайдер: `patentsview`
 (`api_key`). Формат ответа проверен по исходникам PatentsView/PatentSearch-API:
 `total_hits` (сколько записей совпало — что нам и нужно), `count`/`error`;
-опция пагинации — `o.size` (`per_page` старого API здесь игнорируется).
+опция пагинации — `o.size` (`per_page` старого API здесь молча игнорируется;
+проверено по исходникам PVAPIViews.py — параметр читается как `size`).
 
 **Формула (реализовано в `core/collectors/patents.py`):** для каждого
 завершённого календарного года окна `[current − 3, current − 1]` — POST с
@@ -1120,7 +1131,29 @@ count(базовый год) − 1) · 100 %`. Окно — завершённы
 **Формула:** count filings за квартал, суммарный объём (если указан). Хранить в
 `signal_observations(signal_kind='funding', detail=json)`.
 
-**UI:** в карточке — последние раунды (компания, сумма, дата).
+**Реализовано (P5c, `core/collectors/funding.py`):** GET
+`https://efts.sec.gov/LATEST/search-index?q=…&forms=D&dateRange=custom&startdt=…&enddt=…`
+по каждому кварталу окна; счётчик — `hits.total.value` (проверено живым
+запросом 20.10.2026; без `User-Agent` сервер отвечает 403). Окно — последние
+4 **завершённых** календарных квартала (текущий неполон и дал бы ложный спад,
+то же правило, что у окна лет в patents). `trend_pct = (count(последний
+квартал) / count(первый квартал) − 1) · 100`; `null`, если база 0, не собраны
+оба конца окна или успешных кварталов < 2. Между запросами — пауза 0.11 с
+(лимит SEC 10/сек, §14); сон инжектируется, тесты не ждут.
+
+**Отличие от замысла:** счётчики по кварталам, без сумм раундов и имён
+компаний — они лежат в XML самих filing'ов, и их разбор (нормализация
+разнородного XML, оценка 3–5 дней в §18.4) — отдельная работа после P6, не
+P5c. `configured=False` (= `not_configured` в UI) означает «User-Agent
+EDGAR не введён», а не «раундов нет».
+
+**UI:** в карточке — блок «Funding · раунды»: таблица «квартал → filing'ов»,
+строка источника («SEC EDGAR») и «Тренд: +X% за 4 квартала»; три состояния
+по `signals_status`.
+
+**UI (замысел плана):** последние раунды (компания, сумма, дата) — в P5c не
+реализовано (см. «Отличие от замысла» выше): карточка показывает счётчики по
+кварталам, без сумм и имён.
 
 **Стоимость:** 3–5 дней (EDGAR отдаёт XML/JSON неоднородно, нужна нормализация).
 **Без ключа:** «не настроен».
@@ -1193,7 +1226,7 @@ jobs/patents/funding/search_interest.
 | P4b | Momentum (core + UI + matrix) — ЗАКРЫТ 2026-10-20 | 3 часа |
 | P4c | Cross-ecosystem (mapping + UI) — ЗАКРЫТ 2026-10-20 | 1–2 дня |
 | P5a | Jobs (Adzuna) — ЗАКРЫТ 2026-10-20 | 2 дня |
-| P5b | Patents (PatentsView) | 2–3 дня |
+| P5b | Patents (PatentsView) — ЗАКРЫТ 2026-10-20 | 2–3 дня |
 | P5c | Funding (SEC EDGAR) | 3–5 дней |
 | P5d | Search interest (Yandex Wordstat + Google Trends/Apify) | 3–4 дня |
 | P5e | Gap Score (Settings веса + UI) | 1–2 дня |

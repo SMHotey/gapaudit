@@ -22,6 +22,7 @@ import pytest
 from cli import signals
 from core.api_keys import ApiKeysStore
 from core.collectors.jobs import JobsByCountry, JobsSignal
+from core.collectors.funding import FundingQuarter, FundingSignal
 from core.collectors.patents import PatentsSignal, PatentsYearBucket
 
 @pytest.fixture(autouse=True)
@@ -355,7 +356,11 @@ def test_collect_jobs_and_patents_writes_both_blocks(
 def test_without_kind_collects_every_signal_kind(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Без ``--kind`` собираются все виды SIGNAL_KINDS (ключей нет — оба False)."""
+    """Без ``--kind`` собираются все виды SIGNAL_KINDS (ключей нет — все False).
+
+    P5c: видов три (jobs, patents, funding) — новый вид обязан попасть и в
+    набор по умолчанию, иначе «собери всё» тихо перестало бы собирать funding.
+    """
     out_path = tmp_path / "signals.json"
 
     code = signals.main([
@@ -366,9 +371,10 @@ def test_without_kind_collects_every_signal_kind(
 
     assert code == 0
     payload = json.loads(out_path.read_text(encoding="utf-8"))
-    assert list(payload["signals"]) == ["jobs", "patents"]
+    assert list(payload["signals"]) == ["jobs", "patents", "funding"]
     assert payload["signals"]["jobs"]["configured"] is False
     assert payload["signals"]["patents"]["configured"] is False
+    assert payload["signals"]["funding"]["configured"] is False
 
 
 def test_summary_for_humans_prints_patents_sections(
@@ -396,3 +402,189 @@ def test_summary_for_humans_prints_patents_sections(
     assert "всего патентов: 42" in captured.out
     assert "импульс +200.0%" in captured.out
     assert '"type"' not in captured.out
+
+
+# --- funding (шаг P5c) ---------------------------------------------------------
+
+
+def fake_funding_signal(**overrides: object) -> FundingSignal:
+    """Собранный funding-сигнал для фейка compute_funding."""
+    fields: dict = {
+        "total": 42,
+        "by_quarter": (FundingQuarter(year=2026, quarter=2, count=42),),
+        "trend_pct": None,
+        "configured": True,
+        "error": None,
+    }
+    fields.update(overrides)
+    return FundingSignal(**fields)
+
+
+def test_collect_funding_without_user_agent_is_configured_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--kind funding`` без User-Agent — configured=False, код 0, запросов нет.
+
+    Транспорт заменён на взрывающийся: без User-Agent EDGAR не дёргается
+    (контракт core/collectors/funding.py), и вида jobs в результате нет.
+    """
+    def must_not_be_called(url: str, headers: dict, timeout: float) -> tuple[int, bytes]:
+        raise AssertionError("транспорт без User-Agent не должен дёргаться")
+
+    monkeypatch.setattr(signals, "funding_transport", must_not_be_called)
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "funding",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert protocol(captured.out)[-1] == {"type": "done"}
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["funding"]
+    assert payload["signals"]["funding"] == {
+        "total": 0, "by_quarter": [], "trend_pct": None,
+        "configured": False, "error": None,
+    }
+
+
+def test_collect_funding_uses_public_meta_not_get(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """User-Agent EDGAR читается ``public_meta`` — каналом только ``meta``.
+
+    §0.7 шага утверждал, что ``get("edgar")`` вернёт ``{}`` (у провайдера
+    ``encrypted_value`` пуст). Фактически ``get`` домешивает ``public_meta``,
+    поэтому User-Agent в нём тоже есть — оба пути дают значение, и «молчаливо
+    пустой» funding получился бы только у того, кто читает поле не из того
+    места (например, ``encrypted_value``). CLI идёт через ``public_meta``:
+    это точный канал (только ``meta``, без расшифровки), и тест фиксирует,
+    что значение доходит до ``compute_funding``.
+    """
+    keys = ApiKeysStore(tmp_path / "data")
+    keys.save("edgar", {"user_agent": "GapAudit test@example.com"})
+
+    assert keys.public_meta("edgar") == {"user_agent": "GapAudit test@example.com"}
+    assert keys.status("edgar").configured is True
+    seen: dict[str, object] = {}
+
+    def fake_compute(query: str, *, user_agent, transport, on_progress=None,
+                     **kwargs: object) -> FundingSignal:
+        seen.update(query=query, user_agent=user_agent, transport=transport)
+        return fake_funding_signal()
+
+    monkeypatch.setattr(signals, "compute_funding", fake_compute)
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "funding",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    assert seen["user_agent"] == "GapAudit test@example.com"
+    assert seen["transport"] is signals.funding_transport
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["signals"]["funding"]["configured"] is True
+
+
+def test_collect_all_three_kinds_writes_three_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--kind jobs --kind patents --kind funding`` — три блока в одном файле."""
+    monkeypatch.setattr(signals, "compute_jobs",
+                        lambda query, **kwargs: fake_signal())
+    monkeypatch.setattr(signals, "compute_patents",
+                        lambda query, **kwargs: fake_patents_signal())
+    monkeypatch.setattr(signals, "compute_funding",
+                        lambda query, **kwargs: fake_funding_signal())
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests",
+        "--kind", "jobs", "--kind", "patents", "--kind", "funding",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["jobs", "patents", "funding"]
+
+
+def test_without_kind_collects_funding_too(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Без ``--kind`` собираются все три вида SIGNAL_KINDS (ключей нет — все False)."""
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["jobs", "patents", "funding"]
+    assert payload["signals"]["funding"]["configured"] is False
+
+
+def test_summary_for_humans_prints_funding_sections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Автономный запуск: таблица кварталов и тренд funding в stdout."""
+    monkeypatch.setattr(signals, "compute_funding",
+                        lambda query, **kwargs: fake_funding_signal(
+                            total=300,
+                            trend_pct=300.0,
+                            by_quarter=(
+                                FundingQuarter(year=2025, quarter=4, count=50),
+                                FundingQuarter(year=2026, quarter=3, count=200),
+                            ),
+                        ))
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "funding",
+        "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "Q4 2025" in captured.out
+    assert "всего filing'ов формы D: 300" in captured.out
+    assert "тренд +300.0% за 4 квартала" in captured.out
+    assert '"type"' not in captured.out
+
+
+def test_summary_without_user_agent_points_to_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Нет User-Agent — итог говорит «не настроен», а не «0 раундов».
+
+    ``configured=False`` — это не ошибка (код 0) и не пустой результат сбора:
+    пользователю нужно действие «ввести User-Agent», а не «собрать заново».
+    """
+    monkeypatch.setattr(signals, "compute_funding",
+                        lambda query, **kwargs: fake_funding_signal(
+                            total=0, by_quarter=(), configured=False))
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "funding",
+        "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "User-Agent SEC EDGAR не настроен" in captured.out
+    assert "всего filing'ов" not in captured.out

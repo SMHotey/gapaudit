@@ -674,3 +674,22 @@ a:hover { color: var(--accent-hover); }
 }
 .patents-table th { color: var(--text-dim); font-weight: 500; }
 .patents-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Блок «Funding» в карточке пакета (шаг P5c): раунды по кварталам (форма D,
+   SEC EDGAR) + тренд; пустые состояния («User-Agent не настроен» / «ещё не
+   собирали») — тот же отступ, без таблицы. Вид — как у Patents (P5b). */
+.card-funding { margin: 12px 0; }
+.funding-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.funding-table th,
+.funding-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.funding-table th { color: var(--text-dim); font-weight: 500; }
+.funding-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }

@@ -1,0 +1,11 @@
+{
+  "took": 180,
+  "timed_out": false,
+  "_shards": {"total": 50, "successful": 50, "skipped": 0, "failed": 0},
+  "hits": {
+    "total": {"value": 42, "relation": "eq"},
+    "max_score": 12.96149,
+    "hits": []
+  },
+  "__fixture_note": "Синтетическая фикстура P5c в формате реального ответа efts.sec.gov/LATEST/search-index (20.10.2026: took/timed_out/_shards/hits.total.value/relation; без User-Agent сервер отвечает 403). Счётчик 42 вымышлен; снять реальную после того, как пользователь введёт свой User-Agent — follow-up, не блокер."
+}

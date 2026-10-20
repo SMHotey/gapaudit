@@ -391,3 +391,122 @@ def test_patents_observation_not_configured_is_not_configured(
     assert payload["signals_status"]["patents"] == "not_configured"
     assert "patents" in payload["signals_available"]
     assert "patents" not in payload["signals_unavailable"]
+
+
+# --- funding (шаг P5c) --------------------------------------------------------
+
+#: Наблюдение funding — тем же хуком lifespan, что jobs/patents.
+FUNDING_DETAIL: dict[str, Any] = {
+    "total": 99,
+    "by_quarter": [
+        {"year": 2025, "quarter": 4, "count": 33},
+        {"year": 2026, "quarter": 1, "count": 66},
+    ],
+    "trend_pct": 100.0,
+    "configured": True,
+    "error": None,
+}
+
+#: User-Agent SEC EDGAR, как его сохраняет Настройки → API-ключи.
+EDGAR_UA = "GapAudit test@example.com"
+
+
+def test_collect_with_funding_kind_is_202(client: TestClient) -> None:
+    """``kinds=["funding"]`` проходит fail-fast-валидацию (SIGNAL_COLLECT_KINDS)."""
+    response = collect(client, {"package": "requests", "kinds": ["funding"]})
+
+    assert response.status_code == 202, response.text
+    job = app_state(client).queue.get(response.json()["job_id"])
+    assert job is not None
+    assert job.params == {"package": "requests", "kinds": ["funding"]}
+
+
+def test_done_records_funding_observation(client: TestClient) -> None:
+    """Хук lifespan обобщён (§0): result.json с funding → наблюдение funding."""
+    state = app_state(client)
+    finish_with_result(
+        client, {"package": "requests", "signals": {"funding": FUNDING_DETAIL}}
+    )
+
+    assert wait_for(
+        lambda: state.store.get_signal_observations("requests", signal_kind="funding")
+    )
+    rows = state.store.get_signal_observations("requests", signal_kind="funding")
+
+    assert rows[0]["value"] == 99.0
+    assert rows[0]["detail"] == FUNDING_DETAIL
+
+
+def test_funding_observation_configured_is_ok(client: TestClient) -> None:
+    """Наблюдение configured=True → funding-блок, статус ok, имя в available."""
+    seed_package(client)
+    app_state(client).store.record_signal_observation(
+        package="requests",
+        signal_kind="funding",
+        value=99.0,
+        detail=FUNDING_DETAIL,
+    )
+
+    payload = signals(client)
+
+    assert payload["funding"] == FUNDING_DETAIL
+    assert payload["signals_status"]["funding"] == "ok"
+    assert "funding" in payload["signals_available"]
+    assert "funding" not in payload["signals_unavailable"]
+
+
+def test_funding_without_observation_with_user_agent_is_not_collected(
+    client: TestClient,
+) -> None:
+    """User-Agent настроен, данных нет → not_collected, в unavailable (§0.3)."""
+    seed_package(client)
+    app_state(client).api_keys.save("edgar", {"user_agent": EDGAR_UA})
+
+    payload = signals(client)
+
+    assert payload["funding"] is None
+    assert payload["signals_status"]["funding"] == "not_collected"
+    assert "funding" in payload["signals_unavailable"]
+    assert "funding" not in payload["signals_available"]
+
+
+def test_funding_without_observation_without_user_agent_is_not_configured(
+    client: TestClient,
+) -> None:
+    """Ни User-Agent, ни данных → not_configured, в available (ссылка в Настройки).
+
+    Гейт §0.3: без проверки провайдера статус был бы not_collected («ещё не
+    собирали»), и карточка предлагала бы дождаться сбора вместо ввода
+    User-Agent.
+    """
+    seed_package(client)
+
+    payload = signals(client)
+
+    assert payload["funding"] is None
+    assert payload["signals_status"]["funding"] == "not_configured"
+    assert "funding" in payload["signals_available"]
+    assert "funding" not in payload["signals_unavailable"]
+
+
+def test_funding_observation_not_configured_is_not_configured(
+    client: TestClient,
+) -> None:
+    """Наблюдение configured=False → not_configured, в available (как у jobs/patents)."""
+    seed_package(client)
+    app_state(client).store.record_signal_observation(
+        package="requests",
+        signal_kind="funding",
+        value=0.0,
+        detail={
+            "total": 0, "by_quarter": [], "trend_pct": None,
+            "configured": False, "error": None,
+        },
+    )
+
+    payload = signals(client)
+
+    assert payload["funding"] is None
+    assert payload["signals_status"]["funding"] == "not_configured"
+    assert "funding" in payload["signals_available"]
+    assert "funding" not in payload["signals_unavailable"]

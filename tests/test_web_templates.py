@@ -517,6 +517,38 @@ def test_style_has_patents_table_rules(client: TestClient) -> None:
     assert ".patents-table td.mono" in stylesheet
 
 
+# --- блок Funding в карточке (шаг P5c) ---------------------------------------
+
+
+def test_card_script_renders_funding_block(client: TestClient) -> None:
+    """Карточка пакета рисует «Funding · раунды» из signals.funding (P5c).
+
+    Три состояния по signals_status: таблица по кварталам + тренд (собран),
+    ссылка «Настройки → API-ключи» (User-Agent не настроен), «Ещё не
+    собирали» (User-Agent есть, данных нет). Кварталы и числа — только
+    textContent (gotcha 37), innerHTML — только у статической шапки таблицы.
+    """
+    script = client.get("/static/card.js").text
+
+    assert "card-funding" in script
+    assert "funding-table" in script
+    assert "signals.funding" in script
+    assert "signals_status.funding" in script
+    assert "User-Agent SEC EDGAR не настроен" in script
+    assert "SEC EDGAR" in script  # строка источника (§18.3)
+    assert "tdQ.textContent = 'Q' + row.quarter" in script
+    assert "Тренд: " in script
+
+
+def test_style_has_funding_table_rules(client: TestClient) -> None:
+    """Стили таблицы funding подключены: класс из card.js есть в CSS."""
+    stylesheet = client.get("/static/style.css").text
+
+    assert ".card-funding" in stylesheet
+    assert ".funding-table" in stylesheet
+    assert ".funding-table td.mono" in stylesheet
+
+
 def test_settings_tabs_switch(client: TestClient) -> None:
     """Две вкладки настроек: активная ровно одна, переключение — классом.
 

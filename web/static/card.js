@@ -391,6 +391,72 @@
       else card.appendChild(div);
     }
 
+    /* Funding (шаг P5c, §18.3): раунды финансирования по форме D (SEC EDGAR) —
+       таблица по кварталам + тренд + строка источника. Три состояния по
+       signals_status: собран (таблица), User-Agent не настроен (ссылка в
+       Настройки), User-Agent есть, но не собирали («ещё не собирали»;
+       кнопка «Собрать» — P5f, §0.4). Данные в DOM попадают только через
+       textContent (gotcha 37), innerHTML — только у статической шапки. */
+    const funding = signals.funding;
+    const fundingStatus = payload.signals_status &&
+                          payload.signals_status.funding;
+    if (funding || fundingStatus === 'not_configured' ||
+        fundingStatus === 'not_collected') {
+      const div = document.createElement('div');
+      div.className = 'card-funding';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Funding · раунды';
+      div.appendChild(label);
+      if (funding && funding.configured) {
+        const table = document.createElement('table');
+        table.className = 'funding-table';
+        table.innerHTML = '<thead><tr><th>Квартал</th><th>Раундов</th></tr></thead>';
+        const tbody = document.createElement('tbody');
+        (funding.by_quarter || []).forEach((row) => {
+          const tr = document.createElement('tr');
+          const tdQ = document.createElement('td');
+          tdQ.textContent = 'Q' + row.quarter + ' ' + row.year;
+          tdQ.className = 'mono';
+          tr.appendChild(tdQ);
+          const tdC = document.createElement('td');
+          tdC.textContent = fmtNum(row.count);
+          tdC.className = 'mono';
+          tr.appendChild(tdC);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        div.appendChild(table);
+        const total = document.createElement('div');
+        total.className = 'muted';
+        total.textContent = 'Всего: ' + fmtNum(funding.total) +
+          ' filing\'ов формы D · источник: SEC EDGAR';
+        div.appendChild(total);
+        if (funding.trend_pct !== null && funding.trend_pct !== undefined) {
+          const trend = document.createElement('div');
+          trend.className = 'muted';
+          const sign = funding.trend_pct > 0 ? '+' : '';
+          trend.textContent = 'Тренд: ' + sign +
+            funding.trend_pct.toFixed(1) + '% за 4 квартала';
+          div.appendChild(trend);
+        }
+      } else if (fundingStatus === 'not_configured') {
+        const msg = document.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'User-Agent SEC EDGAR не настроен — ' +
+          'см. Настройки → API-ключи';
+        div.appendChild(msg);
+      } else {
+        const msg = document.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'Ещё не собирали';
+        div.appendChild(msg);
+      }
+      const anchor3 = card.querySelector('.card-graph');
+      if (anchor3) card.insertBefore(div, anchor3);
+      else card.appendChild(div);
+    }
+
     card.appendChild(miniGraph(history));
 
     const eventsTitle = document.createElement('div');

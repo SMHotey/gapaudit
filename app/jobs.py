@@ -829,8 +829,10 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
     * ``monitor.diff``: ``diff_from`` (обязателен -> ``--diff=``);
     * ``signals.collect``: ``package`` (обязателен) и ``kinds`` (список;
       пусто — без ``--kind``, все виды возьмёт сам CLI: ``SIGNAL_KINDS``,
-      в P5b — ``jobs`` и ``patents``). Подкоманда ``collect`` идёт ПЕРЕД
-      флагами — так устроен argparse ``cli.signals``.
+      в P5c — ``jobs``, ``patents`` и ``funding``). Подкоманда ``collect``
+      идёт ПЕРЕД флагами — так устроен argparse ``cli.signals``. Белый
+      список видов здесь не дублируется: его проверяет
+      ``POST /api/signals/collect`` по ``SIGNAL_COLLECT_KINDS`` (gotcha 54).
 
     Ошибки — только ``ValueError`` и только до ``subprocess``: задача,
     которая заведомо не запустится, не должна создавать процесс. Обязательные
