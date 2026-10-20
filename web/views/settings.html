@@ -79,6 +79,40 @@
                  max="1000" required>
         </label>
       </fieldset>
+      {# Веса Gap Score (шаг P5e, §18.3). Имена полей совпадают с полями
+         Settings (gap_weight_*): settings.js собирает тело PUT по тем же
+         именам, и переименование здесь дало бы форму, которая молча
+         отправляет чужие ключи. Отрицательные веса — штраф, поэтому
+         min у полей нет: -0.5 — нормальное значение. #}
+      <fieldset>
+        <legend>Gap Score — веса</legend>
+        <p class="muted">
+          Веса компонентов интегрального балла (0–100). Положительные:
+          adoption, momentum, no_flag, jobs, search. Отрицательные: funding,
+          patents — штраф («ниша занята»). Ноль отключает компонент.
+        </p>
+        <label>adoption:
+          <input type="number" name="gap_weight_adoption" step="0.1" required>
+        </label>
+        <label>momentum:
+          <input type="number" name="gap_weight_momentum" step="0.1" required>
+        </label>
+        <label>no_flag:
+          <input type="number" name="gap_weight_no_flag" step="0.1" required>
+        </label>
+        <label>funding (штраф):
+          <input type="number" name="gap_weight_funding" step="0.1" required>
+        </label>
+        <label>patents (штраф):
+          <input type="number" name="gap_weight_patents" step="0.1" required>
+        </label>
+        <label>jobs:
+          <input type="number" name="gap_weight_jobs" step="0.1" required>
+        </label>
+        <label>search:
+          <input type="number" name="gap_weight_search" step="0.1" required>
+        </label>
+      </fieldset>
       <div class="readonly-info">
         <div><span class="muted">Каталог данных:</span>
              <code id="ro-data-dir">—</code></div>

@@ -130,6 +130,54 @@
     title.textContent = name;
     card.appendChild(title);
 
+    /* Gap Score (шаг P5e, §18.3): интегральная метрика 0–100 и breakdown по
+       компонентам. Число приходит из /api/packages/{name} (нормировка — по
+       всем пакетам, как у матрицы), компоненты считает сервер: второй расчёт
+       в JS разошёлся бы с размером точки при первой правке весов. Стоит сразу
+       после имени — это ответ на главный вопрос карточки «ниша свободна?».
+       Компонент со значением — только нормированное число: «+ adoption 0.90»
+       читается как «вклад веса 1 × 0.90», и знак показывает, плюс это или
+       штраф (funding/patents). */
+    if (payload.gap_score != null) {
+      const div = document.createElement('div');
+      div.className = 'card-gap';
+      const score = document.createElement('div');
+      score.className = 'gap-score-value';
+      score.textContent = 'Gap Score: ' +
+        Math.round(payload.gap_score) + ' / 100';
+      div.appendChild(score);
+      const breakdown = document.createElement('div');
+      breakdown.className = 'gap-breakdown muted';
+      const parts = [
+        ['adoption', '+'],
+        ['momentum', '+'],
+        ['no_flag', '+'],
+        ['jobs', '+'],
+        ['search', '+'],
+        ['funding', '−'],
+        ['patents', '−'],
+      ];
+      const gaps = payload.gap_breakdown || {};
+      parts.forEach(function (part) {
+        const key = part[0];
+        const value = gaps[key];
+        if (value == null) return;
+        const span = document.createElement('span');
+        span.textContent = (part[1] === '−' ? '−' : '+') +
+          ' ' + key + ' ' + value.toFixed(2);
+        span.style.marginRight = '8px';
+        breakdown.appendChild(span);
+      });
+      if (gaps.components_available != null) {
+        const cnt = document.createElement('span');
+        cnt.className = 'gap-components';
+        cnt.textContent = '(' + gaps.components_available + ' из 7)';
+        breakdown.appendChild(cnt);
+      }
+      div.appendChild(breakdown);
+      card.appendChild(div);
+    }
+
     const latest = (payload.observations || [])[0] || {};
     const info = document.createElement('div');
     info.className = 'card-info';

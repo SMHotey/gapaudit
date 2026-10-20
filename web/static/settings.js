@@ -20,11 +20,17 @@
   const api = window.GapAudit.api;
 
   /* Числовые поля формы и имена полей Settings совпадают один-в-один:
-     так форма и контракт PUT не расходятся при добавлении порога. */
+     так форма и контракт PUT не расходятся при добавлении порога. Веса
+     Gap Score (шаг P5e) — тоже числа, поэтому живут в этом же списке:
+     отдельный список означал бы, что fill/collect надо править в двух
+     местах при каждом новом весе. */
   const NUMBER_FIELDS = [
     'alive_weekly', 'alive_monthly', 'dead_weekly', 'dead_monthly',
     'stale_days', 'adoption_delta_pct', 'cache_ttl_hours',
     'max_parallel_jobs', 'registry_limit',
+    'gap_weight_adoption', 'gap_weight_momentum', 'gap_weight_no_flag',
+    'gap_weight_funding', 'gap_weight_patents', 'gap_weight_jobs',
+    'gap_weight_search',
   ];
 
   /* Состояние провайдера -> подпись и класс бейджа. Классы цветов —

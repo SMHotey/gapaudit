@@ -239,3 +239,152 @@ def test_existing_point_fields_survive_momentum(client: TestClient) -> None:
         assert key in point, key
     assert point["adoption_week"] == 12_000
     assert point["flag"] is True
+
+
+# --- Gap Score в точках матрицы (шаг P5e) ------------------------------------
+
+
+def record_signal(
+    client: TestClient, package: str, kind: str, *, value: float, **detail: Any
+) -> None:
+    """Наблюдение сигнала в том виде, в каком его пишет хук lifespan (§7).
+
+    ``configured=True`` и ``error=None`` — «собран»; тесты с «ключ есть, но
+    API не ответил» передают ``error="all requests failed"`` явно.
+    """
+    payload = {"configured": True, "error": None}
+    payload.update(detail)
+    app_state(client).store.record_signal_observation(
+        package=package, signal_kind=kind, value=value, detail=payload
+    )
+
+
+def test_matrix_points_have_gap_score_and_seven_component_breakdown(
+    client: TestClient,
+) -> None:
+    """Три точки с разными adoption: у каждой score и breakdown из 7 компонентов.
+
+    Компоненты считаются по одним и тем же сигналам, поэтому проверяется их
+    форма и то, что крайние adoption дают 0.0 и 1.0 (min-max по выборке).
+    """
+    seed(
+        client,
+        observation("low", week=100, flag=0),
+        observation("mid", week=500, flag=0),
+        observation("high", week=1000, flag=0),
+    )
+
+    points = {point["name"]: point for point in matrix(client)["points"]}
+
+    for name in ("low", "mid", "high"):
+        point = points[name]
+        assert point["gap_score"] is not None, name
+        assert 0.0 <= point["gap_score"] <= 100.0, name
+        breakdown = point["gap_breakdown"]
+        for key in (
+            "adoption", "momentum", "no_flag", "funding", "patents",
+            "jobs", "search", "weights_used", "components_available",
+        ):
+            assert key in breakdown, (name, key)
+    assert points["low"]["gap_breakdown"]["adoption"] == pytest.approx(0.0)
+    assert points["high"]["gap_breakdown"]["adoption"] == pytest.approx(1.0)
+
+
+def test_point_without_signals_has_fewer_components(client: TestClient) -> None:
+    """Точка без единого сигнала: score есть, компонентов меньше семи.
+
+    В матрицу попадают только наблюдения с ``adoption_week > 0``, и признак
+    ниши известен всегда — поэтому минимальный набор здесь два компонента
+    (adoption + no_flag), а не ноль. «Нет ни одного компонента -> score =
+    None» проверяется на чистой функции (``test_core_signals``): через API
+    это состояние недостижимо, и тест на матрице изображал бы его подделкой.
+    """
+    seed(client, observation("bare", week=1000, flag=0))
+
+    point = momentum_point(client, "bare")
+
+    assert point["gap_score"] is not None
+    assert point["gap_breakdown"]["components_available"] == 2
+    assert set(point["gap_breakdown"]["weights_used"]) == {"adoption", "no_flag"}
+    assert point["gap_breakdown"]["funding"] is None
+    assert point["gap_breakdown"]["jobs"] is None
+
+
+def test_gap_score_is_none_only_without_any_data(client: TestClient) -> None:
+    """``gap_score`` в матрице не бывает ``None``: adoption и признак есть всегда.
+
+    Сценарий шага «точка без adoption и без сигналов -> gap_score=None»
+    недостижим по устройству матрицы: ``log10(0)`` не существует, и такие
+    наблюдения в точки не попадают (они видны в ``counts.total``). Проверяем
+    именно это: пакет без adoption не создаёт точку, то есть «пустого» score
+    на экране не бывает, а не «пустой score = 0».
+    """
+    seed(client, observation("zero", week=0, flag=0))
+
+    payload = matrix(client)
+
+    assert payload["points"] == []
+    assert payload["counts"]["total"] == 1
+
+
+def test_flag_true_lowers_gap_score(client: TestClient) -> None:
+    """Признак ниши (вес no_flag=2) опускает score при равных adoption/momentum."""
+    seed(
+        client,
+        observation("free", week=1000, flag=0),
+        observation("busy", week=1000, flag=1),
+    )
+
+    points = {point["name"]: point for point in matrix(client)["points"]}
+
+    assert points["free"]["gap_breakdown"]["no_flag"] == pytest.approx(1.0)
+    assert points["busy"]["gap_breakdown"]["no_flag"] == pytest.approx(0.0)
+    assert points["free"]["gap_score"] > points["busy"]["gap_score"]
+
+
+def test_funding_penalty_lowers_gap_score(client: TestClient) -> None:
+    """``funding`` больше нуля уменьшает score: вес отрицательный (штраф)."""
+    seed(
+        client,
+        observation("quiet", week=1000, flag=0),
+        observation("funded", week=1000, flag=0),
+    )
+    record_signal(
+        client, "quiet", "funding", value=0, total=0, trend_pct=None,
+        by_quarter=[],
+    )
+    record_signal(
+        client, "funded", "funding", value=40, total=40, trend_pct=10.0,
+        by_quarter=[],
+    )
+
+    points = {point["name"]: point for point in matrix(client)["points"]}
+
+    assert points["quiet"]["gap_breakdown"]["funding"] == pytest.approx(0.0)
+    assert points["funded"]["gap_breakdown"]["funding"] == pytest.approx(1.0)
+    assert points["funded"]["gap_score"] < points["quiet"]["gap_score"]
+    assert points["quiet"]["gap_breakdown"]["weights_used"]["funding"] < 0
+
+
+def test_failed_signal_does_not_penalise_score(client: TestClient) -> None:
+    """Ключ есть, API не ответил (``error``) — компонент ``None``, а не штраф.
+
+    Правило gotcha 66: «настроен, но нет данных» не должно понижать балл —
+    иначе отсутствие ответа API выглядело бы как занятая ниша.
+    """
+    seed(
+        client,
+        observation("failed", week=1000, flag=0),
+        observation("clean", week=1000, flag=0),
+    )
+    record_signal(
+        client, "failed", "jobs", value=0, total=0,
+        error="all requests failed", by_country=[],
+    )
+
+    points = {point["name"]: point for point in matrix(client)["points"]}
+
+    assert points["failed"]["gap_breakdown"]["jobs"] is None
+    assert points["failed"]["gap_score"] == pytest.approx(
+        points["clean"]["gap_score"]
+    )

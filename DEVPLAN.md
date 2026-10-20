@@ -203,10 +203,17 @@ P5c (закрыт 2026-10-20): funding (SEC EDGAR), третий сигнал с
 [current_q−4, current_q−1]. Формат EDGAR — hits.total.value (проверено
 живым запросом).
 
-P5d (сдан на ревью 2026-10-20): search_interest — два источника в одном
-сигнале (Yandex Wordstat по регионам РФ + Google Trends через Apify),
-1068 тестов. Официальный Google Trends (alpha) не реализован: ключ
-вводится, источник отдаёт причину в `error`, а не молчит.
+P5d (закрыт 2026-10-20): search_interest (Wordstat + Apify Google Trends),
+1068 тестов. Составной статус: "ok" при configured=True, даже если error без
+points; "not_configured" если ни один источник не настроен; "not_collected"
+если не собирали. Wordstat: regions — список чисел, client_id не в запросе,
+trend_pct = None (динамика в /v1/dynamics, follow-up).
+
+P5e (сдан на ревью 2026-10-20): Gap Score — `core/signals.py` (GapScore,
+GapWeights, Normalizer, compute_gap_score/batch), веса `gap_weight_*` в
+Settings и форме настроек, `gap_score`/`gap_breakdown` в точках
+`/api/matrix` и карточке, новый `GET /api/gap-score?names=a,b`, размер точки
+на матрице = score. 1118 тестов (было 1068).
 
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
@@ -369,7 +376,8 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | GET | `/jobs/{id}/log` | хвост лога задачи |
 | GET | `/api/jobs?status=` | используется в P3 (мониторинг) и будущей пагинации; на экране «Задачи» фильтр клиентский (2a) — чтобы `confirmClose` видел running-задачи при активном фильтре «Готово». При >10k задач — переключиться на серверную пагинацию + отдельный endpoint `active_count` для `confirmClose` |
 | GET | `/api/stream` | SSE: прогресс задач и события |
-| GET | `/api/matrix` | агрегат экрана «Сейчас решать» (шаг 2b): точки adoption × признак из `get_latest_observations`, 4 квадранта по `alive_weekly`, пороги, счётчики. С шага P4b каждая точка несёт `momentum_30d` (Δ adoption за 30 дней, `null` — мало данных), `momentum_color` (`green`/`red`/`gray` по порогу ±5%) и `momentum_samples` |
+| GET | `/api/matrix` | агрегат экрана «Сейчас решать» (шаг 2b): точки adoption × признак из `get_latest_observations`, 4 квадранта по `alive_weekly`, пороги, счётчики. С шага P4b каждая точка несёт `momentum_30d` (Δ adoption за 30 дней, `null` — мало данных), `momentum_color` (`green`/`red`/`gray` по порогу ±5%) и `momentum_samples`. С шага P5e — `gap_score` (0..100 или `null`) и `gap_breakdown` (семь нормированных компонентов + `weights_used` + `components_available`) |
+| GET | `/api/gap-score?names=a,b` | Gap Score 2–3 пакетов (шаг P5e): ответ `{scores: [{name, score, components, weights_used, components_available, components_total}], missing: [...]}`; min-max нормируется по ВСЕМ пакетам (как у матрицы), поэтому число совпадает с точкой экрана. 400 — имён не 2–3, 404 — ни одного в Store |
 | POST | `/api/packages/check` | прогон имён (adoption × признак) |
 | GET | `/api/packages/search?q=` | поиск по имени/описанию с пагинацией (шаг 3a): `q`, `limit` 1..200 (50), `offset`; ответ `{packages, total, limit, offset, q}`. Роут объявлен до `/api/packages/{name}` — иначе «search» стало бы именем пакета |
 | GET | `/api/packages/{name}` | карточка пакета с историей (события — через `Store.get_events(name=...)`) |
@@ -820,6 +828,12 @@ Hermes не подключается к живому приложению — о
   44.02 — тренд не вырос, хотя шаг добавил 72 теста; полный до правок не
   мерился (первый замер — уже после). Вклад: core search_interest 54
   (фикстуры Wordstat/Apify, без сети), cli +7, web signals +9, шаблоны +2.
+  Факт (P5e): 53.92 / 40.21 — тёплый прогон (1118 тестов, +50: core signals 26,
+  web matrix 6, web gap-score 9, settings +3 в core и +3 в web, шаблоны 3).
+  Первый прогон после правок был холодным: 85.04 / 47.55; база перед шагом
+  (77.97 / 64.08) тоже холодная, поэтому сравнивать можно только «холодный с
+  холодным», а тёплые цифры — то, что видит цикл разработки. Оба гейта
+  (120/60) пройдены с запасом.
 
 Коллекторы сигналов (P4/P5):
 
@@ -883,7 +897,9 @@ P5b (закрыт 2026-10-20) — patents (PatentsView).
 
 P5c (закрыт 2026-10-20) — funding (SEC EDGAR).
 
-P5d (сдан на ревью 2026-10-20) — search_interest (Wordstat + Apify).
+P5d (закрыт 2026-10-20) — search_interest (Wordstat + Apify).
+
+P5e (сдан на ревью 2026-10-20) — Gap Score (веса в Settings + UI, размер точки).
 
 ## 14. Риски и что с ними делать
 
@@ -1253,6 +1269,23 @@ value}], trend: [...]}`.
 `configured=false` (запросов нет); часть регионов упала — `error=null`, `total`
 по успешным; всё упало — `error='all requests failed'`, `total=0`.
 
+**Wordstat `trend_pct = None` (уточнение P5e):** `/v1/topRequests` — срез за 30
+дней, ряда за 12 месяцев в нём нет. Динамика — `/v1/dynamics` (другая форма
+ответа, follow-up). Если пользователь настроил только Wordstat — график
+динамики не строится, показывается только срез top-регионов. Google Trends
+через Apify — график динамики есть (`interestOverTime`).
+
+**Составной статус (уточнение P5e).** `signals_status.search_interest` —
+составной:
+
+- `"ok"` если хотя бы один источник `configured=True` (даже если у него
+  `error` без points — ключ валидный, API не ответил: это не «не настроен»);
+- `"not_configured"` если ни один источник не настроен;
+- `"not_collected"` если observation нет.
+
+Это согласуется с gotcha 66 (AGENTS.md): `configured=False` + `error` — не
+«не настроен», а «настроен, но ошибка». UI различает.
+
 **UI (P5d):** блок «Search interest · поисковый интерес» с двумя подблоками —
 «Yandex Wordstat (РФ)» и «Google Trends (глобально)»; в каждом таблица top-5
 регионов + «Тренд 12 мес: +X%» (если источник его даёт), либо «Не настроен —
@@ -1292,6 +1325,42 @@ no_flag=2, jobs=0.5, search=0.3, funding=-0.5, patents=-0.3. Знак веса �
 **Без ключей:** работает частично (momentum + no_flag + adoption), без
 jobs/patents/funding/search_interest.
 
+**Реализовано (P5e, `core/signals.py`):** `GapScore`, `GapComponents`,
+`GapWeights`, `Normalizer`, `compute_gap_score`, `compute_gap_scores_batch`,
+`default_weights_from_settings`. Веса — поля `Settings.gap_weight_*` (дефолты
+§18.3 выше) и такие же поля в форме «Настройки → Пороги»; `PUT /api/settings`
+принимает только конечные числа (NaN/inf — 400).
+
+Решения, которых в формуле не было, и почему:
+
+- **усечение в 0..100**: при штрафных весах сумма бывает отрицательной
+  (минимум −0.8/5.6 ≈ −14 при дефолтах), а шкала обещана 0..100 — «занято по
+  всем штрафным компонентам» выражается нулём;
+- **вырожденный диапазон** (одно значение в выборке, min == max) даёт norm 0.5,
+  а не деление на ноль;
+- **`None` вместо нуля**: сигнал, которого нет, и сигнал с `error` (gotcha 66)
+  не входят ни в сумму, ни в знаменатель — «ключ есть, API не ответил» не
+  понижает балл;
+- **выборка нормировки** — точки матрицы (`adoption_week > 0`) и только они:
+  `GET /api/gap-score` и карточка считают min/max по тому же набору, поэтому
+  число на карточке совпадает с числом у точки на матрице (паритетный тест
+  `test_score_matches_matrix_point`);
+- **`no_flag` не нормируется** (1.0 / 0.0 / None): это булев признак, а не ряд.
+
+**API (P5e):** в точках `GET /api/matrix` появились `gap_score` (float|null) и
+`gap_breakdown` (семь компонентов + `weights_used` + `components_available`);
+карточка `GET /api/packages/{name}` отдаёт те же два поля; новый
+`GET /api/gap-score?names=a,b` (2–3 имени, как `/api/compare`) возвращает
+`{scores: […], missing: […]}` с нормировкой по всем пакетам. Экспорт матрицы
+(`POST /api/matrix/export`) колонок не изменил: gap_score — про экран, а CSV
+читают скрипты, собранные до P4c.
+
+**UI (P5e):** размер точки `r = 4 + gap/20` (4..9 px; без score — прежние 6),
+в `<title>` точки «gap 87»; легенда под матрицей «● размер = gap score (0..100) ·
+цвет = momentum · пунктир = порог adoption»; в карточке сразу под именем —
+блок «Gap Score: 87 / 100» с breakdown («+ adoption 0.90 … − funding 0.20») и
+счётчиком «(3 из 7)».
+
 ### 18.4. Порядок реализации
 
 | Этап | Что | Оценка |
@@ -1302,8 +1371,8 @@ jobs/patents/funding/search_interest.
 | P5a | Jobs (Adzuna) — ЗАКРЫТ 2026-10-20 | 2 дня |
 | P5b | Patents (PatentsView) — ЗАКРЫТ 2026-10-20 | 2–3 дня |
 | P5c | Funding (SEC EDGAR) — ЗАКРЫТ 2026-10-20 | 3–5 дней |
-| P5d | Search interest (Yandex Wordstat + Google Trends/Apify) — СДАН НА РЕВЬЮ 2026-10-20 | 3–4 дня |
-| P5e | Gap Score (Settings веса + UI) | 1–2 дня |
+| P5d | Search interest (Yandex Wordstat + Google Trends/Apify) — ЗАКРЫТ 2026-10-20 | 3–4 дня |
+| P5e | Gap Score (Settings веса + UI) — СДАН НА РЕВЬЮ 2026-10-20 | 1–2 дня |
 | P5f | Niche Finder (экран + конвейер задач) | 3–4 дня |
 | P6 | MCP-сервер, расписание, уведомления | 2–3 дня |
 

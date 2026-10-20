@@ -142,6 +142,14 @@ https://efts.sec.gov/LATEST/search-index?q={запрос}&forms=D
    (указав логин и `ClientId`).
 5. В GapAudit: `encrypted_value` = OAuth-токен, `meta.client_id` = `ClientId`.
 
+**Запрос:** POST `api.wordstat.yandex.net/v1/topRequests`. Параметры:
+`{"phrase": query, "regions": [225], "devices": ["all"]}`. ВАЖНО: `regions` —
+список ЧИСЕЛ (225 = Россия), не строка. `client_id` в запросе НЕ передаётся —
+он привязан к токену при регистрации приложения. Если клиент передал
+`client_id` в запросе — Яндекс вернёт 401. `/v1/topRequests` — срез за 30 дней,
+`trend_pct = None`. Ряд за 12 месяцев — `/v1/dynamics` (другая форма ответа,
+follow-up).
+
 **Как вызывать:**
 
 ```

@@ -39,7 +39,9 @@
   каталоги ``/api/catalogs*`` (шаг 3b: сборка по фразам, список, элементы с
   фильтрами, экспорт CSV/Markdown),
   матрица ``/api/matrix`` (шаг 2b — агрегат экрана
-  «Сейчас решать»), сравнение ``/api/compare`` (шаг 3c — 2–3 пакета бок о
+  «Сейчас решать»; шаг P5e — ``gap_score``/``gap_breakdown`` в точках),
+  ``GET /api/gap-score`` (шаг P5e — Gap Score 2–3 имён с нормировкой по всем
+  пакетам), сравнение ``/api/compare`` (шаг 3c — 2–3 пакета бок о
   бок по последнему замеру) и выгрузки ``POST /api/events/export``,
   ``POST /api/matrix/export``, ``POST /api/compare/export`` (шаг 3c: файл в
   ответе, CSV — ``utf-8-sig``), настройки ``GET/PUT /api/settings`` (шаг 2c —
@@ -93,6 +95,7 @@ import csv
 import io
 import json
 import logging
+import math
 import os
 import secrets
 import threading
@@ -133,6 +136,14 @@ from core.settings import (
     resolve_data_dir,
     save as save_settings,
     to_dict as settings_to_dict,
+)
+from core.signals import (
+    GapScore,
+    GapWeights,
+    Normalizer,
+    compute_gap_score,
+    compute_gap_scores_batch,
+    default_weights_from_settings,
 )
 
 __version__ = "0.1.0"
@@ -317,6 +328,27 @@ EDITABLE_SETTING_KEYS: tuple[str, ...] = (
     "cache_ttl_hours",
     "max_parallel_jobs",
     "registry_limit",
+    "gap_weight_adoption",
+    "gap_weight_momentum",
+    "gap_weight_no_flag",
+    "gap_weight_funding",
+    "gap_weight_patents",
+    "gap_weight_jobs",
+    "gap_weight_search",
+)
+
+#: Веса Gap Score (шаг P5e): отдельный набор, потому что у них нет
+#: диапазона — вес бывает отрицательным (штраф funding/patents), и таблица
+#: границ ``_FLOAT_SETTING_BOUNDS`` («минимум, строго ли больше») для них не
+#: подходит. Проверяется только тип и конечность.
+GAP_WEIGHT_KEYS: tuple[str, ...] = (
+    "gap_weight_adoption",
+    "gap_weight_momentum",
+    "gap_weight_no_flag",
+    "gap_weight_funding",
+    "gap_weight_patents",
+    "gap_weight_jobs",
+    "gap_weight_search",
 )
 
 #: Изменение любого из этих полей меняет вердикты и раскладку матрицы.
@@ -357,6 +389,10 @@ WARNING_VERDICTS = (
 )
 WARNING_RESTART = (
     "изменение max_parallel_jobs вступит в силу после перезапуска приложения"
+)
+WARNING_GAP_WEIGHTS = (
+    "веса Gap Score меняют размер точек на /api/matrix и баллы "
+    "в карточках — нажмите «Обновить» на экранах"
 )
 
 
@@ -1118,6 +1154,207 @@ def _search_interest_payload(
     return None, "not_configured"
 
 
+# --- Gap Score (шаг P5e) ------------------------------------------------------
+
+
+def _gap_weights(settings: Settings) -> GapWeights:
+    """Веса из настроек (``gap_weight_*``); мусор в файле — дефолт §18.3."""
+    return default_weights_from_settings(settings)
+
+
+def _signal_figure(store: Store, package: str, kind: str, field: str) -> float | None:
+    """Число из последнего наблюдения сигнала; ``None`` — данных нет.
+
+    Правило gotcha 66: наблюдение с ``configured=False`` («ключ не введён») и
+    наблюдение с ``error`` («ключ есть, но API не ответил») данными не
+    считаются. Иначе «собрали, но всё упало» (``total=0``) вошло бы в Gap
+    Score нулём — то есть отсутствие данных понижало бы балл ниши.
+    """
+    rows = store.get_signal_observations(package, signal_kind=kind, limit=1)
+    if not rows:
+        return None
+    detail = rows[0].get("detail")
+    if not isinstance(detail, dict):
+        return None
+    if not detail.get("configured") or detail.get("error"):
+        return None
+    value = detail.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _search_trend_figure(store: Store, package: str) -> float | None:
+    """``trend_pct`` составного ``search_interest``: первый непустой источник.
+
+    У Wordstat ``trend_pct`` всегда ``None`` (``/v1/topRequests`` — срез за 30
+    дней, ряда за 12 месяцев нет; динамика живёт в ``/v1/dynamics``, §18.3),
+    поэтому значение реально даёт Google Trends через Apify. Источник с
+    ошибкой пропускается: его ``None`` — не «интерес не растёт», а «нет
+    данных», и штрафовать за это нельзя (gotcha 66).
+    """
+    rows = store.get_signal_observations(
+        package, signal_kind="search_interest", limit=1
+    )
+    if not rows:
+        return None
+    detail = rows[0].get("detail")
+    if not isinstance(detail, dict):
+        return None
+    for key in ("wordstat", "google_trends"):
+        source = detail.get(key)
+        if not isinstance(source, dict):
+            continue
+        if not source.get("configured") or source.get("error"):
+            continue
+        trend = source.get("trend_pct")
+        if isinstance(trend, bool) or not isinstance(trend, (int, float)):
+            continue
+        return float(trend)
+    return None
+
+
+def _gap_row(
+    store: Store,
+    *,
+    name: str,
+    adoption_week: int | None,
+    momentum_30d: float | None,
+    flag: bool | None,
+) -> dict[str, Any]:
+    """Строка входа Gap Score: наблюдение + последние значения сигналов.
+
+    Один построитель на матрицу, карточку и ``/api/gap-score``: разные наборы
+    полей в трёх местах дали бы три разных score для одного пакета.
+    """
+    return {
+        "name": name,
+        "adoption_week": adoption_week,
+        "momentum_30d": momentum_30d,
+        "flag": flag,
+        "funding_total": _signal_figure(store, name, "funding", "total"),
+        "patents_impulse_pct": _signal_figure(store, name, "patents", "impulse_pct"),
+        "jobs_total": _signal_figure(store, name, "jobs", "total"),
+        "search_interest_trend": _search_trend_figure(store, name),
+    }
+
+
+def _score_of_row(
+    row: dict[str, Any], weights: GapWeights, normalizer: Normalizer
+) -> GapScore:
+    """Строка :func:`_gap_row` -> :class:`GapScore` (распаковка полей).
+
+    Общая точка для матрицы (``compute_gap_scores_batch`` внутри) и
+    точечных запросов: ``compute_gap_score`` принимает именованные
+    аргументы, и распаковка словаря живёт в одном месте.
+    """
+    return compute_gap_score(
+        name=str(row.get("name") or ""),
+        adoption_week=row.get("adoption_week"),
+        momentum_30d=row.get("momentum_30d"),
+        flag=row.get("flag"),
+        funding_total=row.get("funding_total"),
+        patents_impulse_pct=row.get("patents_impulse_pct"),
+        jobs_total=row.get("jobs_total"),
+        search_interest_trend=row.get("search_interest_trend"),
+        weights=weights,
+        normalizer=normalizer,
+    )
+
+
+def _fill_gap_fields(point: dict[str, Any], score: GapScore | None) -> None:
+    """``gap_score``/``gap_breakdown`` точки из готового :class:`GapScore`."""
+    if score is None:
+        point["gap_score"] = None
+        point["gap_breakdown"] = None
+        return
+    point["gap_score"] = score.score
+    point["gap_breakdown"] = score.breakdown()
+
+
+def _attach_gap_scores(
+    store: Store, points: list[dict[str, Any]], settings: Settings
+) -> None:
+    """Дописать в точки матрицы ``gap_score`` и ``gap_breakdown`` (шаг P5e).
+
+    Правит точки на месте — по той же причине, что и ``_attach_momentum``:
+    ``_matrix_points`` общий с ``POST /api/matrix/export``, и колонки экспорта
+    (девять прежних + ``momentum_30d``) не должны меняться от того, что экран
+    получил новое поле.
+
+    Нормировка — по самим точкам матрицы: только у них ``adoption_week > 0``,
+    и включение в min/max пакета с нулевым adoption сдвинуло бы все score
+    относительно карточки и ``/api/gap-score`` (там тот же набор).
+    """
+    if not points:
+        return
+    weights = _gap_weights(settings)
+    rows = [
+        _gap_row(
+            store,
+            name=str(point.get("name") or ""),
+            adoption_week=point.get("adoption_week"),
+            momentum_30d=point.get("momentum_30d"),
+            flag=bool(point.get("flag")),
+        )
+        for point in points
+    ]
+    scores = compute_gap_scores_batch(rows, weights=weights)
+    for point in points:
+        _fill_gap_fields(point, scores.get(str(point.get("name") or "")))
+
+
+def _gap_scores_for_names(
+    store: Store, names: list[str], settings: Settings
+) -> tuple[list[GapScore], list[str]]:
+    """Score запрошенных имён с нормировкой по ВСЕМ пакетам (шаг P5e).
+
+    ``for names`` — не «посчитать только эти пакеты»: тогда min/max вышли бы
+    по двум точкам, и «87» в карточке не совпало бы с «87» на матрице.
+    Выборка для нормировки — все наблюдения с ``adoption_week > 0`` (тот же
+    набор, что у точек матрицы); сам запрошенный пакет может быть и с нулевым
+    adoption — он получит adoption-компонент 0.
+
+    Стоимость: momentum считается по истории каждого пакета (как у матрицы).
+    Для локального приложения на десятки пакетов это те же запросы, что уже
+    делает экран «Сейчас решать».
+    """
+    weights = _gap_weights(settings)
+    rows: list[dict[str, Any]] = []
+    for observation in store.get_latest_observations():
+        name = str(observation.get("name") or "")
+        if not name:
+            continue
+        week = observation.get("adoption_week")
+        week_value = week if isinstance(week, int) and not isinstance(week, bool) else None
+        rows.append(
+            _gap_row(
+                store,
+                name=name,
+                adoption_week=week_value,
+                momentum_30d=_momentum_payload(store, name)["delta_30d"],
+                flag=bool(observation.get("flag_value")),
+            )
+        )
+
+    normalizer = Normalizer()
+    normalizer.fit(
+        [row for row in rows if isinstance(row.get("adoption_week"), int)
+         and int(row["adoption_week"]) > 0]
+    )
+
+    by_name = {str(row.get("name")): row for row in rows}
+    scores: list[GapScore] = []
+    missing: list[str] = []
+    for name in names:
+        row = by_name.get(name)
+        if row is None:
+            missing.append(name)
+            continue
+        scores.append(_score_of_row(row, weights, normalizer))
+    return scores, missing
+
+
 def _queue(request: Request) -> JobQueue:
     queue = getattr(request.app.state, "queue", None)
     if queue is None:
@@ -1181,6 +1418,15 @@ def _settings_problem(key: str, value: Any) -> str | None:
             return f"{key}: {message}"
         return None
 
+    if key in GAP_WEIGHT_KEYS:
+        # Веса Gap Score (шаг P5e): знак и величина свободные, но значение
+        # обязано быть конечным числом. NaN/inf приезжают из JSON штатно
+        # (json.loads их разбирает), а такой вес делает score бессмысленным —
+        # 400, а не «сохранили и потом удивились».
+        if not _is_number(value) or not math.isfinite(float(value)):
+            return f"{key}: ожидалось конечное число"
+        return None
+
     if key in _FLOAT_SETTING_BOUNDS:
         if not _is_number(value):
             return f"{key}: ожидалось число"
@@ -1200,7 +1446,7 @@ def _normalized_setting(key: str, value: Any) -> Any:
     """
     if key == "keywords":
         return tuple(item.strip() for item in value)
-    if key in _FLOAT_SETTING_BOUNDS:
+    if key in _FLOAT_SETTING_BOUNDS or key in GAP_WEIGHT_KEYS:
         return float(value)
     return value
 
@@ -1903,6 +2149,12 @@ def create_app(
         search_interest, search_interest_status = _search_interest_payload(
             store, name, keys
         )
+        # Gap Score (P5e): то же число, что у точки на матрице — нормировка
+        # считается по всем пакетам, а не по одному открытому.
+        settings = getattr(request.app.state, "settings", None) or Settings()
+        gap_scores, _gap_missing = _gap_scores_for_names(store, [name], settings)
+        gap_score = gap_scores[0].score if gap_scores else None
+        gap_breakdown = gap_scores[0].breakdown() if gap_scores else None
         return {
             "package": package,
             "observations": store.get_latest_observations([name]),
@@ -1930,6 +2182,8 @@ def create_app(
                 "funding": funding_status,
                 "search_interest": search_interest_status,
             },
+            "gap_score": gap_score,
+            "gap_breakdown": gap_breakdown,
         }
 
     @application.get("/api/packages/{name}/history")
@@ -2148,6 +2402,9 @@ def create_app(
         observations = store.get_latest_observations()
         points, quadrants = _matrix_points(observations, thresholds["alive_weekly"])
         _attach_momentum(store, points)
+        # Gap Score (P5e): размер точки на экране. Считается по тем же точкам,
+        # что уже нарисованы, — нормировка min-max идёт по этой выборке.
+        _attach_gap_scores(store, points, settings)
         return {
             "points": points,
             "quadrants": quadrants,
@@ -2211,6 +2468,38 @@ def create_app(
             _csv_body(MATRIX_EXPORT_CSV_HEADER, rows),
             filename=f"matrix-{_export_date()}.csv",
         )
+
+    # --- Gap Score (шаг P5e) --------------------------------------------------
+
+    @application.get("/api/gap-score")
+    def get_gap_score(request: Request, names: str = "") -> dict[str, Any]:
+        """Gap Score запрошенных пакетов: интегральная метрика 0–100 (§18.3).
+
+        ``names`` — 2–3 имени через запятую, как у ``/api/compare`` (одно имя и
+        «пусто» — 400): экран «Сравнение» сравнивает несколько ниш, и запрос
+        одного пакета пришлось бы отделять от опечатки в запросе.
+
+        Нормировка min-max считается по ВСЕМ пакетам Store (тот же набор, что
+        у точек ``/api/matrix``), а не по запрошенным: иначе «87» в этом ответе
+        не совпало бы с «87» на матрице и в карточке — сравнимость score между
+        экранами и есть смысл метрики.
+
+        ``missing`` — имена без наблюдений (не ошибка: пакет могли ещё не
+        проверять). 404 — только если не нашлось ни одного: пустой список
+        score выглядел бы сломанным ответом, как у ``/api/compare``.
+        """
+        wanted = _compare_names(names)
+        settings = getattr(request.app.state, "settings", None) or Settings()
+        scores, missing = _gap_scores_for_names(_store(request), wanted, settings)
+        if not scores:
+            raise HTTPException(
+                status_code=404,
+                detail="нет наблюдений ни по одному имени: " + ", ".join(wanted),
+            )
+        return {
+            "scores": [score.as_dict() for score in scores],
+            "missing": missing,
+        }
 
     # --- сравнение (шаг 3c) ---------------------------------------------------
 
@@ -2536,6 +2825,8 @@ def create_app(
         warnings: list[str] = []
         if changed.intersection(VERDICT_SETTING_KEYS):
             warnings.append(WARNING_VERDICTS)
+        if changed.intersection(GAP_WEIGHT_KEYS):
+            warnings.append(WARNING_GAP_WEIGHTS)
         if "max_parallel_jobs" in changed:
             warnings.append(WARNING_RESTART)
         return {"settings": settings_to_dict(new_settings), "warnings": warnings}

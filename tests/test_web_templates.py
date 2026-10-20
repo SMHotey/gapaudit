@@ -585,6 +585,77 @@ def test_style_has_si_table_rules(client: TestClient) -> None:
     assert ".si-table td.mono" in stylesheet
 
 
+# --- Gap Score в матрице, карточке и настройках (шаг P5e) --------------------
+
+
+def test_matrix_script_uses_gap_score_as_point_size(client: TestClient) -> None:
+    """Размер точки = Gap Score: поле читается, легенда объясняет размер.
+
+    Проверяется связка «скрипт знает про gap_score» + формула радиуса из шага
+    (``4 + gap/20`` = 4..9 px): сам рендер в SVG смотрится живым прогоном, здесь
+    — что модуль не разъехался с ответом API и легенда не потерялась.
+    """
+    script = client.get("/static/matrix.js").text
+
+    assert "point.gap_score" in script
+    assert "4 + gap / 20" in script
+    assert "gap_score" in script
+    # «данных нет» — прежний радиус, а не минимальный: ноль баллов ≠ нет данных
+    assert "gap != null ? 4 + gap / 20 : 6" in script
+    assert "размер = gap score" in script
+
+
+def test_card_script_renders_gap_block(client: TestClient) -> None:
+    """Карточка рисует «Gap Score» сразу после имени + breakdown компонентов (P5e).
+
+    Порядок важен: блок отвечает на главный вопрос карточки, и он стоит до
+    справочных полей. Компоненты перечислены в порядке контракта, штрафные —
+    со знаком «−» (funding, patents).
+    """
+    script = client.get("/static/card.js").text
+
+    assert "card-gap" in script
+    assert "gap-score-value" in script
+    assert "gap-breakdown" in script
+    assert "Gap Score: " in script
+    assert "payload.gap_score" in script
+    assert "payload.gap_breakdown" in script
+    assert "components_available" in script
+    assert " из 7)" in script
+    # штрафные компоненты подписаны минусом, положительные — плюсом
+    assert "['funding', '−']" in script
+    assert "['adoption', '+']" in script
+    # блок стоит после h2 (имя пакета), а не над ним
+    assert script.index("card.appendChild(title)") < script.index("card-gap")
+
+
+def test_settings_screen_has_gap_weight_fields(client: TestClient) -> None:
+    """Форма настроек содержит семь весов Gap Score, скрипт их заполняет (P5e).
+
+    Имена полей совпадают с полями ``Settings``: ``settings.js`` собирает тело
+    PUT по ``form.elements[name]``, и расхождение имён дало бы форму, которая
+    молча отправляет пустое тело.
+    """
+    page = client.get("/settings").text
+
+    assert "Gap Score — веса" in page
+    for name in (
+        "gap_weight_adoption", "gap_weight_momentum", "gap_weight_no_flag",
+        "gap_weight_funding", "gap_weight_patents", "gap_weight_jobs",
+        "gap_weight_search",
+    ):
+        assert f'name="{name}"' in page, name
+
+    script = client.get("/static/settings.js").text
+    assert "gap_weight_adoption" in script
+    assert "gap_weight_search" in script
+    # стили блока в карточке подключены
+    stylesheet = client.get("/static/style.css").text
+    assert ".card-gap" in stylesheet
+    assert ".gap-score-value" in stylesheet
+    assert ".gap-breakdown" in stylesheet
+
+
 def test_settings_tabs_switch(client: TestClient) -> None:
     """Две вкладки настроек: активная ровно одна, переключение — классом.
 

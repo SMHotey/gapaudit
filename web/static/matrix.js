@@ -109,6 +109,14 @@
       span.appendChild(document.createTextNode(item[1]));
       box.appendChild(span);
     });
+    /* Вторая половина легенды — размер точки (шаг P5e): без подписи
+       «крупнее = свободнее» размер читался бы как «больше скачиваний». */
+    const size = document.createElement('span');
+    size.className = 'matrix-legend-size';
+    size.textContent =
+      '● размер = gap score (0..100) · цвет = momentum · ' +
+      'пунктир = порог adoption';
+    box.appendChild(size);
     svg.parentNode.insertBefore(box, svg.nextSibling);
   }
 
@@ -178,8 +186,13 @@
       const shift = (slot % 5) * 22 - 44;   /* -44..44, пять полос */
       const cx = xScale(point.adoption_week, min, max);
       const cy = rowY + ROW_H / 2 + shift;
+      /* Размер точки — Gap Score (шаг P5e, §18.3): 4..9 px при 0..100.
+         Нет score — точка прежнего размера (6): «данных нет» не должно
+         выглядеть как «ниша занята» (нулевой балл). */
+      const gap = point.gap_score;
+      const radius = gap != null ? 4 + gap / 20 : 6;
       const circle = svgEl('circle', {
-        cx: cx.toFixed(1), cy: cy.toFixed(1), r: '6',
+        cx: cx.toFixed(1), cy: cy.toFixed(1), r: radius.toFixed(1),
         fill: momentumFill(point),
         stroke: '#0f1419', 'stroke-width': '1',
         class: 'matrix-point',
@@ -191,6 +204,9 @@
       const title = svgEl('title', {}, circle);
       title.textContent = point.name + ' — ' + fmtNum(point.adoption_week) +
         '/нед, ' + (point.flag ? 'MCP есть' : 'MCP нет') +
+        (gap != null
+          ? ', gap ' + Math.round(gap)
+          : ', gap: нет данных') +
         (point.momentum_30d != null
           ? ', momentum ' + (point.momentum_30d > 0 ? '+' : '') +
             point.momentum_30d.toFixed(1) + '%/30д'

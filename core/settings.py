@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass, fields
@@ -96,6 +97,18 @@ class Settings:
 
     # --- реестр MCP ---
     registry_limit: int = 100
+
+    # --- веса Gap Score (шаг P5e, §18.3) ---
+    # Дефолты совпадают с ``core.signals.GapWeights`` (паритетный тест):
+    # два описания одних весов разошлись бы при первой правке. Отрицательные
+    # веса — штраф: «ниша занята» (funding, patents).
+    gap_weight_adoption: float = 1.0
+    gap_weight_momentum: float = 1.0
+    gap_weight_no_flag: float = 2.0
+    gap_weight_funding: float = -0.5
+    gap_weight_patents: float = -0.3
+    gap_weight_jobs: float = 0.5
+    gap_weight_search: float = 0.3
 
     # --- UI ---
     language: str = "ru"  # ru | en (en ещё не реализован, но поле есть)
@@ -303,6 +316,11 @@ def _coerce(default: Any, value: Any) -> tuple[Any, bool]:
     полей совпадают один-в-один, и любая подмена здесь означала бы, что файл
     настроек и код расходятся незаметно. ``bool`` числом не считается (``true``
     не должно становиться ``1``).
+
+    Для дробных полей дополнительно проверяется конечность (шаг P5e):
+    ``json.loads`` разбирает ``NaN``/``Infinity`` в настоящие ``nan``/``inf``, а
+    такой вес или TTL ломает расчёт score и математику кэша — файл с ними
+    считается испорченным полем и остаётся дефолтным.
     """
     if isinstance(default, bool) or value is None:
         return default, False
@@ -318,7 +336,8 @@ def _coerce(default: Any, value: Any) -> tuple[Any, bool]:
         if isinstance(value, bool):
             return default, False
         if isinstance(value, (int, float)):
-            return float(value), True
+            number = float(value)
+            return (number, True) if math.isfinite(number) else (default, False)
         return default, False
     if isinstance(default, str):
         return (value, True) if isinstance(value, str) else (default, False)

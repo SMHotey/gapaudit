@@ -49,13 +49,18 @@ def test_settings_requires_token(client: TestClient) -> None:
 
 
 def test_get_returns_settings_readonly_and_editable_keys(client: TestClient) -> None:
-    """Все изменяемые поля на месте, их ровно десять, readonly — отдельным блоком."""
+    """Все изменяемые поля на месте, их ровно семнадцать, readonly — отдельно.
+
+    Семнадцать = десять прежних (пороги, ключевые слова, кэш, задачи, реестр) +
+    семь весов Gap Score (шаг P5e). Число держится явно: список — контракт
+    экрана, и «пропало поле» должно краснить тест, а не молча прятать форму.
+    """
     payload = get_settings(client)
 
     settings = payload["settings"]
     for key in EDITABLE_SETTING_KEYS:
         assert key in settings, key
-    assert len(payload["editable_keys"]) == 10
+    assert len(payload["editable_keys"]) == 17
     assert set(payload["editable_keys"]) == set(EDITABLE_SETTING_KEYS)
 
     # data_dir и language в настройках есть, но менять их через API нельзя
@@ -291,3 +296,71 @@ def test_saved_settings_are_loaded_on_next_start(
     # data_dir по-прежнему из окружения, а не из файла
     assert payload["readonly"]["data_dir"] == str(tmp_path / "data")
     assert cast(Any, second).state.settings.registry_limit == 42
+
+
+# --- веса Gap Score (шаг P5e) ------------------------------------------------
+
+
+def test_get_reports_gap_weights_with_devplan_defaults(client: TestClient) -> None:
+    """``GET /api/settings`` отдаёт все семь весов с дефолтами §18.3.
+
+    Экран заполняет форму из этого ответа: пропавший ключ дал бы пустое поле
+    и `required`-ошибку при сохранении.
+    """
+    settings = get_settings(client)["settings"]
+
+    assert settings["gap_weight_adoption"] == 1.0
+    assert settings["gap_weight_momentum"] == 1.0
+    assert settings["gap_weight_no_flag"] == 2.0
+    assert settings["gap_weight_funding"] == -0.5
+    assert settings["gap_weight_patents"] == -0.3
+    assert settings["gap_weight_jobs"] == 0.5
+    assert settings["gap_weight_search"] == 0.3
+
+
+def test_put_gap_weight_changes_matrix_and_persists(client: TestClient) -> None:
+    """``PUT`` веса -> 200, значение видно в ``GET`` и в ``app.state.settings``.
+
+    Вес уезжает в ``core.signals.GapWeights`` через ``default_weights_from_settings``:
+    проверяем и ответ, и состояние приложения (по нему считаются score), и
+    предупреждение «обновите экраны» — размер точек поменялся.
+    """
+    from app.web import GAP_WEIGHT_KEYS
+
+    assert "gap_weight_adoption" in GAP_WEIGHT_KEYS
+
+    response = put_settings(client, {"gap_weight_adoption": 0.5})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["settings"]["gap_weight_adoption"] == 0.5
+    assert any("Gap Score" in warning for warning in payload["warnings"])
+    assert get_settings(client)["settings"]["gap_weight_adoption"] == 0.5
+    assert app_state(client).settings.gap_weight_adoption == 0.5
+
+
+def test_put_gap_weight_rejects_nan_and_infinity(client: TestClient) -> None:
+    """NaN/inf — 400: такой вес делает score бессмысленным (P5e).
+
+    Проверяются оба пути: строка ``"NaN"`` из формы и настоящие ``NaN``/
+    ``Infinity`` в теле JSON. Литералы отправляются сырым телом: ``httpx``
+    отказывается сериализовать ``float("nan")`` («Out of range float values are
+    not JSON compliant»), а Python-сервер такие литералы штатно принимает
+    (``json.loads`` — расширение стандарта), то есть это реальный вход.
+    """
+    for value in ("NaN", "abc", ""):
+        response = put_settings(client, {"gap_weight_adoption": value})
+        assert response.status_code == 400, value
+        assert "gap_weight_adoption" in response.json()["detail"]
+
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        response = client.put(
+            "/api/settings",
+            headers={**auth(), "Content-Type": "application/json"},
+            content=('{"gap_weight_adoption": ' + literal + "}").encode(),
+        )
+        assert response.status_code == 400, literal
+        assert "gap_weight_adoption" in response.json()["detail"]
+
+    # ни одно из значений не записалось
+    assert get_settings(client)["settings"]["gap_weight_adoption"] == 1.0

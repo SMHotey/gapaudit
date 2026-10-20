@@ -372,3 +372,65 @@ def test_round_trip_through_default_data_dir(tmp_path: pathlib.Path, monkeypatch
 
     assert path == tmp_path / DATA_DIR_NAME / SETTINGS_FILENAME
     assert load(path).registry_limit == 25
+
+
+# --- веса Gap Score (шаг P5e) ------------------------------------------------
+
+
+def test_gap_weights_have_devplan_defaults() -> None:
+    """Семь весов с дефолтами §18.3 (те же, что у ``core.signals.GapWeights``).
+
+    Паритет с ``core.signals`` проверяется здесь же: два описания одних весов
+    (настройки и dataclass расчёта) разошлись бы при первой правке.
+    """
+    from core.signals import GapWeights
+
+    settings = Settings()
+    weights = GapWeights()
+
+    assert settings.gap_weight_adoption == 1.0
+    assert settings.gap_weight_momentum == 1.0
+    assert settings.gap_weight_no_flag == 2.0
+    assert settings.gap_weight_funding == -0.5
+    assert settings.gap_weight_patents == -0.3
+    assert settings.gap_weight_jobs == 0.5
+    assert settings.gap_weight_search == 0.3
+    for key in weights.as_dict():
+        assert getattr(settings, f"gap_weight_{key}") == getattr(weights, key), key
+    # веса попадают в JSON настроек (иначе экран их не увидит)
+    assert to_dict(settings)["gap_weight_adoption"] == 1.0
+
+
+def test_gap_weight_round_trip(tmp_path: pathlib.Path) -> None:
+    """Изменённый вес переживает save/load; остальные — дефолтные."""
+    path = tmp_path / SETTINGS_FILENAME
+
+    save(Settings(gap_weight_adoption=0.5, gap_weight_funding=-1.5), path)
+    loaded = load(path)
+
+    assert loaded.load_error is None
+    assert loaded.gap_weight_adoption == pytest.approx(0.5)
+    assert loaded.gap_weight_funding == pytest.approx(-1.5)
+    assert loaded.gap_weight_no_flag == pytest.approx(2.0)
+
+
+def test_gap_weight_nan_in_file_keeps_default(tmp_path: pathlib.Path) -> None:
+    """NaN/inf в файле — дефолт и ``load_error``, а не «вес есть» (P5e).
+
+    ``json.loads`` разбирает ``NaN``/``Infinity`` в настоящие ``nan``/``inf``
+    (это расширение стандарта, и Python его принимает). Такой вес сделал бы
+    score бессмысленным, поэтому поле остаётся дефолтным, а причина уходит в
+    ``load_error`` — как у значения не того типа.
+    """
+    path = write(
+        tmp_path / SETTINGS_FILENAME,
+        '{"gap_weight_adoption": NaN, "gap_weight_momentum": Infinity}',
+    )
+
+    loaded = load(path)
+
+    assert loaded.gap_weight_adoption == pytest.approx(1.0)
+    assert loaded.gap_weight_momentum == pytest.approx(1.0)
+    assert loaded.load_error is not None
+    assert "gap_weight_adoption" in loaded.load_error
+    assert "gap_weight_momentum" in loaded.load_error

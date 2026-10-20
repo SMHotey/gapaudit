@@ -604,6 +604,7 @@ a:hover { color: var(--accent-hover); }
 .momentum-red { color: var(--error); }
 .momentum-legend {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   font-size: 12px;
   color: var(--text-dim);
@@ -617,6 +618,38 @@ a:hover { color: var(--accent-hover); }
   margin-right: 5px;
   vertical-align: middle;
 }
+/* Размер точки = Gap Score (шаг P5e): подпись отделена от цветов, чтобы
+   легенда не читалась как «четвёртый цвет». */
+.matrix-legend-size { color: var(--text-dim); }
+
+/* Блок «Gap Score» в карточке пакета (шаг P5e, §18.3): интегральный балл
+   0–100 и breakdown по компонентам. Акцентная полоса слева — блок отвечает
+   на главный вопрос карточки, и он стоит сразу под именем пакета. */
+.card-gap {
+  margin: 0 0 12px 0;
+  padding: 8px;
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent);
+}
+.gap-score-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.gap-breakdown {
+  font-size: 12px;
+  margin-top: 4px;
+  /* Компонентов семь, и одной строкой они не влезают в узкую карточку:
+     flex-wrap переносит их на вторую строку вместо горизонтальной прокрутки
+     (проверено живым прогоном: строка обрезалась на «− pate…»). */
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 8px;
+  row-gap: 2px;
+}
+.gap-breakdown span { white-space: nowrap; }
+.gap-components { color: var(--text-dim); }
 
 /* Блок «Cross-ecosystem» в карточке пакета (шаг P4c): таблица «3 полосы» —
    пакет + соседи по концепту в других экосистемах. Строка self подсвечена
