@@ -549,6 +549,42 @@ def test_style_has_funding_table_rules(client: TestClient) -> None:
     assert ".funding-table td.mono" in stylesheet
 
 
+# --- блок Search interest в карточке (шаг P5d) -------------------------------
+
+
+def test_card_script_renders_search_interest_block(client: TestClient) -> None:
+    """Карточка рисует «Search interest» с двумя подблоками (P5d).
+
+    Источников два, и у каждого своё состояние: таблица регионов + тренд
+    (собран), «Не настроен» (ключа нет), «Ошибка: …» (ключ есть, но
+    источником нельзя воспользоваться — официальный Google Trends alpha).
+    Имена регионов и числа — только textContent (gotcha 37), innerHTML —
+    только у статической шапки таблицы.
+    """
+    script = client.get("/static/card.js").text
+
+    assert "card-search-interest" in script
+    assert "si-source" in script
+    assert "si-table" in script
+    assert "signals.search_interest" in script
+    assert "signals_status.search_interest" in script
+    assert "Yandex Wordstat (РФ)" in script
+    assert "Google Trends (глобально)" in script
+    assert "Ни один источник не настроен" in script
+    assert "tdR.textContent = point.region" in script
+    assert "Тренд 12 мес: " in script
+
+
+def test_style_has_si_table_rules(client: TestClient) -> None:
+    """Стили таблицы search interest подключены: классы из card.js есть в CSS."""
+    stylesheet = client.get("/static/style.css").text
+
+    assert ".card-search-interest" in stylesheet
+    assert ".si-source" in stylesheet
+    assert ".si-table" in stylesheet
+    assert ".si-table td.mono" in stylesheet
+
+
 def test_settings_tabs_switch(client: TestClient) -> None:
     """Две вкладки настроек: активная ровно одна, переключение — классом.
 

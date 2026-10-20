@@ -24,6 +24,11 @@ from core.api_keys import ApiKeysStore
 from core.collectors.jobs import JobsByCountry, JobsSignal
 from core.collectors.funding import FundingQuarter, FundingSignal
 from core.collectors.patents import PatentsSignal, PatentsYearBucket
+from core.collectors.search_interest import (
+    SearchInterestPoint,
+    SearchInterestSignal,
+    SearchInterestSource,
+)
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
@@ -358,8 +363,9 @@ def test_without_kind_collects_every_signal_kind(
 ) -> None:
     """Без ``--kind`` собираются все виды SIGNAL_KINDS (ключей нет — все False).
 
-    P5c: видов три (jobs, patents, funding) — новый вид обязан попасть и в
-    набор по умолчанию, иначе «собери всё» тихо перестало бы собирать funding.
+    P5d: видов четыре (jobs, patents, funding, search_interest) — новый вид
+    обязан попасть и в набор по умолчанию, иначе «собери всё» тихо
+    перестало бы собирать search_interest.
     """
     out_path = tmp_path / "signals.json"
 
@@ -371,10 +377,11 @@ def test_without_kind_collects_every_signal_kind(
 
     assert code == 0
     payload = json.loads(out_path.read_text(encoding="utf-8"))
-    assert list(payload["signals"]) == ["jobs", "patents", "funding"]
+    assert list(payload["signals"]) == ["jobs", "patents", "funding", "search_interest"]
     assert payload["signals"]["jobs"]["configured"] is False
     assert payload["signals"]["patents"]["configured"] is False
     assert payload["signals"]["funding"]["configured"] is False
+    assert payload["signals"]["search_interest"]["configured"] is False
 
 
 def test_summary_for_humans_prints_patents_sections(
@@ -521,7 +528,7 @@ def test_collect_all_three_kinds_writes_three_blocks(
 def test_without_kind_collects_funding_too(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Без ``--kind`` собираются все три вида SIGNAL_KINDS (ключей нет — все False)."""
+    """Без ``--kind`` собираются все четыре вида SIGNAL_KINDS (ключей нет — все False)."""
     out_path = tmp_path / "signals.json"
 
     code = signals.main([
@@ -532,7 +539,7 @@ def test_without_kind_collects_funding_too(
 
     assert code == 0
     payload = json.loads(out_path.read_text(encoding="utf-8"))
-    assert list(payload["signals"]) == ["jobs", "patents", "funding"]
+    assert list(payload["signals"]) == ["jobs", "patents", "funding", "search_interest"]
     assert payload["signals"]["funding"]["configured"] is False
 
 
@@ -588,3 +595,285 @@ def test_summary_without_user_agent_points_to_settings(
     assert code == 0
     assert "User-Agent SEC EDGAR не настроен" in captured.out
     assert "всего filing'ов" not in captured.out
+
+
+# --- search_interest (шаг P5d): два источника ---------------------------------
+
+
+def fake_si_source(
+    source: str, *, configured: bool, error: str | None = None,
+    points: tuple[SearchInterestPoint, ...] = (),
+) -> SearchInterestSource:
+    """Один источник search_interest для фейка compute_search_interest."""
+    return SearchInterestSource(
+        source=source,
+        points=points,
+        total=sum(point.value or 0 for point in points) if points else None,
+        trend_pct=None,
+        configured=configured,
+        error=error,
+    )
+
+
+def fake_si_signal(
+    *, wordstat: bool = False, google: bool = False
+) -> SearchInterestSignal:
+    """Сигнал с двумя источниками в заданных состояниях (для фейка)."""
+    return SearchInterestSignal(
+        query="requests",
+        wordstat=fake_si_source(
+            "wordstat",
+            configured=wordstat,
+            points=(
+                (SearchInterestPoint(region="Россия", value=42, trend_pct=None),)
+                if wordstat else ()
+            ),
+        ),
+        google_trends=fake_si_source(
+            "google_trends",
+            configured=google,
+            points=(
+                (SearchInterestPoint(region="RU", value=100, trend_pct=None),)
+                if google else ()
+            ),
+        ),
+    )
+
+
+def test_collect_search_interest_without_keys_is_not_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--kind search_interest`` без ключей — оба источника False, код 0.
+
+    Транспорт заменён на взрывающийся: без ключей ни Wordstat, ни Apify не
+    дёргаются (контракт core/collectors/search_interest.py), и в файле
+    ровно один блок — составной.
+    """
+    def must_not_be_called(url: str, headers: dict, timeout: float,
+                           body: bytes | None = None) -> tuple[int, bytes]:
+        raise AssertionError("транспорт без ключей не должен дёргаться")
+
+    monkeypatch.setattr(signals, "search_interest_transport", must_not_be_called)
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "search_interest",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert protocol(captured.out)[-1] == {"type": "done"}
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["search_interest"]
+    block = payload["signals"]["search_interest"]
+    assert block["wordstat"]["configured"] is False
+    assert block["google_trends"]["configured"] is False
+    assert block["configured"] is False
+
+
+def test_collect_search_interest_with_wordstat_key_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ключ Wordstat — собран Wordstat, Google Trends «не настроен».
+
+    ``get("yandex_wordstat")`` домешивает ``meta.client_id`` (P5c, §0.4),
+    поэтому CLI передаёт в коллектор обе части учётных данных — тест
+    фиксирует, что они дошли.
+    """
+    keys = ApiKeysStore(tmp_path / "data")
+    keys.save("yandex_wordstat", {"token": "ws-token", "client_id": "ws-client"})
+    assert keys.get("yandex_wordstat") == {
+        "token": "ws-token", "client_id": "ws-client",
+    }
+    seen: dict[str, object] = {}
+
+    def fake_compute(query: str, *, wordstat_token, wordstat_client_id,
+                     apify_token, apify_actor_id, transport,
+                     on_progress=None, **kwargs: object) -> SearchInterestSignal:
+        seen.update(
+            query=query, wordstat_token=wordstat_token,
+            wordstat_client_id=wordstat_client_id,
+            apify_token=apify_token, apify_actor_id=apify_actor_id,
+            transport=transport,
+        )
+        return fake_si_signal(wordstat=True)
+
+    monkeypatch.setattr(signals, "compute_search_interest", fake_compute)
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "search_interest",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    assert seen["wordstat_token"] == "ws-token"
+    assert seen["wordstat_client_id"] == "ws-client"
+    assert seen["apify_token"] is None
+    assert seen["apify_actor_id"] is None
+    assert seen["transport"] is signals.search_interest_transport
+    block = json.loads(out_path.read_text(encoding="utf-8"))["signals"]["search_interest"]
+    assert block["wordstat"]["configured"] is True
+    assert block["google_trends"]["configured"] is False
+
+
+def test_collect_search_interest_with_apify_key_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ключ Apify — собран Google Trends, Wordstat «не настроен» (обратный случай)."""
+    keys = ApiKeysStore(tmp_path / "data")
+    keys.save("apify", {"api_token": "ap-token", "actor_id": "apify/google-trends"})
+    seen: dict[str, object] = {}
+
+    def fake_compute(query: str, *, wordstat_token, wordstat_client_id,
+                     apify_token, apify_actor_id, transport,
+                     on_progress=None, **kwargs: object) -> SearchInterestSignal:
+        seen.update(wordstat_token=wordstat_token, apify_token=apify_token,
+                    apify_actor_id=apify_actor_id)
+        return fake_si_signal(google=True)
+
+    monkeypatch.setattr(signals, "compute_search_interest", fake_compute)
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "search_interest",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    assert seen["apify_token"] == "ap-token"
+    assert seen["apify_actor_id"] == "apify/google-trends"
+    assert seen["wordstat_token"] is None
+    block = json.loads(out_path.read_text(encoding="utf-8"))["signals"]["search_interest"]
+    assert block["wordstat"]["configured"] is False
+    assert block["google_trends"]["configured"] is True
+
+
+def test_collect_search_interest_with_both_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Оба ключа — собраны оба источника (не «или», а «и») и оба видны в JSON."""
+    keys = ApiKeysStore(tmp_path / "data")
+    keys.save("yandex_wordstat", {"token": "ws-token", "client_id": "ws-client"})
+    keys.save("apify", {"api_token": "ap-token", "actor_id": "apify/google-trends"})
+    monkeypatch.setattr(signals, "compute_search_interest",
+                        lambda query, **kwargs: fake_si_signal(wordstat=True, google=True))
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "search_interest",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    block = json.loads(out_path.read_text(encoding="utf-8"))["signals"]["search_interest"]
+    assert block["wordstat"]["configured"] is True
+    assert block["google_trends"]["configured"] is True
+    assert block["configured"] is True
+    assert block["wordstat"]["points"] == [
+        {"region": "Россия", "value": 42, "trend_pct": None}
+    ]
+    assert block["google_trends"]["points"] == [
+        {"region": "RU", "value": 100, "trend_pct": None}
+    ]
+
+
+def test_collect_jobs_and_search_interest_writes_both_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--kind jobs --kind search_interest`` — два блока в одном --json-out."""
+    monkeypatch.setattr(signals, "compute_jobs",
+                        lambda query, **kwargs: fake_signal())
+    monkeypatch.setattr(signals, "compute_search_interest",
+                        lambda query, **kwargs: fake_si_signal(wordstat=True))
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests",
+        "--kind", "jobs", "--kind", "search_interest",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["jobs", "search_interest"]
+    assert payload["signals"]["jobs"]["total"] == 42
+    assert payload["signals"]["search_interest"]["wordstat"]["configured"] is True
+
+
+def test_official_google_trends_key_without_apify_is_explained_not_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ключ официального alpha без Apify — ``configured=False`` + причина в ``error``.
+
+    Коллектора официального Google Trends в P5d нет (§14, вариант A — по
+    заявке), и молчаливое «не настроен» на введённый ключ было бы ложью:
+    CLI кладёт в источник human-readable причину, а ``app/web.py`` считает
+    такой источник «есть что показать» и отдаёт статус ``ok`` (карточка
+    рисует строку «Ошибка: …»).
+    """
+    keys = ApiKeysStore(tmp_path / "data")
+    keys.save("google_trends", {"api_key": "official-key"})
+    monkeypatch.setattr(signals, "compute_search_interest",
+                        lambda query, **kwargs: fake_si_signal())
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "search_interest",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    block = json.loads(out_path.read_text(encoding="utf-8"))["signals"]["search_interest"]
+    google = block["google_trends"]
+    assert google["configured"] is False
+    assert google["error"] == signals.GOOGLE_TRENDS_OFFICIAL_NOT_IMPLEMENTED
+    assert "Apify" in google["error"]
+    assert "не реализовано" in captured.err
+
+
+def test_summary_for_humans_prints_search_interest_sections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Автономный запуск: таблица регионов Wordstat и «не настроен» для Apify."""
+    monkeypatch.setattr(
+        signals, "compute_search_interest",
+        lambda query, **kwargs: SearchInterestSignal(
+            query="requests",
+            wordstat=SearchInterestSource(
+                source="wordstat",
+                points=(SearchInterestPoint(region="Россия", value=42, trend_pct=None),),
+                total=42, trend_pct=None, configured=True, error=None,
+            ),
+            google_trends=SearchInterestSource(
+                source="google_trends", points=(), total=None, trend_pct=None,
+                configured=False, error=None,
+            ),
+        ),
+    )
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "search_interest",
+        "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "Россия" in captured.out
+    assert "суммарный интерес: 42" in captured.out
+    assert "google_trends: ключ Google Trends не настроен" in captured.out
+    assert '"type"' not in captured.out

@@ -1,4 +1,4 @@
-"""CLI-обёртка для сигналов (шаг P5a, расширение P5b/P5c; DEVPLAN §7/§18.3).
+"""CLI-обёртка для сигналов (шаг P5a, расширение P5b/P5c/P5d; DEVPLAN §7/§18.3).
 
 Запуск::
 
@@ -10,22 +10,29 @@
 параметров: CLI автономен (Железное правило 2), каталог данных
 определяется общефлагом ``--data-dir`` как у шести других скриптов.
 
-``--kind`` повторяется (``action="append"``); с P5c допустимы ``jobs``,
-``patents`` и ``funding`` (``choices``): будущий ``search_interest`` (P5d)
-добавляется одной строкой в :data:`SIGNAL_KINDS` (и одной строкой в
-:data:`KIND_TO_PROVIDER`). Повтор одного вида — дедупликация, не ошибка:
-задача «jobs дважды» означает «собери jobs», а не «умри». Без ``--kind``
-собираются все виды :data:`SIGNAL_KINDS`.
+``--kind`` повторяется (``action="append"``); с P5d допустимы ``jobs``,
+``patents``, ``funding`` и ``search_interest`` (``choices``). Повтор одного
+вида — дедупликация, не ошибка: задача «jobs дважды» означает «собери
+jobs», а не «умри». Без ``--kind`` собираются все виды :data:`SIGNAL_KINDS`.
 
-У провайдера ``edgar`` (funding) нет ключа — SEC требует **User-Agent с
-email**, и он лежит в ``meta``, а не в ``encrypted_value`` (P5c). Поэтому
-для funding читается :meth:`ApiKeysStore.public_meta`, а не
-:meth:`ApiKeysStore.get`: последний вернул бы ``{}`` (у ``edgar``
-``encrypted_value`` пуст), и сигнал навсегда остался бы «не настроен».
+Два вида читают не тот канал, что остальные:
+
+* ``funding`` — провайдер ``edgar`` без ключа: SEC требует **User-Agent с
+  email**, и он лежит в ``meta`` (P5c). Читается
+  :meth:`ApiKeysStore.public_meta` — точный канал только для ``meta``;
+  ``get`` тут тоже вернул бы значение (он домешивает ``meta``), но
+  публичный канал не должен расшифровывать ``encrypted_value`` зря;
+* ``search_interest`` — **два источника** (P5d): Wordstat
+  (``get("yandex_wordstat")``) и Google Trends через Apify
+  (``get("apify")``). Официальный Google Trends (``google_trends``,
+  alpha по заявке) в P5d не реализован: если ключ есть, а Apify нет —
+  источник получает ``configured=False`` и честное сообщение в ``error``
+  (см. :data:`GOOGLE_TRENDS_OFFICIAL_NOT_IMPLEMENTED`), чтобы карточка
+  показала причину, а не «не настроен» на введённый ключ.
 
 Протокол задачи — как у остальных CLI: под ``--job-json`` hello →
-progress (по одной строке на страну/год) → done; таблицы и итоги в stderr
-(их читает лог задачи), результат — в ``--json-out``. Ошибка тела —
+progress (по одной строке на регион/источник) → done; таблицы и итоги в
+stderr (их читает лог задачи), результат — в ``--json-out``. Ошибка тела —
 ``{"type": "error"}`` и код 2.
 
 Без ключа провайдера это НЕ ошибка: ``configured=False`` в результате,
@@ -37,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 
 from cli._common import (
     build_argparser,
@@ -53,21 +61,39 @@ from core.api_keys import ApiKeysStore
 from core.collectors.funding import compute_funding, default_transport as funding_transport
 from core.collectors.jobs import compute_jobs, default_transport
 from core.collectors.patents import compute_patents, default_post_transport
+from core.collectors.search_interest import (
+    SearchInterestSource,
+    compute_search_interest,
+    default_post_transport as search_interest_transport,
+)
 
-__all__ = ["SIGNAL_KINDS", "main"]
+__all__ = ["GOOGLE_TRENDS_OFFICIAL_NOT_IMPLEMENTED", "SIGNAL_KINDS", "main"]
 
 #: Виды сигналов, которые умеет собирать ``collect`` (P5a: jobs; P5b:
-#: +patents; P5c: +funding). Тот же набор проверяет ``POST
-#: /api/signals/collect`` (app/web.py) — два слоя не должны разойтись
+#: +patents; P5c: +funding; P5d: +search_interest). Тот же набор проверяет
+#: ``POST /api/signals/collect`` (app/web.py) — два слоя не должны разойтись
 #: (gotcha 54, тест «согласие слоёв»).
-SIGNAL_KINDS: tuple[str, ...] = ("jobs", "patents", "funding")
+SIGNAL_KINDS: tuple[str, ...] = ("jobs", "patents", "funding", "search_interest")
 
-#: Вид сигнала -> провайдер ключей (core.api_keys.PROVIDERS).
+#: Вид сигнала -> провайдер ключей (core.api_keys.PROVIDERS). У
+#: ``search_interest`` источников два, и здесь стоит ОСНОВНЫЙ (Wordstat —
+#: бесплатный, по регионам РФ); второй (``apify``) и задел под
+#: ``google_trends`` читаются в :func:`_collect_search_interest`. Таблица
+#: обязана совпадать с ``app.web.SIGNAL_KIND_PROVIDERS`` (тот же тест).
 KIND_TO_PROVIDER: dict[str, str] = {
     "jobs": "adzuna",
     "patents": "patentsview",
     "funding": "edgar",
+    "search_interest": "yandex_wordstat",
 }
+
+#: Сообщение источника Google Trends, когда настроен официальный alpha-ключ,
+#: а Apify нет: коллектора для официального API в P5d нет (§14, вариант A —
+#: по заявке; реализован вариант B). Текст уезжает в карточку как ``error``
+#: источника, поэтому он человекочитаемый, а не код.
+GOOGLE_TRENDS_OFFICIAL_NOT_IMPLEMENTED = (
+    "google_trends official alpha not implemented yet (только Apify)"
+)
 
 #: Куда писать результат без ``--json-out`` (как у legacy-скриптов: raw/).
 DEFAULT_JSON = "raw/signals.json"
@@ -131,7 +157,7 @@ def _main(argv: list[str] | None = None) -> int:
         prog="signals.py",
         description=(
             "Сбор сигналов ниш по пакету (jobs — Adzuna, patents — PatentsView, "
-            "funding — SEC EDGAR)"
+            "funding — SEC EDGAR, search_interest — Yandex Wordstat + Apify)"
         ),
     )
     parser.add_argument(
@@ -179,6 +205,10 @@ def _main(argv: list[str] | None = None) -> int:
                 signals["patents"] = _collect_patents(keys, package, on_progress)
             elif kind == "funding":
                 signals["funding"] = _collect_funding(keys, package, on_progress)
+            elif kind == "search_interest":
+                signals["search_interest"] = _collect_search_interest(
+                    keys, package, on_progress
+                )
     except Exception as error:  # noqa: BLE001 - тело CLI обязано отчитаться ошибкой
         print(f"[gapaudit] {error}", file=sys.stderr)
         if job_json_requested(argv):
@@ -250,6 +280,60 @@ def _collect_funding(
     return signal.as_dict()
 
 
+def _collect_search_interest(
+    keys: ApiKeysStore, package: str, on_progress: object
+) -> dict:
+    """Собрать ``search_interest``: Wordstat и Google Trends (Apify) сразу.
+
+    Два источника — две пары учётных данных (P5d)::
+
+        yandex_wordstat -> {"token", "client_id"}   (секрет + meta)
+        apify           -> {"api_token", "actor_id"} (секрет + meta)
+
+    ``ApiKeysStore.get`` домешивает несекретные поля из ``meta`` (P5c,
+    §0.4), поэтому оба набора приходят целиком: ``client_id`` и
+    ``actor_id`` не нужно читать отдельно через ``public_meta``. Неполный
+    набор ``get`` возвращает как ``None`` — источник получает пустые
+    значения и остаётся ``configured=False`` («половина учётных данных
+    хуже их отсутствия»).
+
+    Официальный Google Trends (``google_trends``, alpha по заявке)
+    коллектора в P5d не имеет: если его ключ введён, а Apify нет —
+    источник Google Trends получает ``configured=False`` и
+    ``error`` с объяснением (см. :data:`GOOGLE_TRENDS_OFFICIAL_NOT_IMPLEMENTED`):
+    «не настроен» на введённый ключ был бы ложью, а тихий пустой блок —
+    потерей причины. Из этого сообщения ``app/web.py`` выводит статус
+    ``ok`` (есть что показать), поэтому причина видна в карточке.
+    """
+    wordstat = keys.get("yandex_wordstat") or {}
+    apify = keys.get("apify") or {}
+    official = keys.get("google_trends") or {}
+    signal = compute_search_interest(
+        package,
+        wordstat_token=wordstat.get("token") or None,
+        wordstat_client_id=wordstat.get("client_id") or None,
+        apify_token=apify.get("api_token") or None,
+        apify_actor_id=apify.get("actor_id") or None,
+        transport=search_interest_transport,
+        on_progress=on_progress,  # type: ignore[arg-type]
+    )
+    if official and not apify:
+        # Ключ официального alpha есть, а Apify не настроен: не выдаём
+        # «не настроен» — говорим, что именно не реализовано.
+        signal = replace(
+            signal,
+            google_trends=SearchInterestSource(
+                source="google_trends",
+                points=(),
+                total=None,
+                trend_pct=None,
+                configured=False,
+                error=GOOGLE_TRENDS_OFFICIAL_NOT_IMPLEMENTED,
+            ),
+        )
+    return signal.as_dict()
+
+
 def _print_summary(signals: dict[str, dict]) -> None:
     """Человекочитаемый итог в stdout (под --job-json он уходит в stderr).
 
@@ -309,6 +393,51 @@ def _print_summary(signals: dict[str, dict]) -> None:
             if trend is not None:
                 sign = "+" if trend > 0 else ""
                 print(f"funding: тренд {sign}{trend:.1f}% за 4 квартала")
+
+    search_interest = signals.get("search_interest")
+    if search_interest is not None:
+        # Два источника в одной секции: каждый со своим состоянием, чтобы
+        # «не настроен» одного не прятал данные другого (P5d).
+        _print_search_interest_source("wordstat", search_interest.get("wordstat"))
+        _print_search_interest_source(
+            "google_trends", search_interest.get("google_trends")
+        )
+
+
+def _print_search_interest_source(name: str, source: object) -> None:
+    """Итог одного источника search_interest (Wordstat или Google Trends).
+
+    ``None`` — источник не запрашивали (ручное конструирование сигнала);
+    ``configured=False`` — «не настроен», но с ``error`` — причина;
+    ``configured=True`` — таблица регионов (top-5, по убыванию интереса)
+    и тренд, если источник его даёт (у Wordstat тренда нет: только срез
+    за 30 дней).
+    """
+    if not isinstance(source, dict):
+        return
+    label = "Yandex Wordstat" if name == "wordstat" else "Google Trends"
+    if not source.get("configured"):
+        if source.get("error"):
+            print(f"{name}: не реализовано — {source['error']}")
+        else:
+            print(f"{name}: ключ {label} не настроен — см. Настройки → API-ключи")
+        return
+    if source.get("error"):
+        print(f"{name}: ошибка — {source['error']}")
+        return
+    rows = [
+        [point["region"], str(point["value"]) if point["value"] is not None else "—"]
+        for point in (source.get("points") or [])[:5]
+    ]
+    if rows:
+        print_table([f"{label}: регион", "интерес"], rows, aligns=["l", "r"])
+    total = source.get("total")
+    if total is not None:
+        print(f"{name}: собрано, суммарный интерес: {total}")
+    trend = source.get("trend_pct")
+    if trend is not None:
+        sign = "+" if trend > 0 else ""
+        print(f"{name}: тренд {sign}{trend:.1f}% за 12 мес")
 
 
 def main(argv: list[str] | None = None) -> int:

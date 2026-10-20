@@ -1,0 +1,27 @@
+[
+  {
+    "term": "test",
+    "interestOverTime": [
+      {"date": "2025-10-01", "value": 50},
+      {"date": "2025-11-01", "value": 55},
+      {"date": "2025-12-01", "value": 60},
+      {"date": "2026-01-01", "value": 58},
+      {"date": "2026-02-01", "value": 62},
+      {"date": "2026-03-01", "value": 66},
+      {"date": "2026-04-01", "value": 64},
+      {"date": "2026-05-01", "value": 70},
+      {"date": "2026-06-01", "value": 68},
+      {"date": "2026-07-01", "value": 72},
+      {"date": "2026-08-01", "value": 74},
+      {"date": "2026-09-01", "value": 75}
+    ],
+    "interestByRegion": [
+      {"geoName": "RU", "value": 100},
+      {"geoName": "US", "value": 45},
+      {"geoName": "DE", "value": 20},
+      {"geoName": "IN", "value": 12},
+      {"geoName": "BR", "value": 8},
+      {"geoName": "JP", "value": 5}
+    ]
+  }
+]

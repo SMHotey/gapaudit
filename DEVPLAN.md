@@ -198,6 +198,16 @@ configured=False, приложение работает.
 [current−3, current−1] (неполный текущий год дал бы ложный спад).
 Формат PatentsView — `size`, не `per_page` (проверено по исходникам PVAPIViews.py).
 
+P5c (закрыт 2026-10-20): funding (SEC EDGAR), третий сигнал с ключом
+(User-Agent, не api_key), 996 тестов. Окно — завершённые кварталы
+[current_q−4, current_q−1]. Формат EDGAR — hits.total.value (проверено
+живым запросом).
+
+P5d (сдан на ревью 2026-10-20): search_interest — два источника в одном
+сигнале (Yandex Wordstat по регионам РФ + Google Trends через Apify),
+1068 тестов. Официальный Google Trends (alpha) не реализован: ключ
+вводится, источник отдаёт причину в `error`, а не молчит.
+
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
 (Adzuna), patents (PatentsView), funding (SEC EDGAR), search_interest
@@ -407,20 +417,25 @@ flag/verdict/measured), не матрица. Если пользователь �
 - `GET /api/signals/{package}` — только чтение из SQLite/кэша, сети нет.
   Ответ (§0.3): `momentum` — объект (всегда, из истории); `cross_ecosystem` —
   объект | `null`; `jobs` — объект | `null`; `patents` — объект | `null`;
-  `funding` — объект | `null` (P5c); плюс списки
+  `funding` — объект | `null` (P5c); `search_interest` — объект | `null`
+  (P5d: `{query, wordstat, google_trends, total, configured, error}`, два
+  подблока источников); плюс списки
   `signals_available`/`signals_unavailable` и карта `signals_status`
-  `{"jobs": "ok"|"not_configured"|"not_collected", "patents": ...,
-  "funding": ...}`.
+  `{"jobs": "ok"|"not_configured"|"not_collected", "patents": ..., "funding":
+  ..., "search_interest": ...}`.
   `signals_status` — различимое состояние для UI: `ok` = есть данные,
   `not_configured` = ключ не настроен (у `funding` — не введён User-Agent
   EDGAR, провайдер `edgar`), `not_collected` = ключ есть, но не
   собирали (у `momentum` отдельного статуса нет — он всегда посчитан из
   истории, статуса «не настроен» не имеет; статусы относятся к видам,
-  которые собираются внешним API).
+  которые собираются внешним API). У `search_interest` статус **составной**
+  (P5d): `ok` — настроен хотя бы один из двух источников (Wordstat/Apify)
+  или источник несёт `error`; `not_configured` — не настроен ни один.
 - `POST /api/signals/collect` — body `{"package": str, "kinds": [str]}`.
   Submit job `kind="signals.collect"`, ответ `202 {job_id, status}`.
-  `kinds ⊆ SIGNAL_COLLECT_KINDS = ["jobs", "patents", "funding"]` (P5c);
-  расширяется в P5d (+search_interest). Без `kinds` — все виды набора.
+  `kinds ⊆ SIGNAL_COLLECT_KINDS = ["jobs", "patents", "funding",
+  "search_interest"]` (P5d; набор совпадает с `cli.signals.SIGNAL_KINDS`).
+  Без `kinds` — все виды набора.
   Работа идёт задачей (подпроцесс), прогресс — через SSE, запись — в
   `signal_observations`.
 - `POST /api/niche/find` — kind `niche.find`, конвейер из нескольких шагов
@@ -589,8 +604,10 @@ Hermes не подключается к живому приложению — о
    - Jobs: top-5 стран по вакансиям (если ключ Adzuna);
    - Patents: патентный импульс за 3 года (если ключ PatentsView);
    - Funding: последние раунды (если задан User-Agent EDGAR);
-   - Search interest: динамика поискового интереса и топ-регионы (если настроен
-     Yandex Wordstat или Google Trends);
+   - Search interest: топ-регионы и тренд 12 мес в двух подблоках — Yandex
+     Wordstat (РФ) и Google Trends (глобально) — если настроен любой из них
+     (P5d); каждый подблок показывает своё состояние («не настроен», «ошибка»,
+     «данных нет»);
    - Gap Score: интегральное число 0–100 + breakdown по компонентам.
 
    Каждый сигнал помечен статусом: «данные», «не настроен» (ссылка на
@@ -796,7 +813,13 @@ Hermes не подключается к живому приложению — о
 
   P4 (закрыт): full ≤90, fast ≤45. Факт (P4c): 42.01 / 23.87–23.99.
   P5 (в работе): full ≤120, fast ≤60. Факт (P5a): 76.79 / 38.96.
-  Факт (P5b): 44.00 / 26.59.
+  Факт (P5b): 53.63 / 26.59 (53.63 — финальный прогон P5b; 44.00 из раннего
+  замера под нагрузкой оставлено в истории отчёта P5b, в гейт не идёт).
+  Факт (P5c): 50.42 / 30.97.
+  Факт (P5d): 48.40 / 29.82. База перед шагом (быстрый цикл, та же машина):
+  44.02 — тренд не вырос, хотя шаг добавил 72 теста; полный до правок не
+  мерился (первый замер — уже после). Вклад: core search_interest 54
+  (фикстуры Wordstat/Apify, без сети), cli +7, web signals +9, шаблоны +2.
 
 Коллекторы сигналов (P4/P5):
 
@@ -857,6 +880,10 @@ P4c (закрыт 2026-10-20) — cross-ecosystem, 884 теста.
 P5a (закрыт 2026-10-20) — jobs (Adzuna).
 
 P5b (закрыт 2026-10-20) — patents (PatentsView).
+
+P5c (закрыт 2026-10-20) — funding (SEC EDGAR).
+
+P5d (сдан на ревью 2026-10-20) — search_interest (Wordstat + Apify).
 
 ## 14. Риски и что с ними делать
 
@@ -1141,6 +1168,20 @@ count(базовый год) − 1) · 100 %`. Окно — завершённы
 оба конца окна или успешных кварталов < 2. Между запросами — пауза 0.11 с
 (лимит SEC 10/сек, §14); сон инжектируется, тесты не ждут.
 
+**Счётчики, не разбор filing'ов:** P5c реализует СЧЁТЧИКИ Filing Form D
+(`hits.total.value` из `efts.sec.gov` search-index), не разбор XML filing'ов.
+Детальные раунды (компания, сумма, дата) — замысел плана, отложены в P5f или
+отдельный шаг, если понадобится. Счётчики разрежены по природе: Form D
+содержит имена эмитентов и адреса, технослова редки (проверено: rust — 8,
+requests — 0). В P5e при весах gap_score учитывать низкую заполняемость
+funding.
+
+**Окно:** завершённые кварталы `[current_q − quarters_back, current_q − 1]`,
+не включая текущий (неполный) квартал. Формула
+`trend_pct = (count(last_q) / count(first_q) − 1) × 100`; `None`, если база 0
+или успешных кварталов < 2. Это согласуется с окном patents (завершённые
+годы).
+
 **Отличие от замысла:** счётчики по кварталам, без сумм раундов и имён
 компаний — они лежат в XML самих filing'ов, и их разбор (нормализация
 разнородного XML, оценка 3–5 дней в §18.4) — отдельная работа после P6, не
@@ -1185,6 +1226,39 @@ value}], trend: [...]}`.
 **Стоимость:** 3–4 дня (два разных клиента + нормализация + UI).
 **Без ключа:** «не настроен».
 
+**Реализовано (P5d, `core/collectors/search_interest.py`):** два независимых
+клиента в одном сигнале, оба собираются, если настроены (не «или», а «и»).
+
+- Wordstat — `POST https://api.wordstat.yandex.net/v1/topRequests` по каждому
+  из 5 регионов (`regions: [id]`, `devices: ["all"]`, `Authorization: Bearer`),
+  счётчик — `totalCount`, `points` — top-5 по убыванию, `total` — сумма по всем
+  успешным регионам. Две правки относительно псевдокода шага, обе по
+  документации Яндекса: параметр называется **`regions`** и это СПИСОК чисел (в
+  псевдокоде — `region` строкой), а `client_id` в запросе не передаётся вовсе
+  (он привязан к токену при регистрации приложения) — остаётся обязательным
+  полем учётных данных и условием «настроен».
+- Google Trends — один синхронный запуск актора Apify
+  (`run-sync-get-dataset-items`, тело `{searchTerms: [query], geo: "",
+  timeRange: "today 12-m"}`), ответ — датасет (список элементов): `points` из
+  `interestByRegion`, тренд — по ряду `interestOverTime`, `total` — сумма ряда.
+- `trend_pct` у Wordstat — `null`: `topRequests` отдаёт срез за 30 дней, а ряд
+  за 12 месяцев живёт в `/v1/dynamics` (другая форма ответа и ещё один запрос
+  на провайдера) — отложено, зафиксировано в отчёте P5d.
+- Официальный Google Trends alpha (вариант A) **не реализован**: ключ вводится
+  в Настройках, но коллектора нет — CLI отдаёт источник с `error` =
+  «google_trends official alpha not implemented yet (только Apify)», чтобы
+  введённый ключ не выглядел бесполезным.
+
+Три состояния у каждого источника не смешиваются: нет ключа —
+`configured=false` (запросов нет); часть регионов упала — `error=null`, `total`
+по успешным; всё упало — `error='all requests failed'`, `total=0`.
+
+**UI (P5d):** блок «Search interest · поисковый интерес» с двумя подблоками —
+«Yandex Wordstat (РФ)» и «Google Trends (глобально)»; в каждом таблица top-5
+регионов + «Тренд 12 мес: +X%» (если источник его даёт), либо «Не настроен —
+см. Настройки → API-ключи», либо «Ошибка: …», либо «Данных нет». Если не
+настроен ни один источник — одна строка «Ни один источник не настроен».
+
 #### Gap Score (P5, 1–2 дня)
 
 **Что:** интегральная метрика 0–100. Ответ на вопрос «ниша свободна?» одним
@@ -1227,8 +1301,8 @@ jobs/patents/funding/search_interest.
 | P4c | Cross-ecosystem (mapping + UI) — ЗАКРЫТ 2026-10-20 | 1–2 дня |
 | P5a | Jobs (Adzuna) — ЗАКРЫТ 2026-10-20 | 2 дня |
 | P5b | Patents (PatentsView) — ЗАКРЫТ 2026-10-20 | 2–3 дня |
-| P5c | Funding (SEC EDGAR) | 3–5 дней |
-| P5d | Search interest (Yandex Wordstat + Google Trends/Apify) | 3–4 дня |
+| P5c | Funding (SEC EDGAR) — ЗАКРЫТ 2026-10-20 | 3–5 дней |
+| P5d | Search interest (Yandex Wordstat + Google Trends/Apify) — СДАН НА РЕВЬЮ 2026-10-20 | 3–4 дня |
 | P5e | Gap Score (Settings веса + UI) | 1–2 дня |
 | P5f | Niche Finder (экран + конвейер задач) | 3–4 дня |
 | P6 | MCP-сервер, расписание, уведомления | 2–3 дня |
@@ -1242,6 +1316,16 @@ jobs/patents/funding/search_interest.
 - При экспорте БД ключи не попадают в экспорт (в SQLite их нет вообще).
 - Честно документировать: «шифрование — base64, защита — права файла, не
   криптография».
+- **`get` vs `public_meta` (уточнено в P5c).** `get(provider)` домешивает
+  `public_meta` для несекретных полей (`edgar.user_agent`,
+  `yandex_wordstat.client_id`, `apify.actor_id`) и возвращает полный набор
+  объявленных полей, если они есть. `public_meta(provider)` — точный канал
+  только для `meta`, без расшифровки `encrypted_value`. Для чтения
+  User-Agent / `client_id` / `actor_id` оба работают; для чтения секретов
+  (`token`, `api_key`, `api_token`) — только `get`. Пример: P5c использовал
+  `public_meta("edgar")`, это правильно, но `get("edgar")` тоже вернул бы
+  `user_agent` — предпосылка о пустом `get` была неверна (проверено на
+  реальном `Store`).
 
 ### 18.6. Инструкции для получения ключей
 

@@ -510,3 +510,235 @@ def test_funding_observation_not_configured_is_not_configured(
     assert payload["signals_status"]["funding"] == "not_configured"
     assert "funding" in payload["signals_available"]
     assert "funding" not in payload["signals_unavailable"]
+
+
+# --- search_interest (шаг P5d): составной сигнал, два источника ---------------
+
+#: Наблюдение search_interest: Wordstat собран, Google Trends не настроен.
+SEARCH_INTEREST_DETAIL: dict[str, Any] = {
+    "query": "requests",
+    "wordstat": {
+        "source": "wordstat",
+        "points": [
+            {"region": "Россия", "value": 42, "trend_pct": None},
+            {"region": "Москва и область", "value": 30, "trend_pct": None},
+        ],
+        "total": 72,
+        "trend_pct": None,
+        "configured": True,
+        "error": None,
+    },
+    "google_trends": {
+        "source": "google_trends",
+        "points": [],
+        "total": None,
+        "trend_pct": None,
+        "configured": False,
+        "error": None,
+    },
+    "total": 72,
+    "configured": True,
+    "error": None,
+}
+
+
+def test_collect_with_search_interest_kind_is_202(client: TestClient) -> None:
+    """``kinds=["search_interest"]`` проходит fail-fast (SIGNAL_COLLECT_KINDS)."""
+    response = collect(
+        client, {"package": "requests", "kinds": ["search_interest"]}
+    )
+
+    assert response.status_code == 202, response.text
+    job = app_state(client).queue.get(response.json()["job_id"])
+    assert job is not None
+    assert job.params == {"package": "requests", "kinds": ["search_interest"]}
+
+
+def test_done_records_search_interest_observation(client: TestClient) -> None:
+    """Хук lifespan обобщён: составной detail пишется одним наблюдением.
+
+    ``value`` — ``total`` составного блока (сумма обоих источников), иначе
+    колонка осталась бы нулевой при живых данных.
+    """
+    state = app_state(client)
+    finish_with_result(
+        client,
+        {"package": "requests", "signals": {"search_interest": SEARCH_INTEREST_DETAIL}},
+    )
+
+    assert wait_for(
+        lambda: state.store.get_signal_observations(
+            "requests", signal_kind="search_interest"
+        )
+    )
+    rows = state.store.get_signal_observations("requests", signal_kind="search_interest")
+
+    assert rows[0]["value"] == 72.0
+    assert rows[0]["detail"] == SEARCH_INTEREST_DETAIL
+
+
+def test_search_interest_one_source_configured_is_ok(client: TestClient) -> None:
+    """Wordstat настроен, Google Trends нет — статус ``ok`` и блок в ответе.
+
+    Составной статус (§5 шага): «ok» — если хотя бы один источник собран;
+    отсутствие второго ключа не должно гасить сигнал целиком.
+    """
+    seed_package(client)
+    app_state(client).store.record_signal_observation(
+        package="requests",
+        signal_kind="search_interest",
+        value=72.0,
+        detail=SEARCH_INTEREST_DETAIL,
+    )
+
+    payload = signals(client)
+
+    assert payload["search_interest"] == SEARCH_INTEREST_DETAIL
+    assert payload["signals_status"]["search_interest"] == "ok"
+    assert "search_interest" in payload["signals_available"]
+    assert "search_interest" not in payload["signals_unavailable"]
+    # оба подблока в ответе: карточка рисует каждый со своим состоянием
+    assert payload["search_interest"]["wordstat"]["configured"] is True
+    assert payload["search_interest"]["google_trends"]["configured"] is False
+
+
+def test_search_interest_both_sources_not_configured(client: TestClient) -> None:
+    """Оба источника ``configured=False`` — статус ``not_configured``, блока нет."""
+    seed_package(client)
+    detail = {
+        "query": "requests",
+        "wordstat": {
+            "source": "wordstat", "points": [], "total": None, "trend_pct": None,
+            "configured": False, "error": None,
+        },
+        "google_trends": {
+            "source": "google_trends", "points": [], "total": None, "trend_pct": None,
+            "configured": False, "error": None,
+        },
+        "total": 0,
+        "configured": False,
+        "error": None,
+    }
+    app_state(client).store.record_signal_observation(
+        package="requests", signal_kind="search_interest", value=0.0, detail=detail
+    )
+
+    payload = signals(client)
+
+    assert payload["search_interest"] is None
+    assert payload["signals_status"]["search_interest"] == "not_configured"
+    assert "search_interest" in payload["signals_available"]
+    assert "search_interest" not in payload["signals_unavailable"]
+
+
+def test_search_interest_source_with_error_is_still_shown(client: TestClient) -> None:
+    """Источник с ``error`` при ``configured=False`` — статус ``ok``, причина видна.
+
+    Так выглядит ключ официального Google Trends (alpha), для которого в
+    P5d нет коллектора: ``cli/signals.py`` кладёт причину в ``error``.
+    Считать это «не настроен» значило бы прятать объяснение от
+    пользователя, который ключ уже ввёл.
+    """
+    seed_package(client)
+    message = "google_trends official alpha not implemented yet (только Apify)"
+    detail = {
+        "query": "requests",
+        "wordstat": {
+            "source": "wordstat", "points": [], "total": None, "trend_pct": None,
+            "configured": False, "error": None,
+        },
+        "google_trends": {
+            "source": "google_trends", "points": [], "total": None, "trend_pct": None,
+            "configured": False, "error": message,
+        },
+        "total": 0,
+        "configured": False,
+        "error": message,
+    }
+    app_state(client).store.record_signal_observation(
+        package="requests", signal_kind="search_interest", value=0.0, detail=detail
+    )
+
+    payload = signals(client)
+
+    assert payload["search_interest"]["google_trends"]["error"] == message
+    assert payload["signals_status"]["search_interest"] == "ok"
+
+
+def test_search_interest_without_observation_with_key_is_not_collected(
+    client: TestClient,
+) -> None:
+    """Ключ Wordstat настроен, данных нет → ``not_collected``, в unavailable."""
+    seed_package(client)
+    app_state(client).api_keys.save(
+        "yandex_wordstat", {"token": "ws-token", "client_id": "ws-client"}
+    )
+
+    payload = signals(client)
+
+    assert payload["search_interest"] is None
+    assert payload["signals_status"]["search_interest"] == "not_collected"
+    assert "search_interest" in payload["signals_unavailable"]
+    assert "search_interest" not in payload["signals_available"]
+
+
+def test_search_interest_apify_key_alone_is_also_configured(
+    client: TestClient,
+) -> None:
+    """Второй источник считается так же: хватает ключа Apify (без Wordstat)."""
+    seed_package(client)
+    app_state(client).api_keys.save(
+        "apify", {"api_token": "ap-token", "actor_id": "apify/google-trends"}
+    )
+
+    payload = signals(client)
+
+    assert payload["signals_status"]["search_interest"] == "not_collected"
+    assert "search_interest" in payload["signals_unavailable"]
+
+
+def test_search_interest_without_observation_without_keys_is_not_configured(
+    client: TestClient,
+) -> None:
+    """Ни ключей, ни данных → ``not_configured``, в available (ссылка в Настройки).
+
+    Гейт: без проверки набора провайдеров статус был бы ``not_collected``,
+    и карточка предлагала бы «собрать заново» вместо ввода ключа.
+    """
+    seed_package(client)
+
+    payload = signals(client)
+
+    assert payload["search_interest"] is None
+    assert payload["signals_status"]["search_interest"] == "not_configured"
+    assert "search_interest" in payload["signals_available"]
+    assert "search_interest" not in payload["signals_unavailable"]
+
+
+def test_search_interest_observation_without_sources_is_not_configured(
+    client: TestClient,
+) -> None:
+    """Наблюдение без обоих источников (``null``) → ``not_configured``.
+
+    Ручное конструирование сигнала или старый ``detail``: ``None`` вместо
+    источника не должен считаться «собранным».
+    """
+    seed_package(client)
+    app_state(client).store.record_signal_observation(
+        package="requests",
+        signal_kind="search_interest",
+        value=0.0,
+        detail={
+            "query": "requests",
+            "wordstat": None,
+            "google_trends": None,
+            "total": 0,
+            "configured": False,
+            "error": None,
+        },
+    )
+
+    payload = signals(client)
+
+    assert payload["search_interest"] is None
+    assert payload["signals_status"]["search_interest"] == "not_configured"

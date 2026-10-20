@@ -60,20 +60,28 @@ def signals(client: TestClient, name: str) -> dict[str, Any]:
 
 
 def seed_signal_keys(client: TestClient) -> None:
-    """Настроить провайдеров всех внешних сигналов (P5b; P5c: +edgar).
+    """Настроить провайдеров всех внешних сигналов (P5b; P5c: +edgar; P5d: +wordstat/apify).
 
-    Без ключей статус jobs/patents/funding — ``not_configured``, и §0.3
-    относит такие сигналы к ``signals_available`` (включаются вводом ключа):
-    тесты списков ниже проверяют состояние «ключ есть, но не собирали» —
-    ``not_collected`` — и потому обязаны сначала настроить ключи. У
-    ``edgar`` ключа нет: настраивается User-Agent (``meta.user_agent``),
+    Без ключей статус jobs/patents/funding/search_interest — ``not_configured``,
+    и §0.3 относит такие сигналы к ``signals_available`` (включаются вводом
+    ключа): тесты списков ниже проверяют состояние «ключ есть, но не
+    собирали» — ``not_collected`` — и потому обязаны сначала настроить ключи.
+    У ``edgar`` ключа нет: настраивается User-Agent (``meta.user_agent``),
     и полнота полей у него та же — статус ``configured`` строится по
     объявленным полям, а не по их секретности.
+
+    P5d: ``search_interest`` — составной вид с двумя источниками, поэтому
+    ключи нужны обоим (Wordstat — ``token`` + ``meta.client_id``, Apify —
+    ``api_token`` + ``meta.actor_id``), иначе сигнал попал бы в available
+    как ``not_configured`` и сдвинул ожидаемые списки ниже. Набор тот же,
+    что требует ``core/api_keys.PROVIDERS``.
     """
     keys = app_state(client).api_keys
     keys.save("adzuna", {"app_id": "id", "app_key": "key"})
     keys.save("patentsview", {"api_key": "test-key"})
     keys.save("edgar", {"user_agent": "GapAudit test@example.com"})
+    keys.save("yandex_wordstat", {"token": "ws-token", "client_id": "ws-client"})
+    keys.save("apify", {"api_token": "ap-token", "actor_id": "apify/google-trends"})
 
 
 def test_unknown_package_is_404(client: TestClient) -> None:

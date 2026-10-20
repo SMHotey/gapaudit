@@ -693,3 +693,25 @@ a:hover { color: var(--accent-hover); }
 }
 .funding-table th { color: var(--text-dim); font-weight: 500; }
 .funding-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Блок «Search interest» в карточке пакета (шаг P5d): два подблока —
+   Yandex Wordstat (РФ) и Google Trends (глобально), у каждого таблица
+   регионов и тренд, либо строка состояния («не настроен» / ошибка /
+   «данных нет»). Вид таблицы — как у Funding (P5c), чтобы карточка не
+   разъезжалась по вертикали от блока к блоку. */
+.card-search-interest { margin: 12px 0; }
+.si-source { margin: 6px 0 6px 8px; }
+.si-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.si-table th,
+.si-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.si-table th { color: var(--text-dim); font-weight: 500; }
+.si-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }

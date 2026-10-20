@@ -1,0 +1,7 @@
+{
+  "topRequests": [
+    {"phrase": "test", "count": 42},
+    {"phrase": "test framework", "count": 11}
+  ],
+  "totalCount": 42
+}

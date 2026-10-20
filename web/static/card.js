@@ -457,6 +457,110 @@
       else card.appendChild(div);
     }
 
+    /* Search interest (шаг P5d, §18.3): поисковый интерес из двух источников —
+       Yandex Wordstat (регионы РФ) и Google Trends (глобально, через Apify).
+       Данные — signals.search_interest ответа /api/packages/{name}; каждый
+       источник показывает своё состояние: собран (таблица регионов + тренд),
+       ключ не настроен (ссылка в Настройки), ошибка (текст от API). Имена
+       регионов и числа в DOM попадают только через textContent (gotcha 37),
+       innerHTML — только у статической шапки таблицы. Составной статус
+       приходит из signals_status.search_interest (P5d: ok, если настроен
+       хотя бы один источник). */
+    const searchInterest = signals.search_interest;
+    const siStatus = payload.signals_status &&
+                     payload.signals_status.search_interest;
+    if (searchInterest || siStatus === 'not_configured' ||
+        siStatus === 'not_collected') {
+      const div = document.createElement('div');
+      div.className = 'card-search-interest';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Search interest · поисковый интерес';
+      div.appendChild(label);
+      if (searchInterest) {
+        [['wordstat', 'Yandex Wordstat (РФ)'],
+         ['google_trends', 'Google Trends (глобально)']].forEach((pair) => {
+          const src = pair[0];
+          const s = searchInterest[src];
+          if (!s) return;
+          const sub = document.createElement('div');
+          sub.className = 'si-source';
+          const subLabel = document.createElement('div');
+          subLabel.className = 'muted';
+          subLabel.style.fontSize = '12px';
+          subLabel.textContent = pair[1];
+          sub.appendChild(subLabel);
+          if (!s.configured && s.error) {
+            /* Ключ введён, но источником нельзя воспользоваться (официальный
+               Google Trends alpha в P5d не реализован): показываем причину,
+               а не «не настроен» — иначе ввод ключа выглядел бы бесполезным. */
+            const err = document.createElement('div');
+            err.className = 'muted';
+            err.textContent = 'Ошибка: ' + s.error;
+            sub.appendChild(err);
+          } else if (!s.configured) {
+            const msg = document.createElement('div');
+            msg.className = 'muted';
+            msg.textContent = 'Не настроен — см. Настройки → API-ключи';
+            sub.appendChild(msg);
+          } else if (s.error) {
+            const msg = document.createElement('div');
+            msg.className = 'muted';
+            msg.textContent = 'Ошибка: ' + s.error;
+            sub.appendChild(msg);
+          } else if (s.points && s.points.length) {
+            const table = document.createElement('table');
+            table.className = 'si-table';
+            table.innerHTML = '<thead><tr><th>Регион</th>' +
+                              '<th>Интерес</th></tr></thead>';
+            const tbody = document.createElement('tbody');
+            s.points.slice(0, 5).forEach((point) => {
+              const tr = document.createElement('tr');
+              const tdR = document.createElement('td');
+              tdR.textContent = point.region;
+              tr.appendChild(tdR);
+              const tdV = document.createElement('td');
+              tdV.textContent = point.value != null
+                ? point.value.toLocaleString('ru-RU') : '—';
+              tdV.className = 'mono';
+              tr.appendChild(tdV);
+              tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            sub.appendChild(table);
+            if (s.trend_pct != null) {
+              const trend = document.createElement('div');
+              trend.className = 'muted';
+              const siSign = s.trend_pct > 0 ? '+' : '';
+              trend.textContent = 'Тренд 12 мес: ' + siSign +
+                s.trend_pct.toFixed(1) + '%';
+              sub.appendChild(trend);
+            }
+          } else {
+            const msg = document.createElement('div');
+            msg.className = 'muted';
+            msg.textContent = 'Данных нет';
+            sub.appendChild(msg);
+          }
+          div.appendChild(sub);
+        });
+      } else if (siStatus === 'not_configured') {
+        const msg = document.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'Ни один источник не настроен — ' +
+          'см. Настройки → API-ключи';
+        div.appendChild(msg);
+      } else {
+        const msg = document.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'Ещё не собирали';
+        div.appendChild(msg);
+      }
+      const anchor4 = card.querySelector('.card-graph');
+      if (anchor4) card.insertBefore(div, anchor4);
+      else card.appendChild(div);
+    }
+
     card.appendChild(miniGraph(history));
 
     const eventsTitle = document.createElement('div');
