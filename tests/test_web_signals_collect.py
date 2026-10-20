@@ -1,16 +1,19 @@
-"""``POST /api/signals/collect`` и ``jobs`` в ``GET /api/signals/{package}`` (P5a).
+"""``POST /api/signals/collect``, ``jobs`` и ``patents`` в ``GET /api/signals/{package}`` (P5a/P5b).
 
 Что проверяется:
 
 * эндпоинт 202 + задача ``signals.collect`` в Store, валидация 400
   (пустой package, неизвестный вид — fail fast до создания задачи);
 * хук lifespan: ``done`` + result.json ``{"package", "signals"}`` →
-  ``Store.record_signal_observation`` (value=total, detail=блок);
-* ``GET /api/signals/{package}``: три состояния jobs («собран» / «ключ не
-  настроен» / «ещё не собирали») видны по ``jobs`` + ``signals_status`` и
-  по ``signals_available``/``signals_unavailable``;
+  ``Store.record_signal_observation`` (value=total, detail=блок) — хук
+  обобщён на любой вид (P5b: jobs и patents пишутся одним кодом);
+* ``GET /api/signals/{package}``: три состояния вида («собран» / «ключ не
+  настроен» / «ключ есть, но не собирали») видны по ``jobs``/``patents`` +
+  ``signals_status`` и по ``signals_available``/``signals_unavailable``
+  (§0.3: ``not_configured`` — в available, ссылка в Настройки);
 * «согласие слоёв» (gotcha 54): ``app/web.SIGNAL_COLLECT_KINDS`` ==
-  ``cli.signals.SIGNAL_KINDS`` — иначе API ответил бы 202 задаче,
+  ``cli.signals.SIGNAL_KINDS``, а ``SIGNAL_KIND_PROVIDERS`` ==
+  ``cli.signals.KIND_TO_PROVIDER`` — иначе API ответил бы 202 задаче,
   которая умирает argparse'ом в подпроцессе.
 
 Сеть — ноль, подпроцессы — ноль (conftest: воркеры не поднимаются, runner
@@ -28,8 +31,8 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from app.web import SIGNAL_COLLECT_KINDS
-from cli.signals import SIGNAL_KINDS
+from app.web import SIGNAL_COLLECT_KINDS, SIGNAL_KIND_PROVIDERS
+from cli.signals import KIND_TO_PROVIDER, SIGNAL_KINDS
 from tests.conftest import app_state, auth
 
 #: Наблюдение jobs, как его пишет хук lifespan из result.json cli.signals.
@@ -39,6 +42,18 @@ JOBS_DETAIL: dict[str, Any] = {
         {"country": "de", "count": 200, "label": "Germany"},
         {"country": "it", "count": 12, "label": "Italy"},
     ],
+    "configured": True,
+    "error": None,
+}
+
+#: Наблюдение patents (P5b) — тем же хуком, что и jobs.
+PATENTS_DETAIL: dict[str, Any] = {
+    "total": 42,
+    "by_year": [
+        {"year": 2024, "count": 14},
+        {"year": 2025, "count": 28},
+    ],
+    "impulse_pct": 100.0,
     "configured": True,
     "error": None,
 }
@@ -121,7 +136,7 @@ def test_collect_returns_202_and_creates_job(client: TestClient) -> None:
 
 
 def test_collect_without_kinds_defaults_to_jobs(client: TestClient) -> None:
-    """kinds необязателен: CLI соберёт всё, что умеет (P5a — jobs)."""
+    """kinds необязателен: CLI соберёт всё, что умеет (в P5b — jobs и patents)."""
     response = collect(client, {"package": "requests"})
 
     assert response.status_code == 202, response.text
@@ -157,6 +172,9 @@ def test_collect_with_wrong_kinds_type_is_400(client: TestClient) -> None:
 def test_web_and_cli_agree_on_signal_kinds() -> None:
     """«Согласие слоёв» (gotcha 54): наборы видов в web и cli совпадают."""
     assert SIGNAL_COLLECT_KINDS == frozenset(SIGNAL_KINDS)
+    # и провайдеры ключей видов: статус not_configured/not_collected в §0.3
+    # строится по SIGNAL_KIND_PROVIDERS — провайдер вида обязан существовать
+    assert SIGNAL_KIND_PROVIDERS == KIND_TO_PROVIDER
 
 
 # --- хук lifespan: done -> signal_observations --------------------------------
@@ -232,8 +250,13 @@ def test_signals_endpoint_shows_jobs_after_collection(client: TestClient) -> Non
 
 
 def test_signals_endpoint_without_observation(client: TestClient) -> None:
-    """Наблюдений нет → jobs=None, статус not_collected, имя в unavailable."""
+    """Ключ Adzuna настроен, наблюдений нет → jobs=None, not_collected, в unavailable.
+
+    §0.3: ``not_collected`` = «ключ есть, но не собирали» — без настроенного
+    ключа статус был бы ``not_configured`` (см. tests в patents-секции).
+    """
     seed_package(client)
+    app_state(client).api_keys.save("adzuna", {"app_id": "id", "app_key": "key"})
 
     payload = signals(client)
 
@@ -245,8 +268,10 @@ def test_signals_endpoint_without_observation(client: TestClient) -> None:
 def test_signals_endpoint_not_configured_observation(client: TestClient) -> None:
     """Наблюдение configured=False → jobs=None, статус not_configured.
 
-    Ключ не настроен — не «нет данных вообще»: UI показывает ссылку
-    «Настройки → API-ключи», а не кнопку «Собрать» (§4.3 шага).
+    Ключ не настроен — не «нет данных вообще»: §0.3 относит
+    ``not_configured`` к ``signals_available`` (включается вводом ключа,
+    UI показывает ссылку «Настройки → API-ключи»), а не к
+    ``signals_unavailable`` (§4.3 шага).
     """
     seed_package(client)
     state = app_state(client)
@@ -261,4 +286,108 @@ def test_signals_endpoint_not_configured_observation(client: TestClient) -> None
 
     assert payload["jobs"] is None
     assert payload["signals_status"]["jobs"] == "not_configured"
-    assert "jobs" in payload["signals_unavailable"]
+    assert "jobs" in payload["signals_available"]
+    assert "jobs" not in payload["signals_unavailable"]
+
+
+# --- patents (шаг P5b) --------------------------------------------------------
+
+
+def test_collect_with_patents_kind_is_202(client: TestClient) -> None:
+    """``kinds=["patents"]`` проходит fail-fast-валидацию (SIGNAL_COLLECT_KINDS)."""
+    response = collect(client, {"package": "requests", "kinds": ["patents"]})
+
+    assert response.status_code == 202, response.text
+    job = app_state(client).queue.get(response.json()["job_id"])
+    assert job is not None
+    assert job.params == {"package": "requests", "kinds": ["patents"]}
+
+
+def test_done_records_patents_observation(client: TestClient) -> None:
+    """Хук lifespan обобщён (§0): result.json с patents → наблюдение patents."""
+    state = app_state(client)
+    finish_with_result(
+        client, {"package": "requests", "signals": {"patents": PATENTS_DETAIL}}
+    )
+
+    assert wait_for(
+        lambda: state.store.get_signal_observations("requests", signal_kind="patents")
+    )
+    rows = state.store.get_signal_observations("requests", signal_kind="patents")
+
+    assert rows[0]["value"] == 42.0
+    assert rows[0]["detail"] == PATENTS_DETAIL
+
+
+def test_patents_observation_configured_is_ok(client: TestClient) -> None:
+    """Наблюдение configured=True → patents-блок, статус ok, имя в available."""
+    seed_package(client)
+    app_state(client).store.record_signal_observation(
+        package="requests",
+        signal_kind="patents",
+        value=42.0,
+        detail=PATENTS_DETAIL,
+    )
+
+    payload = signals(client)
+
+    assert payload["patents"] == PATENTS_DETAIL
+    assert payload["signals_status"]["patents"] == "ok"
+    assert "patents" in payload["signals_available"]
+    assert "patents" not in payload["signals_unavailable"]
+
+
+def test_patents_without_observation_with_key_is_not_collected(
+    client: TestClient,
+) -> None:
+    """Ключ PatentsView настроен, данных нет → not_collected, в unavailable (§0.3)."""
+    seed_package(client)
+    app_state(client).api_keys.save("patentsview", {"api_key": "test-key"})
+
+    payload = signals(client)
+
+    assert payload["patents"] is None
+    assert payload["signals_status"]["patents"] == "not_collected"
+    assert "patents" in payload["signals_unavailable"]
+
+
+def test_patents_without_observation_without_key_is_not_configured(
+    client: TestClient,
+) -> None:
+    """Ни ключа, ни данных → not_configured, в available (ссылка в Настройки).
+
+    Гейт §0.3/§0.4: без проверки ключа статус был бы not_collected
+    («ещё не собирали»), и карточка предлагала бы дождаться сбора вместо
+    ввода ключа.
+    """
+    seed_package(client)
+
+    payload = signals(client)
+
+    assert payload["patents"] is None
+    assert payload["signals_status"]["patents"] == "not_configured"
+    assert "patents" in payload["signals_available"]
+    assert "patents" not in payload["signals_unavailable"]
+
+
+def test_patents_observation_not_configured_is_not_configured(
+    client: TestClient,
+) -> None:
+    """Наблюдение configured=False → not_configured, в available (та же логика, что у jobs)."""
+    seed_package(client)
+    app_state(client).store.record_signal_observation(
+        package="requests",
+        signal_kind="patents",
+        value=0.0,
+        detail={
+            "total": 0, "by_year": [], "impulse_pct": None,
+            "configured": False, "error": None,
+        },
+    )
+
+    payload = signals(client)
+
+    assert payload["patents"] is None
+    assert payload["signals_status"]["patents"] == "not_configured"
+    assert "patents" in payload["signals_available"]
+    assert "patents" not in payload["signals_unavailable"]

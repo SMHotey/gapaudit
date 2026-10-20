@@ -1,4 +1,4 @@
-"""CLI-обёртка для сигналов (шаг P5a, DEVPLAN §7/§18.3). В P5a — только jobs.
+"""CLI-обёртка для сигналов (шаг P5a, расширение P5b; DEVPLAN §7/§18.3).
 
 Запуск::
 
@@ -10,18 +10,21 @@
 параметров: CLI автономен (Железное правило 2), каталог данных
 определяется общефлагом ``--data-dir`` как у шести других скриптов.
 
-``--kind`` повторяется (``action="append"``); в P5a допустим только
-``jobs`` (``choices``): будущие ``patents``/``funding`` (P5b/P5c) добавятся
-одной строкой в :data:`SIGNAL_KINDS`. Повтор одного вида — дедупликация,
-не ошибка: задача «jobs дважды» означает «собери jobs», а не «умри».
+``--kind`` повторяется (``action="append"``); с P5b допустимы ``jobs`` и
+``patents`` (``choices``): будущие ``funding``/``search_interest`` (P5c/P5d)
+добавляются одной строкой в :data:`SIGNAL_KINDS` (и одной строкой в
+:data:`KIND_TO_PROVIDER`). Повтор одного вида — дедупликация, не ошибка:
+задача «jobs дважды» означает «собери jobs», а не «умри». Без ``--kind``
+собираются все виды :data:`SIGNAL_KINDS`.
 
 Протокол задачи — как у остальных CLI: под ``--job-json`` hello →
-progress (по одной строке на страну) → done; таблицы и итоги в stderr
+progress (по одной строке на страну/год) → done; таблицы и итоги в stderr
 (их читает лог задачи), результат — в ``--json-out``. Ошибка тела —
 ``{"type": "error"}`` и код 2.
 
-Без ключа Adzuna это НЕ ошибка: ``configured=False`` в результате, код 0 —
-graceful degradation (§18.1): сигнал «не настроен», приложение работает.
+Без ключа провайдера это НЕ ошибка: ``configured=False`` в результате,
+код 0 — graceful degradation (§18.1): сигнал «не настроен», приложение
+работает.
 """
 
 from __future__ import annotations
@@ -42,16 +45,17 @@ from cli._common import (
 )
 from core.api_keys import ApiKeysStore
 from core.collectors.jobs import compute_jobs, default_transport
+from core.collectors.patents import compute_patents, default_post_transport
 
 __all__ = ["SIGNAL_KINDS", "main"]
 
-#: Виды сигналов, которые умеет собирать ``collect`` (P5a: только jobs).
+#: Виды сигналов, которые умеет собирать ``collect`` (P5a: jobs; P5b: +patents).
 #: Тот же набор проверяет ``POST /api/signals/collect`` (app/web.py) —
 #: два слоя не должны разойтись (gotcha 54, тест «согласие слоёв»).
-SIGNAL_KINDS: tuple[str, ...] = ("jobs",)
+SIGNAL_KINDS: tuple[str, ...] = ("jobs", "patents")
 
 #: Вид сигнала -> провайдер ключей (core.api_keys.PROVIDERS).
-KIND_TO_PROVIDER: dict[str, str] = {"jobs": "adzuna"}
+KIND_TO_PROVIDER: dict[str, str] = {"jobs": "adzuna", "patents": "patentsview"}
 
 #: Куда писать результат без ``--json-out`` (как у legacy-скриптов: raw/).
 DEFAULT_JSON = "raw/signals.json"
@@ -113,7 +117,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     parser = build_argparser(
         prog="signals.py",
-        description="Сбор сигналов ниш по пакету (jobs — Adzuna)",
+        description="Сбор сигналов ниш по пакету (jobs — Adzuna, patents — PatentsView)",
     )
     parser.add_argument(
         "--package",
@@ -151,9 +155,13 @@ def _main(argv: list[str] | None = None) -> int:
     try:
         keys = ApiKeysStore(settings.data_dir)
         signals: dict[str, dict] = {}
+        # Какой вид собирается — решает choices argparse (--kind), здесь
+        # ветка на вид (новый вид = одна строка в SIGNAL_KINDS + эта).
         for kind in kinds:
             if kind == "jobs":
                 signals["jobs"] = _collect_jobs(keys, package, on_progress)
+            elif kind == "patents":
+                signals["patents"] = _collect_patents(keys, package, on_progress)
     except Exception as error:  # noqa: BLE001 - тело CLI обязано отчитаться ошибкой
         print(f"[gapaudit] {error}", file=sys.stderr)
         if job_json_requested(argv):
@@ -187,24 +195,64 @@ def _collect_jobs(
     return signal.as_dict()
 
 
+def _collect_patents(
+    keys: ApiKeysStore, package: str, on_progress: object
+) -> dict:
+    """Собрать ``patents`` через ``core.collectors.patents``; ключа нет — ``configured=False``.
+
+    ``ApiKeysStore.get`` вернёт ``None`` и для неполного ключа — коллектору
+    уходит ``api_key=None`` («не настроен», запросов нет, код 0; P5b).
+    """
+    credentials = keys.get(KIND_TO_PROVIDER["patents"]) or {}
+    signal = compute_patents(
+        package,
+        api_key=credentials.get("api_key") or None,
+        transport=default_post_transport,
+        on_progress=on_progress,  # type: ignore[arg-type]
+    )
+    return signal.as_dict()
+
+
 def _print_summary(signals: dict[str, dict]) -> None:
-    """Человекочитаемый итог в stdout (под --job-json он уходит в stderr)."""
+    """Человекочитаемый итог в stdout (под --job-json он уходит в stderr).
+
+    Секции независимы: ``--kind patents`` без jobs печатает только patents,
+    и наоборот (P5b: видов сигнала несколько, ранний ``return`` одного вида
+    не должен съедать итог другого).
+    """
     jobs = signals.get("jobs")
-    if jobs is None:
-        return
-    if not jobs.get("configured"):
-        print("jobs: ключ Adzuna не настроен — см. Настройки → API-ключи")
-        return
-    if jobs.get("error"):
-        print(f"jobs: ошибка — {jobs['error']}")
-        return
-    rows = [
-        [row["label"], str(row["count"])]
-        for row in (jobs.get("by_country") or [])
-    ]
-    if rows:
-        print_table(["страна", "вакансии"], rows, aligns=["l", "r"])
-    print(f"jobs: собрано, всего вакансий: {jobs['total']}")
+    if jobs is not None:
+        if not jobs.get("configured"):
+            print("jobs: ключ Adzuna не настроен — см. Настройки → API-ключи")
+        elif jobs.get("error"):
+            print(f"jobs: ошибка — {jobs['error']}")
+        else:
+            rows = [
+                [row["label"], str(row["count"])]
+                for row in (jobs.get("by_country") or [])
+            ]
+            if rows:
+                print_table(["страна", "вакансии"], rows, aligns=["l", "r"])
+            print(f"jobs: собрано, всего вакансий: {jobs['total']}")
+
+    patents = signals.get("patents")
+    if patents is not None:
+        if not patents.get("configured"):
+            print("patents: ключ PatentsView не настроен — см. Настройки → API-ключи")
+        elif patents.get("error"):
+            print(f"patents: ошибка — {patents['error']}")
+        else:
+            rows = [
+                [str(row["year"]), str(row["count"])]
+                for row in (patents.get("by_year") or [])
+            ]
+            if rows:
+                print_table(["год", "патентов"], rows, aligns=["l", "r"])
+            print(f"patents: собрано, всего патентов: {patents['total']}")
+            impulse = patents.get("impulse_pct")
+            if impulse is not None:
+                sign = "+" if impulse > 0 else ""
+                print(f"patents: импульс {sign}{impulse:.1f}% за 3 года")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,13 +1,15 @@
-"""``cli.signals`` (шаг P5a): обёртка ``python -m cli.signals collect``.
+"""``cli.signals`` (шаг P5a, расширение P5b): обёртка ``python -m cli.signals collect``.
 
 Проверяется протокол задачи (hello → progress → done), формат
-``--json-out`` (``{"package", "signals": {"jobs": ...}}``), graceful
-degradation без ключа (``configured=False``, код 0) и дедупликация
-``--kind``.
+``--json-out`` (``{"package", "signals": {"jobs"/"patents": ...}}``),
+graceful degradation без ключа (``configured=False``, код 0), выбор вида
+по ``--kind`` (P5b: ``jobs`` и ``patents``, без ``--kind`` — все виды) и
+дедупликация ``--kind``.
 
-Сеть — ноль: ``compute_jobs`` подменён фейком, а реальный транспорт в
-тесте без ключа проверяется «не дёргается вовсе» (ключ читается из
-``<data_dir>/api_keys.json``, которого в tmp нет — AGENTS gotcha 61).
+Сеть — ноль: ``compute_jobs``/``compute_patents`` подменены фейками, а
+реальные транспорты в тестах без ключа проверяются «не дёргаются вовсе»
+(ключи читаются из ``<data_dir>/api_keys.json``, которого в tmp нет —
+AGENTS gotcha 61).
 """
 
 from __future__ import annotations
@@ -18,7 +20,9 @@ import pathlib
 import pytest
 
 from cli import signals
+from core.api_keys import ApiKeysStore
 from core.collectors.jobs import JobsByCountry, JobsSignal
+from core.collectors.patents import PatentsSignal, PatentsYearBucket
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
@@ -233,3 +237,162 @@ def test_runner_argv_order_flags_before_command_works(
 
     assert code == 0
     assert json.loads(out_path2.read_text(encoding="utf-8"))["package"] == "collect"
+
+
+# --- patents (шаг P5b) ---------------------------------------------------------
+
+
+def fake_patents_signal(**overrides: object) -> PatentsSignal:
+    """Собранный patents-сигнал для фейка compute_patents."""
+    fields: dict = {
+        "total": 42,
+        "by_year": (PatentsYearBucket(year=2025, count=42),),
+        "impulse_pct": None,
+        "configured": True,
+        "error": None,
+    }
+    fields.update(overrides)
+    return PatentsSignal(**fields)
+
+
+def test_collect_patents_without_key_is_configured_false_and_exit_0(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--kind patents`` без ключа — configured=False, код 0, запросов нет.
+
+    Транспорт ``compute_patents`` заменён на взрывающийся: без ключа он не
+    должен дёргаться (контракт core/collectors/patents.py), и вида jobs
+    в результате тоже нет — собран ровно запрошенный.
+    """
+    def must_not_be_called(url, headers, timeout, body=None):  # noqa: ANN001
+        raise AssertionError("транспорт без ключа не должен дёргаться")
+
+    monkeypatch.setattr(signals, "default_post_transport", must_not_be_called)
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "patents",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert protocol(captured.out)[-1] == {"type": "done"}
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["patents"]
+    assert payload["signals"]["patents"] == {
+        "total": 0, "by_year": [], "impulse_pct": None,
+        "configured": False, "error": None,
+    }
+
+
+def test_collect_patents_with_key_writes_patents_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ключ из api_keys.json (провайдер patentsview) уходит в compute_patents."""
+    ApiKeysStore(tmp_path / "data").save("patentsview", {"api_key": "test-key"})
+    seen: dict[str, object] = {}
+
+    def fake_compute(query: str, *, api_key, transport, on_progress=None,
+                     **kwargs: object) -> PatentsSignal:
+        seen.update(query=query, api_key=api_key, transport=transport)
+        if on_progress:
+            on_progress(1.0, "patents 2025")
+        return fake_patents_signal()
+
+    monkeypatch.setattr(signals, "compute_patents", fake_compute)
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "patents",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["signals"]["patents"] == {
+        "total": 42,
+        "by_year": [{"year": 2025, "count": 42}],
+        "impulse_pct": None,
+        "configured": True,
+        "error": None,
+    }
+    assert seen["query"] == "requests"
+    assert seen["api_key"] == "test-key"
+    assert seen["transport"] is signals.default_post_transport
+    progress = [m for m in protocol(captured.out) if m["type"] == "progress"]
+    assert progress and progress[-1]["message"] == "patents 2025"
+
+
+def test_collect_jobs_and_patents_writes_both_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--kind jobs --kind patents`` — оба блока в одном --json-out."""
+    monkeypatch.setattr(signals, "compute_jobs",
+                        lambda query, **kwargs: fake_signal())
+    monkeypatch.setattr(signals, "compute_patents",
+                        lambda query, **kwargs: fake_patents_signal())
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests",
+        "--kind", "jobs", "--kind", "patents",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["jobs", "patents"]
+    assert payload["signals"]["jobs"]["total"] == 42
+    assert payload["signals"]["patents"]["total"] == 42
+
+
+def test_without_kind_collects_every_signal_kind(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Без ``--kind`` собираются все виды SIGNAL_KINDS (ключей нет — оба False)."""
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests",
+        "--job-json", "--json-out", str(out_path),
+    ])
+    capsys.readouterr()
+
+    assert code == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert list(payload["signals"]) == ["jobs", "patents"]
+    assert payload["signals"]["jobs"]["configured"] is False
+    assert payload["signals"]["patents"]["configured"] is False
+
+
+def test_summary_for_humans_prints_patents_sections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Автономный запуск: итог по patents — таблица лет, импульс и источник."""
+    monkeypatch.setattr(signals, "compute_patents",
+                        lambda query, **kwargs: fake_patents_signal(
+                            impulse_pct=200.0,
+                            by_year=(
+                                PatentsYearBucket(year=2023, count=14),
+                                PatentsYearBucket(year=2025, count=42),
+                            ),
+                        ))
+    out_path = tmp_path / "signals.json"
+
+    code = signals.main([
+        "collect", "--package", "requests", "--kind", "patents",
+        "--json-out", str(out_path),
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "всего патентов: 42" in captured.out
+    assert "импульс +200.0%" in captured.out
+    assert '"type"' not in captured.out

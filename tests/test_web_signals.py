@@ -1,13 +1,16 @@
-"""``GET /api/signals/{package}`` (P4b: momentum, P4c: cross-ecosystem).
+"""``GET /api/signals/{package}`` (P4b: momentum, P4c: cross-ecosystem, P5b: jobs/patents).
 
 Эндпоинт — точка расширения на P5: ``signals_available`` перечисляет
-посчитанное сейчас, ``signals_unavailable`` — то, что появится позже. Разница
-между «сигнала нет» и «сигнал ещё не сделан» видна клиенту без знания
-календаря шагов (§18.3). В P4c к momentum добавлен ``cross_ecosystem`` — он
-доступен только при заданном concept, и без concept уходит в unavailable.
+посчитанное (``ok``) или включаемое вводом ключа (``not_configured``,
+§0.3), ``signals_unavailable`` — не собранное при настроенном ключе и
+виды, которых ещё нет. Разница между «сигнала нет» и «сигнал ещё не
+сделан» видна клиенту без знания календаря шагов (§18.3). В P4c к
+momentum добавлен ``cross_ecosystem`` — он доступен только при заданном
+concept, и без concept уходит в unavailable.
 
-Сеть — ноль, подпроцессы — ноль: данные готовятся ``Store``, эндпоинт только
-читает.
+Сеть — ноль, подпроцессы — ноль: данные готовятся ``Store``, эндпоинт
+только читает (ключи — из ``<data_dir>/api_keys.json``, которым в tmp-тестах
+управляет conftest).
 """
 
 from __future__ import annotations
@@ -56,6 +59,19 @@ def signals(client: TestClient, name: str) -> dict[str, Any]:
     return response.json()
 
 
+def seed_signal_keys(client: TestClient) -> None:
+    """Настроить ключи обоих провайдеров (P5b, §0.3).
+
+    Без ключей статус jobs/patents — ``not_configured``, и §0.3 относит
+    такие сигналы к ``signals_available`` (включаются вводом ключа): тесты
+    списков ниже проверяют состояние «ключ есть, но не собирали» —
+    ``not_collected`` — и потому обязаны сначала настроить ключи.
+    """
+    keys = app_state(client).api_keys
+    keys.save("adzuna", {"app_id": "id", "app_key": "key"})
+    keys.save("patentsview", {"api_key": "test-key"})
+
+
 def test_unknown_package_is_404(client: TestClient) -> None:
     """Имени нет ни в observations, ни в packages — 404, а не пустой сигнал."""
     response = client.get("/api/signals/nonexistent", headers=auth())
@@ -96,7 +112,14 @@ def test_three_measurements_over_month_compute_delta_and_color(
 
 
 def test_available_and_unavailable_lists(client: TestClient) -> None:
-    """В P4b доступен только momentum; остальные перечислены как будущие."""
+    """Ключи настроены, данные не собраны — доступен только momentum (§0.3).
+
+    ``jobs``/``patents`` при настроенном ключе — ``not_collected``: имя в
+    unavailable («ещё не собирали»), а не в available. Без ключей статус был
+    бы ``not_configured`` и сигналы попали бы в available (см.
+    ``test_patents_without_observation_without_key_is_not_configured``).
+    """
+    seed_signal_keys(client)
     seed_at(client, 0, observation("requests", week=100))
 
     payload = signals(client, "requests")
@@ -126,6 +149,7 @@ def seed_concept(
 
 def test_cross_ecosystem_present_with_two_peers(client: TestClient) -> None:
     """Concept с пакетом и двумя соседями: сигнал посчитан, peers — двое."""
+    seed_signal_keys(client)  # иначе jobs/patents были бы not_configured → в available
     seed_at(client, 25, observation("chromadb", week=100))
     seed_at(client, 0, observation("chromadb", week=121))
     seed_at(client, 0, observation("chromadb-npm", week=105))
@@ -155,6 +179,7 @@ def test_cross_ecosystem_present_with_two_peers(client: TestClient) -> None:
 
 def test_package_without_concept_has_no_cross_signal(client: TestClient) -> None:
     """Нет concept — ``cross_ecosystem=None``, имя уходит в unavailable."""
+    seed_signal_keys(client)  # ключи: jobs/patents = not_collected → в unavailable
     seed_at(client, 0, observation("requests", week=100))
 
     payload = signals(client, "requests")
@@ -166,6 +191,7 @@ def test_package_without_concept_has_no_cross_signal(client: TestClient) -> None
 
 def test_unavailable_lists_only_missing_signals(client: TestClient) -> None:
     """С посчитанным cross-ecosystem в unavailable его уже нет (и gap_score нет)."""
+    seed_signal_keys(client)  # без ключей jobs/patents = not_configured → в available
     seed_at(client, 0, observation("chromadb", week=100))
     seed_concept(client)
 

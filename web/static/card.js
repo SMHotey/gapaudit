@@ -324,6 +324,73 @@
       else card.appendChild(div);
     }
 
+    /* Patents (шаг P5b, §18.3): патентный импульс PatentsView — таблица по
+       годам + импульс + строка источника. Три состояния по signals_status:
+       собран (таблица), ключ не настроен (ссылка в Настройки), ключ есть,
+       но не собирали («ещё не собирали»; кнопка «Собрать» — P5f, §0.4).
+       Данные в DOM попадают только через textContent (gotcha 37), innerHTML —
+       только у статической шапки таблицы. */
+    const patents = signals.patents;
+    const patentsStatus = payload.signals_status &&
+                          payload.signals_status.patents;
+    if (patents || patentsStatus === 'not_configured' ||
+        patentsStatus === 'not_collected') {
+      const div = document.createElement('div');
+      div.className = 'card-patents';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Patents · патентный импульс';
+      div.appendChild(label);
+      if (patents && patents.configured) {
+        const table = document.createElement('table');
+        table.className = 'patents-table';
+        table.innerHTML = '<thead><tr><th>Год</th><th>Патентов</th></tr></thead>';
+        const tbody = document.createElement('tbody');
+        (patents.by_year || []).forEach((row) => {
+          const tr = document.createElement('tr');
+          const tdY = document.createElement('td');
+          tdY.textContent = row.year;
+          tdY.className = 'mono';
+          tr.appendChild(tdY);
+          const tdC = document.createElement('td');
+          tdC.textContent = fmtNum(row.count);
+          tdC.className = 'mono';
+          tr.appendChild(tdC);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        div.appendChild(table);
+        const total = document.createElement('div');
+        total.className = 'muted';
+        total.textContent = 'Всего: ' + fmtNum(patents.total) +
+          ' · источник: PatentsView API';
+        div.appendChild(total);
+        if (patents.impulse_pct !== null &&
+            patents.impulse_pct !== undefined) {
+          const imp = document.createElement('div');
+          imp.className = 'muted';
+          const sign = patents.impulse_pct > 0 ? '+' : '';
+          imp.textContent = 'Импульс: ' + sign +
+            patents.impulse_pct.toFixed(1) + '% за 3 года';
+          div.appendChild(imp);
+        }
+      } else if (patentsStatus === 'not_configured') {
+        const msg = document.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'API-ключ PatentsView не настроен — ' +
+          'см. Настройки → API-ключи';
+        div.appendChild(msg);
+      } else {
+        const msg = document.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'Ещё не собирали';
+        div.appendChild(msg);
+      }
+      const anchor2 = card.querySelector('.card-graph');
+      if (anchor2) card.insertBefore(div, anchor2);
+      else card.appendChild(div);
+    }
+
     card.appendChild(miniGraph(history));
 
     const eventsTitle = document.createElement('div');

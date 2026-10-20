@@ -189,6 +189,10 @@ README «Установка на чистой машине», API Keys Store (и
 Статус P4c (закрыт 2026-10-20): cross-ecosystem momentum, миграция 3
 (concept_packages, signal_observations), 884 теста.
 
+Статус P5a (закрыт 2026-10-20): jobs (Adzuna), первый сигнал
+с ключом, 925 тестов. Graceful degradation: без ключа
+configured=False, приложение работает.
+
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
 (Adzuna), patents (PatentsView), funding (SEC EDGAR), search_interest
@@ -364,8 +368,8 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | POST | `/api/events/export?format=csv\|json&kind=&name=&since=&limit=` | выгрузка событий (шаг 3c): ВСЕ события под фильтрами, без пагинации; CSV `id,kind,name,detail,at,run_id` (`utf-8-sig`), JSON `{"events": [...]}`; `limit` 1..50000 (10000), `limit` больше потолка — 400 |
 | POST | `/api/matrix/export?format=csv` | выгрузка точек матрицы (шаг 3c): те же точки, что у `GET /api/matrix` (общий `_matrix_points`), CSV `name,source,version,released_at,adoption_week,adoption_month,flag,verdict,measured_at,momentum_30d`, `flag` — 0/1; `momentum_30d` — десятая колонка с P4c (пусто при нехватке истории). `POST /api/compare/export` остаётся с прежними девятью колонками |
 | GET/PUT | `/api/settings` | пороги, ключевые слова, TTL, лимиты (шаг 2c). GET отдаёт `settings` + `readonly` (`data_dir`, `db_path`, `version`, `api_token_required`) + `editable_keys` (10 ключей); PUT валидирует тип/диапазон/инвариант `alive_weekly >= dead_weekly`, пишет `<data_dir>/settings.json` и возвращает `warnings`. `data_dir` и `language` через API не меняются — это readonly |
-| GET | `/api/signals/{package}` | все сигналы по пакету (P4/P5): `{momentum, cross_ecosystem, jobs, patents, funding, search_interest, gap_score}`; каждый сигнал — `{status: "ok"\|"not_configured"\|"error", value, detail}` |
-| POST | `/api/signals/collect` | собрать сигналы: kind `signals.collect` (P4/P5). Тело `{package, kinds[]}`; 202 `{job_id}` |
+| GET | `/api/signals/{package}` | все сигналы по пакету (P4/P5): `{momentum, cross_ecosystem, jobs, patents, signals_status, signals_available, signals_unavailable}` — полный контракт ниже, в «Коллекторах сигналов» |
+| POST | `/api/signals/collect` | собрать сигналы: kind `signals.collect` (P4/P5). Тело `{package, kinds[]}` (`kinds ⊆ SIGNAL_COLLECT_KINDS`); 202 `{job_id, status}` |
 | GET | `/api/concepts` | список концептов (P4c): `{concepts: [{concept, n_packages, ecosystems}]}`. Чтение `concept_packages`, без расчёта |
 | POST | `/api/concepts` | добавить привязку (P4c): тело `{concept, ecosystem, package}`; 202 `{ok: true}`; 400 при пустых полях или `ecosystem` вне `{pypi,npm,github}`. `INSERT OR IGNORE` — повтор не создаёт дублей |
 | DELETE | `/api/concepts/{concept}` | удалить концепт целиком (P4c): `{deleted: N}`; 404 — концепта не было |
@@ -396,8 +400,21 @@ flag/verdict/measured), не матрица. Если пользователь �
 - `GET /docs/{file}` — whitelist: только `API-KEYS.md`. Остальные файлы
   `docs/` — 404. Это защита от случайной отдачи внутренних документов.
 - `GET /api/signals/{package}` — только чтение из SQLite/кэша, сети нет.
-- `POST /api/signals/collect` — kind `signals.collect`, работа идёт задачей
-  (подпроцесс), прогресс — через SSE, запись — в `signal_observations`.
+  Ответ (§0.3): `momentum` — объект; `cross_ecosystem` — объект | `null`;
+  `jobs` — объект | `null`; `patents` — объект | `null`; плюс списки
+  `signals_available`/`signals_unavailable` и карта `signals_status`
+  `{"jobs": "ok"|"not_configured"|"not_collected", "patents": ...}`.
+  `signals_status` — различимое состояние для UI: `ok` = есть данные,
+  `not_configured` = ключ не настроен, `not_collected` = ключ есть, но не
+  собирали (у `momentum` отдельного статуса нет — он посчитан из истории,
+  когда эндпоинт не отвечает 404; статусы относятся к видам, которые
+  собираются внешним API).
+- `POST /api/signals/collect` — body `{"package": str, "kinds": [str]}`.
+  Submit job `kind="signals.collect"`, ответ `202 {job_id, status}`.
+  `kinds ⊆ SIGNAL_COLLECT_KINDS = ["jobs", "patents"]` (P5b); расширяется
+  в P5c (+funding), P5d (+search_interest). Без `kinds` — все виды набора.
+  Работа идёт задачей (подпроцесс), прогресс — через SSE, запись — в
+  `signal_observations`.
 - `POST /api/niche/find` — kind `niche.find`, конвейер из нескольких шагов
   (`catalog.build` → `packages.check` → `signals.collect` → gap_score).
   Результат читается `GET /api/niche/result/{job_id}`; SSE-подписчик не должен
@@ -770,7 +787,8 @@ Hermes не подключается к живому приложению — о
   загрузка машины в этот час, а не регрессия (AGENTS gotcha 29).
 
   P4 (закрыт): full ≤90, fast ≤45. Факт (P4c): 42.01 / 23.87–23.99.
-  P5 caps: full ≤120, fast ≤60.
+  P5 (в работе): full ≤120, fast ≤60. Факт (P5a): 76.79 / 38.96.
+  Факт (P5b): 44.00 / 26.59.
 
 Коллекторы сигналов (P4/P5):
 
@@ -827,6 +845,8 @@ P4a (закрыт 2026-10-20) — API Keys Store, 792 теста.
 P4b (закрыт 2026-10-20) — momentum, 839 тестов.
 
 P4c (закрыт 2026-10-20) — cross-ecosystem, 884 теста.
+
+P5a (закрыт 2026-10-20) — jobs (Adzuna).
 
 ## 14. Риски и что с ними делать
 
@@ -1044,26 +1064,49 @@ Fernet с ключом, производным от machine-id. Честно д�
 `signal_observations(signal_kind='jobs', detail=json)`.
 
 **UI:** в карточке пакета — top-5 стран с числом вакансий. В
-`GET /api/signals/{package}` — `jobs: [{country, count}]`.
+`GET /api/signals/{package}` — `jobs` (объект `{total, by_country:
+[{country, count, label}], configured, error}` | `null`) +
+`signals_status.jobs`.
 
 **Стоимость:** 2 дня (клиент + UI + тесты на фикстурах).
 **Без ключа:** сигнал «не настроен», приложение работает.
 
-#### Patents (P5, 2–3 дня)
+#### Patents (P5b, 2–3 дня)
 
 **Что:** патентный импульс — растёт или падает число filings по теме за 3 года.
 
-**Источник:** PatentsView API (`https://search.patentsview.org/api/v1/patent/`).
-Провайдер: `patentsview` (`api_key`).
+**Источник:** PatentsView API (`https://search.patentsview.org/api/v1/patent/`),
+POST с JSON `{q, f, o}`, заголовок `X-Api-Key`, лимит 45 запросов/мин (§14).
+НЕ путать с `api.uspto.gov` — это другой API. Провайдер: `patentsview`
+(`api_key`). Формат ответа проверен по исходникам PatentsView/PatentSearch-API:
+`total_hits` (сколько записей совпало — что нам и нужно), `count`/`error`;
+опция пагинации — `o.size` (`per_page` старого API здесь игнорируется).
 
-**Формула:** `impulse = (count(последние 12 мес) / count(12 мес трёхлетней
-давности) − 1) · 100 %`. Хранить в
-`signal_observations(signal_kind='patents', value=percent)`.
+**Формула (реализовано в `core/collectors/patents.py`):** для каждого
+завершённого календарного года окна `[current − 3, current − 1]` — POST с
+`patent_date` в этом году, берётся счётчик; `impulse = (count(последний год) /
+count(базовый год) − 1) · 100 %`. Окно — завершённые годы, а не «последние
+12 мес»: раскатывающееся окно давало бы неполный текущий год и ложный спад.
+Нет базы (0 в базовом году), не оба конца окна собраны или успешных лет < 2 —
+`impulse_pct: null`. Хранить в
+`signal_observations(signal_kind='patents', value=total, detail=json)` —
+`detail` = `{total, by_year: [{year, count}], impulse_pct, configured, error}`.
+Три состояния (§0.3): нет ключа — `configured=False` (запросов нет);
+часть годов упала — `error=null`, `total` по успешным; все упали —
+`error='all requests failed'`, `configured=True`.
 
-**UI:** в карточке — «патентный импульс: +40% за 3 года».
+**UI:** в карточке — блок «Patents · патентный импульс»: таблица по годам +
+число патентов + строка источника + «Импульс: +40% за 3 года». Три
+состояния различаются по `signals_status` (см. также §0.4 ниже).
 
 **Стоимость:** 2–3 дня (клиент + парсинг + UI).
-**Без ключа:** «не настроен».
+**Без ключа:** «не настроен», приложение работает.
+
+Кнопка «Собрать» в карточке пакета — P5f (Niche Finder).
+В P5a–e блок сигнала только показывает статус и данные, если
+они есть. UI различает not_configured (ключ не настроен,
+ссылка на Настройки) и not_collected (ключ настроен, но
+сигнал не собирали — текст «ещё не собирали», кнопка — P5f).
 
 #### Funding (P5, 3–5 дней)
 
@@ -1149,7 +1192,7 @@ jobs/patents/funding/search_interest.
 | P4a | API Keys Store (файл, base64, UI, тесты) — ЗАКРЫТ 2026-10-20 | 1 день |
 | P4b | Momentum (core + UI + matrix) — ЗАКРЫТ 2026-10-20 | 3 часа |
 | P4c | Cross-ecosystem (mapping + UI) — ЗАКРЫТ 2026-10-20 | 1–2 дня |
-| P5a | Jobs (Adzuna) | 2 дня |
+| P5a | Jobs (Adzuna) — ЗАКРЫТ 2026-10-20 | 2 дня |
 | P5b | Patents (PatentsView) | 2–3 дня |
 | P5c | Funding (SEC EDGAR) | 3–5 дней |
 | P5d | Search interest (Yandex Wordstat + Google Trends/Apify) | 3–4 дня |

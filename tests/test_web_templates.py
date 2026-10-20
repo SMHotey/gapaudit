@@ -484,6 +484,39 @@ def test_style_has_jobs_table_rules(client: TestClient) -> None:
     assert ".jobs-table td.mono" in stylesheet
 
 
+# --- блок Patents в карточке (шаг P5b) ---------------------------------------
+
+
+def test_card_script_renders_patents_block(client: TestClient) -> None:
+    """Карточка пакета рисует «Patents · патентный импульс» из signals.patents.
+
+    Три состояния по signals_status: таблица по годам + импульс (собран),
+    ссылка «Настройки → API-ключи» (ключ не настроен), «Ещё не собирали»
+    (ключ есть, данных нет). Годы и числа — только textContent (gotcha 37),
+    innerHTML — только у статической шапки таблицы.
+    """
+    script = client.get("/static/card.js").text
+
+    assert "card-patents" in script
+    assert "patents-table" in script
+    assert "signals.patents" in script
+    assert "signals_status.patents" in script
+    assert "API-ключ PatentsView не настроен" in script
+    assert "Ещё не собирали" in script
+    assert "Импульс: " in script
+    assert "PatentsView API" in script  # строка источника (§18.3)
+    assert "tdY.textContent = row.year" in script
+
+
+def test_style_has_patents_table_rules(client: TestClient) -> None:
+    """Стили таблицы patents подключены: класс из card.js есть в CSS."""
+    stylesheet = client.get("/static/style.css").text
+
+    assert ".card-patents" in stylesheet
+    assert ".patents-table" in stylesheet
+    assert ".patents-table td.mono" in stylesheet
+
+
 def test_settings_tabs_switch(client: TestClient) -> None:
     """Две вкладки настроек: активная ровно одна, переключение — классом.
 

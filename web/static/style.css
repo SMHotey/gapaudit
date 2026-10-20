@@ -655,3 +655,22 @@ a:hover { color: var(--accent-hover); }
 }
 .jobs-table th { color: var(--text-dim); font-weight: 500; }
 .jobs-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Блок «Patents» в карточке пакета (шаг P5b): таблица патентов по годам
+   + импульс PatentsView; пустые состояния («ключ не настроен» / «ещё не
+   собирали») — тот же отступ, без таблицы. Вид — как у Jobs (P5a). */
+.card-patents { margin: 12px 0; }
+.patents-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.patents-table th,
+.patents-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.patents-table th { color: var(--text-dim); font-weight: 500; }
+.patents-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }

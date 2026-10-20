@@ -1,0 +1,7 @@
+{
+  "error": false,
+  "count": 1,
+  "total_hits": 42,
+  "patents": [],
+  "__fixture_note": "Синтетическая фикстура P5b в формате реального ответа search.patentsview.org (error/count/total_hits — APISerializer PatentsView). Поле total_patent_count из первоначальной спецификации шага парсер принимает тоже (тест отдельно). Снять реальную после получения ключа PatentsView — follow-up, не блокер."
+}

@@ -256,12 +256,23 @@ SIGNALS_PENDING: tuple[str, ...] = (
 #: «четвёртая» экосистема означала бы опечатку, а не расширение.
 CONCEPT_ECOSYSTEMS: frozenset[str] = frozenset({"pypi", "npm", "github"})
 
-#: Виды сигналов для POST /api/signals/collect (P5a: только jobs). Дубль
+#: Виды сигналов для POST /api/signals/collect (P5a: jobs, P5b: +patents;
+#: P5c — funding, P5d — search_interest — по мере появления). Дубль
 #: ``cli.signals.SIGNAL_KINDS`` осознанно (gotcha 54): web не импортирует
 #: cli, но «согласие слоёв» проверяется тестом «согласие слоёв» — оба
 #: набора обязаны совпадать, иначе API ответит 202 задаче, которая умрёт
 #: в подпроцессе argparse'ом.
-SIGNAL_COLLECT_KINDS: frozenset[str] = frozenset({"jobs"})
+SIGNAL_COLLECT_KINDS: frozenset[str] = frozenset({"jobs", "patents"})
+
+#: Какой провайдер API-ключей собирает вид (дубль ``cli.signals.KIND_TO_PROVIDER``,
+#: тот же тест согласия). Нужен здесь без наблюдения различать §0.3:
+#: «ключ не настроен» (``not_configured``) против «ключ есть, но не
+#: собирали» (``not_collected``) — без этого различия карточка предлагала
+#: бы вводить уже введённый ключ.
+SIGNAL_KIND_PROVIDERS: dict[str, str] = {
+    "jobs": "adzuna",
+    "patents": "patentsview",
+}
 
 _ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -1005,35 +1016,44 @@ def _cross_ecosystem_payload(store: Store, package: str) -> dict[str, Any] | Non
     return cross.as_dict() if cross else None
 
 
-# --- jobs (шаг P5a) -----------------------------------------------------------
+# --- сигналы «ключ + наблюдение» (шаги P5a, P5b) ------------------------------
 
 
-def _jobs_payload(store: Store, package: str) -> tuple[dict[str, Any] | None, str]:
-    """Последнее наблюдение jobs + его статус для UI (§18.3, шаг P5a).
+def _signal_payload(
+    store: Store, package: str, kind: str, keys: ApiKeysStore
+) -> tuple[dict[str, Any] | None, str]:
+    """Последнее наблюдение вида ``kind`` + его статус для UI (§18.3, P5a/P5b).
 
-    Возвращает ``(detail | None, status)``:
+    Возвращает ``(detail | None, status)`` — три состояния §0.3:
 
-    * наблюдения нет — ``(None, "not_collected")``: сигнал ещё не собирали;
-    * есть, ``configured=False`` — ``(None, "not_configured")``: ключ Adzuna
-      не введён (в UI — ссылка «Настройки → API-ключи»);
-    * есть, ``configured=True`` — ``(detail, "ok")``: ``total`` /
-      ``by_country`` / ``error`` из ``signal_observations.detail``.
+    * есть наблюдение и ``configured=True`` — ``(detail, "ok")``: данные
+      из ``signal_observations.detail`` (``total`` / ``by_year`` / ...);
+    * есть наблюдение, ``configured=False`` — ``(None, "not_configured")``:
+      ключ не введён (в UI — ссылка «Настройки → API-ключи»);
+    * наблюдения нет — смотрим ключ (``SIGNAL_KIND_PROVIDERS``): настроен,
+      но не собирали — ``(None, "not_collected")`` («ещё не собирали»);
+      не настроен — ``(None, "not_configured")``, иначе первый запуск без
+      ключа показал бы ложное «ещё не собирали» (§0.4).
 
     Три состояния различимы осознанно (шаг P5a, §4.3): «ключ не настроен»
     и «не собирали» — разные действия пользователя, и одно «jobs: null» не
-    могло бы их развести. ``detail`` без ``configured`` (битая старая
-    запись) считается «не собрано»: показать пустой блок как данные было
-    бы ложью.
+    могло бы их развести. Запись с не-``dict`` ``detail`` считается «не
+    собрано» (показать пустой блок как данные было бы ложью), а ``detail``
+    без ``configured`` — «не настроен»: данные есть, но не собраны с
+    подтверждённым ключом.
     """
-    rows = store.get_signal_observations(package, signal_kind="jobs", limit=1)
-    if not rows:
+    rows = store.get_signal_observations(package, signal_kind=kind, limit=1)
+    if rows:
+        detail = rows[0].get("detail")
+        if not isinstance(detail, dict):
+            return None, "not_collected"
+        if not detail.get("configured"):
+            return None, "not_configured"
+        return detail, "ok"
+    provider = SIGNAL_KIND_PROVIDERS.get(kind)
+    if provider is not None and keys.status(provider).configured:
         return None, "not_collected"
-    detail = rows[0].get("detail")
-    if not isinstance(detail, dict):
-        return None, "not_collected"
-    if not detail.get("configured"):
-        return None, "not_configured"
-    return detail, "ok"
+    return None, "not_configured"
 
 
 def _queue(request: Request) -> JobQueue:
@@ -1814,24 +1834,27 @@ def create_app(
         if package is None:
             raise HTTPException(status_code=404, detail=f"пакет {name} не найден")
         events = store.get_events(name=name)
-        jobs, jobs_status = _jobs_payload(store, name)
+        keys = _api_keys(request)
+        jobs, jobs_status = _signal_payload(store, name, "jobs", keys)
+        patents, patents_status = _signal_payload(store, name, "patents", keys)
         return {
             "package": package,
             "observations": store.get_latest_observations([name]),
             "events": events,
-            # Сигналы — в карточке (шаги P4b/P4c/P5a): momentum считается из истории,
+            # Сигналы — в карточке (шаги P4b/P4c/P5a/P5b): momentum считается из истории,
             # которую карточка и так запрашивает отдельно для мини-графика.
             # Один ответ вместо двух запросов: card.js получает полную картину
             # из /api/packages/{name} (вариант A шага). cross_ecosystem — None,
-            # если у пакета concept не задан (сигнал «не настроен»). jobs —
-            # detail последнего наблюдения (P5a); три состояния jobs видны по
+            # если у пакета concept не задан (сигнал «не настроен»). jobs/patents —
+            # detail последнего наблюдения (P5a/P5b); три состояния вида видны по
             # signals_status (собран / ключ не настроен / ещё не собирали).
             "signals": {
                 "momentum": _momentum_payload(store, name),
                 "cross_ecosystem": _cross_ecosystem_payload(store, name),
                 "jobs": jobs,
+                "patents": patents,
             },
-            "signals_status": {"jobs": jobs_status},
+            "signals_status": {"jobs": jobs_status, "patents": patents_status},
         }
 
     @application.get("/api/packages/{name}/history")
@@ -1853,24 +1876,26 @@ def create_app(
 
     @application.get("/api/signals/{package}")
     def get_signals(package: str, request: Request) -> dict[str, Any]:
-        """Все сигналы по пакету; в P5a посчитаны ``momentum``, ``cross_ecosystem``
-        и ``jobs`` (§18.3).
+        """Все сигналы по пакету; в P5b посчитаны ``momentum``, ``cross_ecosystem``,
+        ``jobs`` и ``patents`` (§18.3).
 
         Ответ — расширяемый конверт: сигналы рядом со списками имён.
-        ``signals_available`` перечисляет то, что реально посчитано сейчас, а
-        ``signals_unavailable`` — то, что появится в P5. Так UI отличает
-        «сигнала нет» от «сигнал ещё не сделан» без знания календаря шагов:
-        список непустых сигналов никогда не выдаёт отсутствующий за ноль.
+        ``signals_available`` — сигналы, которые сейчас посчитаны (``ok``) или
+        включаются вводом ключа (``not_configured``, UI ведёт в Настройки);
+        ``signals_unavailable`` — сигналов нет: не собирали при настроенном
+        ключе (``not_collected``, «ещё не собирали») или вида ещё нет в
+        приложении (P5c–e). Так UI отличает «сигнала нет» от «сигнал ещё
+        не сделан» без знания календаря шагов: список непустых сигналов
+        никогда не выдаёт отсутствующий за ноль.
 
         ``cross_ecosystem`` — ``None`` без concept (сигнал «не настроен»), и
         тогда его имя уходит в ``signals_unavailable``: непосчитанный сигнал
         не должен значить «данные есть, соседей нет».
 
-        ``jobs`` — ``None`` и имя в ``signals_unavailable``, пока сигнала нет
-        или ключ Adzuna не введён; три различимых состояния («собран» /
-        «ключ не настроен» / «ещё не собирали») отдаются в
-        ``signals_status``: одно «jobs: null» не могло бы развести действия
-        пользователя (шаг P5a, §4.3).
+        ``jobs``/``patents`` — ``None`` без данных; три различимых состояния
+        («собран» / «ключ не настроен» / «ключ есть, но не собирали»)
+        отдаются в ``signals_status``: одно «jobs: null» не могло бы развести
+        действия пользователя (шаг P5a, §4.3, §0.3).
 
         ``gap_score`` в списках нет: это агрегат по сигналам, а не сигнал.
 
@@ -1884,18 +1909,22 @@ def create_app(
         history = store.get_observations_history(package, limit=MOMENTUM_HISTORY_LIMIT)
         if not history:
             raise HTTPException(status_code=404, detail=f"package not found: {package}")
+        keys = _api_keys(request)
         momentum = compute_momentum(history)
         cross = _cross_ecosystem_payload(store, package)
-        jobs, jobs_status = _jobs_payload(store, package)
+        jobs, jobs_status = _signal_payload(store, package, "jobs", keys)
+        patents, patents_status = _signal_payload(store, package, "patents", keys)
         available = ["momentum"] + (["cross_ecosystem"] if cross else [])
-        if jobs is not None:
-            available.append("jobs")
+        for name, status in (("jobs", jobs_status), ("patents", patents_status)):
+            if status in ("ok", "not_configured"):
+                available.append(name)
         return {
             "package": package,
             "momentum": momentum.as_dict(),
             "cross_ecosystem": cross,
             "jobs": jobs,
-            "signals_status": {"jobs": jobs_status},
+            "patents": patents,
+            "signals_status": {"jobs": jobs_status, "patents": patents_status},
             "signals_available": available,
             "signals_unavailable": [
                 name for name in SIGNALS_PENDING if name not in available
@@ -1904,7 +1933,8 @@ def create_app(
 
     @application.post("/api/signals/collect", status_code=202)
     def collect_signals(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        """Собрать сигналы: ``{"package": ..., "kinds": ["jobs"]}`` → ``202 {job_id}``.
+        """Собрать сигналы: ``{"package": ..., "kinds": ["jobs", "patents"]}``
+        → ``202 {job_id}``. Без ``kinds`` — все виды ``SIGNAL_COLLECT_KINDS``.
 
         Прокси на ``POST /api/jobs`` kind=``signals.collect``: для UI один
         эндпоинт «собрать сигналы пакета» удобнее, валидация — та же

@@ -141,18 +141,30 @@ def test_monitor_diff_uses_diff_flag() -> None:
 # --- signals.collect (шаг P5a) ----------------------------------------------
 
 
-def test_signals_collect_default_kind_is_jobs() -> None:
-    """Без kinds — подкоманда collect + --kind jobs (CLI возьмёт все виды)."""
+def test_signals_collect_without_kinds_omits_kind_flag() -> None:
+    """Без kinds — подкоманда collect без --kind: все виды берёт cli.signals.
+
+    В P5a argv содержал жёсткий ``--kind jobs`` (дубль SIGNAL_KINDS); с P5b
+    дубль убран — иначе «без kinds собирается всё, что умеет CLI»
+    (app/web.py, collect_signals) стало бы ложью после каждой новой строки
+    в SIGNAL_KINDS.
+    """
     assert _params_to_argv("signals.collect", {"package": "requests"}) == [
-        "collect", "--package", "requests", "--kind", "jobs",
+        "collect", "--package", "requests",
     ]
 
 
 def test_signals_collect_explicit_kinds() -> None:
-    """Явный kinds — тот же argv (P5a: jobs единственный вид)."""
+    """Явный kinds — по --kind на вид, в P5b это jobs и/или patents."""
     assert _params_to_argv(
         "signals.collect", {"package": "x", "kinds": ["jobs"]}
     ) == ["collect", "--package", "x", "--kind", "jobs"]
+    assert _params_to_argv(
+        "signals.collect", {"package": "x", "kinds": ["jobs", "patents"]}
+    ) == [
+        "collect", "--package", "x",
+        "--kind", "jobs", "--kind", "patents",
+    ]
 
 
 def test_signals_collect_missing_package_raises() -> None:
@@ -222,3 +234,32 @@ def test_default_runner_monitor_diff_uses_known_module(
     argv, _kwargs = popen.calls[0]
     assert argv[2] == "cli.check_predecessors"
     assert "--diff=raw/prev.json" in argv
+
+
+def test_default_runner_signals_collect_argv_has_subcommand_first(
+    popen: PopenRecorder, tmp_path: Path
+) -> None:
+    """Регрессия gotcha 62: подкоманда в реальном argv — первая позиционная.
+
+    In-process тесты ``cli.signals`` (порядок токенов) не видят argv, который
+    реально собирает ``_default_runner``: в P5a живой прогон упал именно
+    здесь («unrecognized arguments: collect»). Реальный порядок:
+    ``python -m cli.signals --job-json --json-out=... collect --package X
+    --kind patents`` — флаги задачи идут до подкоманды, поэтому проверяем
+    «первая ПОЗИЦИОННАЯ», а не ``argv[3]``: именно эту инвариантность
+    держит ``_extract_command`` (фикс P5a).
+    """
+    _default_runner(
+        make_job("signals.collect", {"package": "requests", "kinds": ["patents"]}),
+        tmp_path,
+    )
+
+    assert len(popen.calls) == 1
+    argv, _kwargs = popen.calls[0]
+    assert argv[0] == jobs_module.sys.executable
+    assert argv[1:3] == ["-m", "cli.signals"]
+    assert "--job-json" in argv
+    assert any(token.startswith("--json-out=") for token in argv)
+    # первая позиционная — подкоманда; дальше — значения --package/--kind
+    positionals = [token for token in argv[3:] if not token.startswith("-")]
+    assert positionals == ["collect", "requests", "patents"]

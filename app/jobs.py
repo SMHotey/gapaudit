@@ -828,8 +828,9 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
     * ``github.verify``: ``targets`` (обязателен, позиционные), ``keyword``;
     * ``monitor.diff``: ``diff_from`` (обязателен -> ``--diff=``);
     * ``signals.collect``: ``package`` (обязателен) и ``kinds`` (список;
-      пусто -> CLI возьмёт все виды, в P5a — ``jobs``). Подкоманда
-      ``collect`` идёт ПЕРЕД флагами — так устроен argparse ``cli.signals``.
+      пусто — без ``--kind``, все виды возьмёт сам CLI: ``SIGNAL_KINDS``,
+      в P5b — ``jobs`` и ``patents``). Подкоманда ``collect`` идёт ПЕРЕД
+      флагами — так устроен argparse ``cli.signals``.
 
     Ошибки — только ``ValueError`` и только до ``subprocess``: задача,
     которая заведомо не запустится, не должна создавать процесс. Обязательные
@@ -886,7 +887,11 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
     if kind == "signals.collect":
         # Подкоманда до флагов: python -m cli.signals collect --package X ...
         argv = ["collect", "--package", str(params["package"])]
-        for signal_kind in _str_list(params.get("kinds")) or ["jobs"]:
+        # Пустой kinds — вообще без --kind: набор «всё, что умеет CLI»
+        # решает cli.signals.SIGNAL_KINDS. Здесь список видов не дублируем
+        # (в P5a жил жёсткий default ["jobs"] — после P5b он стал бы третьим
+        # местом правды рядом с SIGNAL_KINDS и SIGNAL_COLLECT_KINDS).
+        for signal_kind in _str_list(params.get("kinds")):
             argv += ["--kind", signal_kind]
         return argv
 

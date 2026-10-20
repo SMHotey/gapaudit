@@ -402,6 +402,17 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     по тестам на requests.get / httpx.get / socket.connect /
     urllib.request.urlopen в тестовом коде — ни одного вызова
     (кроме тестового транспорта, который инжектируется).
+62. _default_runner для kind, у которых CLI имеет подкоманду
+    (cli.signals collect), argv = [python, -m, module, subcommand,
+    *params, --job-json, ...]. Подкоманда ДОЛЖНА идти первой
+    позиционной, иначе argparse падает "unrecognized arguments".
+    In-process тесты с monkeypatch это не ловят — нужен
+    регрессионный тест на реальный argv (monkeypatch на
+    subprocess.Popen и проверка args[0]). Пример: P5a,
+    _default_runner собирал [--package X --kind jobs collect],
+    живой прогон упал. Исправлено _extract_command.
+    При добавлении новой подкоманды в cli/signals.py — проверить
+    оба порядка argv.
 
 ---
 
