@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "concepts": {
+    "vector-db": {
+      "pypi": ["pinecone-client", "weaviate-client", "chromadb"],
+      "npm": ["@pinecone-database/pinecone", "weaviate-ts-client"],
+      "github": ["weaviate/weaviate", "chroma-core/chroma"]
+    },
+    "llm-framework": {
+      "pypi": ["langchain", "llama-index", "haystack-ai"],
+      "npm": ["langchain", "@langchain/core"]
+    }
+  }
+}

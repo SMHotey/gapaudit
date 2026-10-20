@@ -188,6 +188,81 @@
       card.appendChild(block);
     }
 
+    /* Cross-ecosystem (шаг P4c, §18.3): 3 полосы (PyPI/npm/GitHub) с Δ
+       adoption по концепту. Данные — из signals.cross_ecosystem того же ответа
+       /api/packages/{name}; имя пакета, экосистема и числа попадают в DOM
+       только через textContent (gotcha 37), innerHTML — только у статической
+       шапки таблицы. Свои значения (self_*) лежат в сигнале: карточка не
+       считает momentum второй раз на клиенте. */
+    if (signals.cross_ecosystem) {
+      const ce = signals.cross_ecosystem;
+      const div = document.createElement('div');
+      div.className = 'card-cross-eco';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Cross-ecosystem · ' + ce.concept;
+      div.appendChild(label);
+      const table = document.createElement('table');
+      table.className = 'cross-eco-table';
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th>Пакет</th><th>Экосистема</th>' +
+                        '<th>Δ 30д</th><th>adoption/нед</th></tr>';
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      /* сам пакет первой строкой (с подсветкой self) + соседи по концепту */
+      const rows = [{
+        name: name,
+        ecosystem: ce.ecosystem,
+        momentum_30d: ce.self_momentum_30d,
+        adoption_week: ce.self_adoption_week,
+        self: true,
+      }].concat(ce.peers || []);
+      rows.forEach((r) => {
+        const tr = document.createElement('tr');
+        if (r.self) tr.className = 'self';
+        const tdName = document.createElement('td');
+        tdName.textContent = r.name;
+        tdName.className = 'mono';
+        tr.appendChild(tdName);
+        const tdEco = document.createElement('td');
+        tdEco.textContent = r.ecosystem;
+        tr.appendChild(tdEco);
+        const tdMom = document.createElement('td');
+        /* Ноль — стрелка «→», как в label_30d у momentum: «↓ 0.0%» соврало
+           бы о знаке (роста нет, но и падения нет). */
+        tdMom.textContent = r.momentum_30d != null
+          ? (r.momentum_30d > 0 ? '↑ +' : r.momentum_30d < 0 ? '↓ ' : '→ ') +
+            r.momentum_30d.toFixed(1) + '%'
+          : '—';
+        tdMom.className = 'mono';
+        tr.appendChild(tdMom);
+        const tdAdopt = document.createElement('td');
+        tdAdopt.textContent = r.adoption_week != null
+          ? r.adoption_week.toLocaleString('ru-RU') : '—';
+        tdAdopt.className = 'mono';
+        tr.appendChild(tdAdopt);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      div.appendChild(table);
+      if (ce.comparison === 'faster') {
+        const note = document.createElement('div');
+        note.className = 'muted';
+        note.style.fontSize = '12px';
+        note.textContent = 'Пакет растёт быстрее соседей по концепту';
+        div.appendChild(note);
+      } else if (ce.comparison === 'slower') {
+        const note = document.createElement('div');
+        note.className = 'muted';
+        note.style.fontSize = '12px';
+        note.textContent = 'Пакет отстаёт от соседей по концепту';
+        div.appendChild(note);
+      }
+      const anchor = card.querySelector('.card-graph');
+      if (anchor) card.insertBefore(div, anchor);
+      else card.appendChild(div);
+    }
+
     card.appendChild(miniGraph(history));
 
     const eventsTitle = document.createElement('div');

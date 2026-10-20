@@ -123,6 +123,7 @@ from app.jobs import (
 )
 from app.store import Store
 from core.api_keys import META_FIELDS, PROVIDERS, ApiKeysStore
+from core.collectors.cross_ecosystem import compute_cross_ecosystem
 from core.collectors.momentum import compute_momentum
 from core.settings import (
     SETTINGS_FILENAME,
@@ -239,17 +240,21 @@ DOCS_PUBLIC = frozenset({"API-KEYS.md"})
 #: одного пакета начала бы заметно утяжелять ``GET /api/matrix``.
 MOMENTUM_HISTORY_LIMIT = 100
 
-#: Сигналы §18.3, которых в P4b ещё нет (P4c/P5). Отдаются в
-#: ``signals_unavailable``, чтобы UI честно показывал «сигнал будет позже», а не
-#: «сигнала нет»: ``cross_eco`` — P4c, остальные — P5. ``gap_score`` здесь нет:
-#: это агрегат по сигналам, а не сигнал (§18.3).
+#: Сигналы §18.3, которых ещё нет. Отдаются в ``signals_unavailable``, чтобы UI
+#: честно показывал «сигнал будет позже», а не «сигнала нет»: в P4c из списка
+#: уходит ``cross_ecosystem`` (он посчитан, если у пакета есть concept), остальные
+#: — P5. ``gap_score`` здесь нет: это агрегат по сигналам, а не сигнал (§18.3).
 SIGNALS_PENDING: tuple[str, ...] = (
-    "cross_eco",
+    "cross_ecosystem",
     "jobs",
     "patents",
     "funding",
     "search_interest",
 )
+
+#: Экосистемы concept_packages (§5): POST /api/concepts принимает только их —
+#: «четвёртая» экосистема означала бы опечатку, а не расширение.
+CONCEPT_ECOSYSTEMS: frozenset[str] = frozenset({"pypi", "npm", "github"})
 
 _ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -773,6 +778,13 @@ MATRIX_CSV_HEADER = (
     "measured_at",
 )
 
+#: Десятая колонка экспорта матрицы (шаг P4c): ``momentum_30d`` — то же поле,
+#: что на экране (точки матрицы несут его с P4b). Отдельный кортеж, а не
+#: расширение ``MATRIX_CSV_HEADER``: сравнение (``/api/compare/export``) свою
+#: историю не считает и остаётся с прежними девятью колонками — иначе шапка
+#: обещала бы колонку, которой в строках нет.
+MATRIX_EXPORT_CSV_HEADER = MATRIX_CSV_HEADER + ("momentum_30d",)
+
 
 def _csv_body(header: tuple[str, ...], rows: list[list[Any]]) -> bytes:
     """CSV с BOM (``utf-8-sig``) и CRLF: без BOM Excel показывает «Ð¡Ð¾Ð±Ñ‹Ñ‚Ð¸Ñ».
@@ -926,13 +938,64 @@ def _attach_momentum(store: Store, points: list[dict[str, Any]]) -> None:
     построитель с ``POST /api/matrix/export``, и у экспорта свой фиксированный
     набор колонок (шаг 3c). Расширение здесь, а не в построителе, оставляет CSV
     ровно тем же, что был, — иначе «экспорт = картинка» перестал бы выполняться
-    по числу колонок.
+    по числу колонок (с P4c экспорт получает ``momentum_30d`` десятой колонкой
+    через :data:`MATRIX_EXPORT_CSV_HEADER`, построитель по-прежнему общий).
     """
     for point in points:
         payload = _momentum_payload(store, str(point.get("name") or ""))
         point["momentum_30d"] = payload["delta_30d"]
         point["momentum_color"] = payload["color"]
         point["momentum_samples"] = payload["samples"]
+
+
+# --- cross-ecosystem (шаг P4c) -------------------------------------------------
+
+
+def _cross_ecosystem_payload(store: Store, package: str) -> dict[str, Any] | None:
+    """Сигнал cross-ecosystem пакета словарём; ``None`` — concept не задан.
+
+    Один источник данных на два ответа (``/api/signals/{package}`` и карточка
+    ``/api/packages/{name}``): карточка рисует «3 полосы» из signals того же
+    запроса, что и momentum, поэтому дублирование запроса в двух обработчиках
+    разошлось бы при первой правке.
+
+    В P4c у пакета может быть несколько concept-строк (одно имя в разных
+    концептах или экосистемах): concept берётся из строки, чья экосистема
+    совпала с источником наблюдения, иначе — из первой
+    (``concept_packages[0]``); список концептов — отдельная задача, не P4c.
+    """
+    rows = store.get_concept_packages(package=package)
+    if not rows:
+        return None
+    concept = str(rows[0].get("concept") or "")
+    # Своя экосистема — по источнику последнего наблюдения, а не «первая
+    # строка mapping»: одно имя может быть привязано и к pypi, и к npm, и
+    # без этого пакет с источником pypi показывал бы себя под npm-полосой
+    # (живой прогон P4c: chromadb маплен в обе экосистемы). Источник вне
+    # трёх экосистем ('-', 'registry') — берём строку mapping, как раньше.
+    latest = store.get_latest_observations([package])
+    source = str(latest[0].get("source") or "") if latest else ""
+    if source in CONCEPT_ECOSYSTEMS:
+        ecosystem = source
+        matched = [row for row in rows if str(row.get("ecosystem")) == source]
+        if matched:
+            concept = str(matched[0].get("concept") or concept)
+    else:
+        ecosystem = str(rows[0].get("ecosystem") or "")
+    all_rows = store.get_concept_packages(concept=concept)
+    names = {str(row.get("package") or "") for row in all_rows}
+    observations = {
+        name: store.get_observations_history(name, limit=MOMENTUM_HISTORY_LIMIT)
+        for name in names
+        if name
+    }
+    cross = compute_cross_ecosystem(
+        package,
+        concept_packages=all_rows,
+        observations_by_name=observations,
+        package_ecosystem=ecosystem,
+    )
+    return cross.as_dict() if cross else None
 
 
 def _queue(request: Request) -> JobQueue:
@@ -1099,6 +1162,45 @@ def create_app(
         active_settings = _merge_saved_settings(resolved_settings, settings_path)
         store = Store(data_dir / "gapaudit.db")
         store.__enter__()
+        # Концепты (шаг P4c): <data_dir>/concepts.json подмешивается в mapping
+        # при каждом старте — merge, а не replace (INSERT OR IGNORE): концепты,
+        # добавленные через API/Store, переживают перезапуск с тем же файлом.
+        # Битый файл не роняет приложение: сигнал просто останется «не
+        # настроен» (gotcha 50 — исключение коллектора в UI/API не выходит).
+        concepts_path = data_dir / "concepts.json"
+        if concepts_path.exists():
+            try:
+                payload = json.loads(concepts_path.read_text(encoding="utf-8"))
+                concepts = payload.get("concepts") or {}
+                loaded = 0
+                skipped = 0
+                for concept, ecosystems in concepts.items():
+                    if not isinstance(ecosystems, dict):
+                        skipped += 1
+                        continue
+                    for ecosystem, packages_ in ecosystems.items():
+                        if not isinstance(packages_, list):
+                            skipped += 1
+                            continue
+                        for pkg in packages_:
+                            store.record_concept_package(
+                                concept=str(concept),
+                                ecosystem=str(ecosystem),
+                                package=str(pkg),
+                            )
+                            loaded += 1
+                logger.info(
+                    "loaded %d concepts, %d packages from %s",
+                    len(concepts),
+                    loaded,
+                    concepts_path,
+                )
+                if skipped:
+                    logger.warning(
+                        "concepts.json: пропущено неверных записей: %d", skipped
+                    )
+            except Exception as error:  # noqa: BLE001 - битый файл не роняет старт
+                logger.warning("cannot load concepts.json: %s", error)
         queue = JobQueue(
             store, data_dir=data_dir, settings=active_settings, runner=runner
         )
@@ -1635,11 +1737,15 @@ def create_app(
             "package": package,
             "observations": store.get_latest_observations([name]),
             "events": events,
-            # Сигналы — в карточке (шаг P4b): momentum считается из истории,
+            # Сигналы — в карточке (шаги P4b/P4c): momentum считается из истории,
             # которую карточка и так запрашивает отдельно для мини-графика.
             # Один ответ вместо двух запросов: card.js получает полную картину
-            # из /api/packages/{name} (вариант A шага).
-            "signals": {"momentum": _momentum_payload(store, name)},
+            # из /api/packages/{name} (вариант A шага). cross_ecosystem — None,
+            # если у пакета concept не задан (сигнал «не настроен»).
+            "signals": {
+                "momentum": _momentum_payload(store, name),
+                "cross_ecosystem": _cross_ecosystem_payload(store, name),
+            },
         }
 
     @application.get("/api/packages/{name}/history")
@@ -1657,17 +1763,22 @@ def create_app(
             "observations": store.get_observations_history(name, limit=limit),
         }
 
-    # --- сигналы ниш (шаг P4b: momentum) --------------------------------------
+    # --- сигналы ниш (P4b: momentum, P4c: cross-ecosystem) --------------------
 
     @application.get("/api/signals/{package}")
     def get_signals(package: str, request: Request) -> dict[str, Any]:
-        """Все сигналы по пакету; в P4b реализован только ``momentum`` (§18.3).
+        """Все сигналы по пакету; в P4c посчитаны ``momentum`` и
+        ``cross_ecosystem`` (§18.3).
 
-        Ответ — расширяемый конверт: ``momentum`` рядом с двумя списками имён.
+        Ответ — расширяемый конверт: сигналы рядом со списками имён.
         ``signals_available`` перечисляет то, что реально посчитано сейчас, а
-        ``signals_unavailable`` — то, что появится в P4c/P5. Так UI отличает
+        ``signals_unavailable`` — то, что появится в P5. Так UI отличает
         «сигнала нет» от «сигнал ещё не сделан» без знания календаря шагов:
         список непустых сигналов никогда не выдаёт отсутствующий за ноль.
+
+        ``cross_ecosystem`` — ``None`` без concept (сигнал «не настроен»), и
+        тогда его имя уходит в ``signals_unavailable``: непосчитанный сигнал
+        не должен значить «данные есть, соседей нет».
 
         ``gap_score`` в списках нет: это агрегат по сигналам, а не сигнал.
 
@@ -1682,12 +1793,65 @@ def create_app(
         if not history:
             raise HTTPException(status_code=404, detail=f"package not found: {package}")
         momentum = compute_momentum(history)
+        cross = _cross_ecosystem_payload(store, package)
+        available = ["momentum"] + (["cross_ecosystem"] if cross else [])
         return {
             "package": package,
             "momentum": momentum.as_dict(),
-            "signals_available": ["momentum"],
-            "signals_unavailable": list(SIGNALS_PENDING),
+            "cross_ecosystem": cross,
+            "signals_available": available,
+            "signals_unavailable": [
+                name for name in SIGNALS_PENDING if name not in available
+            ],
         }
+
+    # --- концепты (шаг P4c) ----------------------------------------------------
+
+    @application.get("/api/concepts")
+    def list_concepts(request: Request) -> dict[str, Any]:
+        """Список концептов: ``[{concept, n_packages, ecosystems}, ...]``.
+
+        Чтение из ``concept_packages`` — ни сети, ни расчёта (§7): отвечает на
+        вопрос «какие концепты вообще заданы», в том числе после загрузки
+        ``<data_dir>/concepts.json`` на старте.
+        """
+        return {"concepts": _store(request).list_concepts()}
+
+    @application.post("/api/concepts", status_code=202)
+    def add_concept(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Добавить привязку: ``{"concept", "ecosystem", "package"}`` → 202.
+
+        Валидация до записи: пустые concept/package и чужая экосистема — 400.
+        Ошибка данных не должна превращаться в молчаливую строку-мусор в
+        mapping: ``concept_packages`` потом сравнивает целые экосистемы.
+        """
+        concept = str(payload.get("concept") or "").strip()
+        ecosystem = str(payload.get("ecosystem") or "").strip()
+        package = str(payload.get("package") or "").strip()
+        problems = []
+        if not concept:
+            problems.append("concept: не может быть пустым")
+        if ecosystem not in CONCEPT_ECOSYSTEMS:
+            problems.append(
+                f"ecosystem: допустимо {sorted(CONCEPT_ECOSYSTEMS)}, "
+                f"пришло {payload.get('ecosystem')!r}"
+            )
+        if not package:
+            problems.append("package: не может быть пустым")
+        if problems:
+            raise HTTPException(status_code=400, detail="; ".join(problems))
+        _store(request).record_concept_package(
+            concept=concept, ecosystem=ecosystem, package=package
+        )
+        return {"ok": True}
+
+    @application.delete("/api/concepts/{concept}")
+    def delete_concept(concept: str, request: Request) -> dict[str, Any]:
+        """Удалить концепт целиком; 404 — если такого не было."""
+        deleted = _store(request).delete_concept(concept)
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail=f"concept not found: {concept}")
+        return {"deleted": deleted}
 
     # --- матрица «Сейчас решать» (шаг 2b) -------------------------------------
 
@@ -1747,6 +1911,13 @@ def create_app(
 
         ``flag`` пишется как 0/1, а не словом: колонку считают в Excel
         формулами, и текст «да» в числовом столбце ломает сумму.
+
+        Десятая колонка (шаг P4c) — ``momentum_30d``: то же значение, что на
+        точке экрана (``_attach_momentum``, история до 100 замеров). Без
+        истории — пустая строка, а не «0»: отсутствие данных и нулевой рост —
+        разные ответы. Первые девять колонок — в прежнем порядке
+        (``MATRIX_EXPORT_CSV_HEADER[:9] == MATRIX_CSV_HEADER``): файлы,
+        собранные до P4c, читаются теми же скриптами.
         """
         export_format = (request.query_params.get("format") or "csv").strip().lower()
         if export_format != "csv":
@@ -1758,8 +1929,10 @@ def create_app(
                 ),
             )
         settings = getattr(request.app.state, "settings", None) or Settings()
-        observations = _store(request).get_latest_observations()
+        store = _store(request)
+        observations = store.get_latest_observations()
         points, _quadrants = _matrix_points(observations, int(settings.alive_weekly))
+        _attach_momentum(store, points)
         rows = [
             [
                 point.get("name"),
@@ -1771,11 +1944,12 @@ def create_app(
                 1 if point.get("flag") else 0,
                 point.get("verdict") or "",
                 point.get("measured_at") or "",
+                "" if point.get("momentum_30d") is None else point.get("momentum_30d"),
             ]
             for point in points
         ]
         return _attachment(
-            _csv_body(MATRIX_CSV_HEADER, rows),
+            _csv_body(MATRIX_EXPORT_CSV_HEADER, rows),
             filename=f"matrix-{_export_date()}.csv",
         )
 

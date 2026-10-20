@@ -38,6 +38,7 @@ __all__ = [
     "migrate",
     "migrate_1",
     "migrate_2",
+    "migrate_3",
     "utcnow_iso",
 ]
 
@@ -48,7 +49,8 @@ CATALOG_ALIVE_DAYS = 90
 
 #: Текущая версия схемы. Больше, чем в meta.schema_version, — БД новее кода.
 #: 2 (шаг 3c): ``catalog_items.url`` — ссылка на проект из источника находки.
-SCHEMA_VERSION = 2
+#: 3 (шаг P4c): таблицы ``concept_packages`` и ``signal_observations`` (§5).
+SCHEMA_VERSION = 3
 
 _OBSERVATION_COLUMNS = (
     "id, run_id, name, source, version, released_at, adoption_month, "
@@ -121,6 +123,24 @@ def _decode_json_field(raw: Any, default: Any) -> Any:
     except (TypeError, ValueError):
         return default
     return decoded if isinstance(decoded, type(default)) else default
+
+
+def _decode_signal_detail(raw: Any) -> dict | list | None:
+    """``detail`` сигнала: JSON → объект; NULL/битое/не-объект → ``None``.
+
+    Отдельная функция, а не ``_decode_json_field(raw, None)``: тот сравнивает
+    результат с типом ``default``, и для ``None`` всякий распарсенный dict
+    откатился бы обратно в ``None`` — поле сигнала молча терялось бы.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return decoded if isinstance(decoded, (dict, list)) else None
 
 
 def _like_escape(text: str) -> str:
@@ -271,8 +291,45 @@ def migrate_2(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE catalog_items ADD COLUMN url TEXT")
 
 
+def migrate_3(conn: sqlite3.Connection) -> None:
+    """Миграция 2 → 3: таблицы ``concept_packages`` и ``signal_observations`` (§5).
+
+    ``concept_packages`` — mapping «концепт → пакеты в экосистемах» (шаг P4c,
+    cross-ecosystem momentum); ``signal_observations`` — история значений
+    сигналов ниш для будущих коллекторов (P5). Обе таблицы новые, поэтому
+    здесь нет ``ALTER``: идемпотентность дают ``IF NOT EXISTS`` — повторный
+    старт после сбоя между созданием и записью версии не падает на
+    «table already exists» (правило gotcha 49).
+    """
+    statements = (
+        """CREATE TABLE IF NOT EXISTS concept_packages(
+               concept TEXT NOT NULL,
+               ecosystem TEXT NOT NULL,
+               package TEXT NOT NULL,
+               PRIMARY KEY(concept, ecosystem, package)
+           )""",
+        """CREATE INDEX IF NOT EXISTS idx_concept_pkg_pkg
+               ON concept_packages(package)""",
+        """CREATE INDEX IF NOT EXISTS idx_concept_pkg_concept
+               ON concept_packages(concept)""",
+        """CREATE TABLE IF NOT EXISTS signal_observations(
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               package TEXT NOT NULL,
+               signal_kind TEXT NOT NULL,
+               value REAL,
+               detail TEXT,
+               measured_at TEXT NOT NULL
+           )""",
+        """CREATE INDEX IF NOT EXISTS idx_signal_pkg_kind_at
+               ON signal_observations(package, signal_kind, measured_at DESC)""",
+    )
+    with _transaction(conn):
+        for statement in statements:
+            conn.execute(statement)
+
+
 #: Реестр миграций: номер версии → функция. Новая миграция = новая запись.
-_MIGRATIONS = {1: migrate_1, 2: migrate_2}
+_MIGRATIONS = {1: migrate_1, 2: migrate_2, 3: migrate_3}
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -1136,6 +1193,159 @@ class Store:
                 "DELETE FROM catalog_items WHERE catalog_id = ?", (catalog_id,)
             )
             conn.execute("DELETE FROM catalogs WHERE id = ?", (catalog_id,))
+
+    # --- концепты и сигналы (шаг P4c, таблицы миграции 3) ---------------------
+
+    def record_concept_package(
+        self, *, concept: str, ecosystem: str, package: str
+    ) -> None:
+        """Привязать пакет к концепту в экосистеме (``INSERT OR IGNORE``).
+
+        ``ecosystem`` — одна из трёх экосистем §5 (``pypi``/``npm``/``github``),
+        ``concept`` — произвольная строка (например ``'vector-db'``). Идемпотентно:
+        повторная загрузка того же ``concepts.json`` на старте не создаёт дублей
+        (PRIMARY KEY(concept, ecosystem, package)).
+        """
+        with self._lock, self._tx() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO concept_packages(concept, ecosystem, package) "
+                "VALUES(?, ?, ?)",
+                (concept, ecosystem, package),
+            )
+
+    def get_concept_packages(
+        self,
+        *,
+        concept: str | None = None,
+        package: str | None = None,
+        ecosystem: str | None = None,
+    ) -> list[dict]:
+        """Строки ``concept_packages`` с фильтрами (по одному или в комбинации).
+
+        Без фильтров — весь mapping. Порядок — ``concept, ecosystem, package``:
+        ответ детерминирован, и тесты не зависят от порядка вставки.
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if concept is not None:
+            where.append("concept = ?")
+            params.append(concept)
+        if package is not None:
+            where.append("package = ?")
+            params.append(package)
+        if ecosystem is not None:
+            where.append("ecosystem = ?")
+            params.append(ecosystem)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        with self._lock:
+            conn = self._require_conn()
+            rows = conn.execute(
+                "SELECT concept, ecosystem, package FROM concept_packages"
+                f"{clause} ORDER BY concept, ecosystem, package",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_concepts(self) -> list[dict]:
+        """Уникальные концепты: ``[{concept, n_packages, ecosystems}, ...]``.
+
+        ``ecosystems`` — отсортированный список экосистем концепта: по нему UI
+        решает, рисовать ли «3 полосы» или только те, где есть пакеты.
+        """
+        with self._lock:
+            conn = self._require_conn()
+            rows = conn.execute(
+                "SELECT concept, COUNT(*) AS n_packages, "
+                "GROUP_CONCAT(DISTINCT ecosystem) AS ecosystems "
+                "FROM concept_packages GROUP BY concept ORDER BY concept"
+            ).fetchall()
+        return [
+            {
+                "concept": row["concept"],
+                "n_packages": int(row["n_packages"]),
+                "ecosystems": sorted(str(row["ecosystems"]).split(",")),
+            }
+            for row in rows
+        ]
+
+    def delete_concept(self, concept: str) -> int:
+        """Удалить все привязки концепта; число удалённых строк (0 — не было)."""
+        with self._lock, self._tx() as conn:
+            cursor = conn.execute(
+                "DELETE FROM concept_packages WHERE concept = ?", (concept,)
+            )
+        return int(cursor.rowcount)
+
+    def record_signal_observation(
+        self,
+        *,
+        package: str,
+        signal_kind: str,
+        value: float | None,
+        detail: dict | None = None,
+        measured_at: str | None = None,
+    ) -> int:
+        """Записать значение сигнала в ``signal_observations`` (для P5).
+
+        Возвращается ``id`` строки. ``detail`` — произвольный dict, кладётся
+        JSON-ом (``ensure_ascii=False``); ``measured_at`` по умолчанию — текущий
+        UTC через :func:`utcnow_iso`. Сети и валидации нет: это запись, а не
+        расчёт — что именно считал коллектор, решает он сам.
+        """
+        moment = measured_at or utcnow_iso()
+        with self._lock, self._tx() as conn:
+            cursor = conn.execute(
+                "INSERT INTO signal_observations("
+                "package, signal_kind, value, detail, measured_at"
+                ") VALUES(?, ?, ?, ?, ?)",
+                (
+                    package,
+                    signal_kind,
+                    value,
+                    json.dumps(detail, ensure_ascii=False) if detail is not None else None,
+                    moment,
+                ),
+            )
+        return _last_id(cursor)
+
+    def get_signal_observations(
+        self,
+        package: str,
+        *,
+        signal_kind: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Значения сигнала пакета, новые сверху (``measured_at DESC``).
+
+        ``detail`` распарсивается из JSON; битая строка остаётся ``None`` —
+        чтение не должно падать из-за чужого поля (как у ``params`` задач).
+        """
+        where = ["package = ?"]
+        params: list[Any] = [package]
+        if signal_kind is not None:
+            where.append("signal_kind = ?")
+            params.append(signal_kind)
+        params.append(limit)
+        with self._lock:
+            conn = self._require_conn()
+            rows = conn.execute(
+                "SELECT id, package, signal_kind, value, detail, measured_at "
+                "FROM signal_observations WHERE "
+                + " AND ".join(where)
+                + " ORDER BY measured_at DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "package": row["package"],
+                "signal_kind": row["signal_kind"],
+                "value": row["value"],
+                "detail": _decode_signal_detail(row["detail"]),
+                "measured_at": row["measured_at"],
+            }
+            for row in rows
+        ]
 
 
 class SqliteCache:

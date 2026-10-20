@@ -31,7 +31,11 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["core", "cli", "app", "web", "tools"]
+# Список явный, а не packages.find: каждый пакет называется руками.
+# core.collectors добавлен в P4c (AGENTS gotcha 59) — без этого PyInstaller
+# onedir (P4d) не собрал бы коллекторы, а тесты этого не поймают: они
+# запускаются из исходников.
+packages = ["core", "core.collectors", "cli", "app", "web", "tools"]
 py-modules = ["desktop"]
 
 [tool.pytest.ini_options]

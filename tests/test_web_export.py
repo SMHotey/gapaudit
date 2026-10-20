@@ -35,6 +35,10 @@ MATRIX_HEADER = [
     "measured_at",
 ]
 
+# Шапка экспорта матрицы с P4c: momentum_30d десятой колонкой (§0.1 шага).
+# Сравнение (/api/compare/export) использует прежние девять — MATRIX_HEADER.
+MATRIX_EXPORT_HEADER = MATRIX_HEADER + ["momentum_30d"]
+
 
 def observation(
     name: str, *, week: int | None = 1000, month: int = 4000, flag: int = 0
@@ -193,7 +197,7 @@ def test_matrix_export_csv_has_points_of_matrix(client: TestClient) -> None:
     assert "attachment" in response.headers["content-disposition"]
 
     rows = read_csv(response.content)
-    assert rows[0] == MATRIX_HEADER
+    assert rows[0] == MATRIX_EXPORT_HEADER
     # порядок — как у Store.get_latest_observations (по имени), не по adoption:
     # файл и экран строятся из одного списка, сортировку делает экран
     assert [row[0] for row in rows[1:]] == ["flask", "requests"]
@@ -219,3 +223,43 @@ def test_matrix_export_rejects_unknown_format(client: TestClient) -> None:
     response = client.post("/api/matrix/export", params={"format": "json"}, headers=auth())
 
     assert response.status_code == 400
+
+
+def test_matrix_export_momentum_filled_for_points_with_history(
+    client: TestClient,
+) -> None:
+    """Десятая колонка: значение есть у точки с историей, пусто — у одиночной.
+
+    Пустая строка, а не «0»: отсутствие истории и нулевой рост — разные ответы.
+    """
+    seed_observations(client)
+    # второй замер requests за 25 дней до основного: Δ30 = (1234-1000)/1000
+    app_state(client).store.record_observations(
+        [observation("requests", week=1000)],
+        run_id="run-0",
+        measured_at="2026-09-25T10:00:00Z",
+    )
+
+    rows = read_csv(
+        client.post("/api/matrix/export", params={"format": "csv"}, headers=auth()).content
+    )
+
+    momentum_index = MATRIX_EXPORT_HEADER.index("momentum_30d")
+    by_name = {row[0]: row for row in rows[1:]}
+    assert by_name["requests"][momentum_index] == "23.4"
+    assert by_name["flask"][momentum_index] == ""
+
+
+def test_matrix_export_keeps_legacy_nine_columns_first(
+    client: TestClient,
+) -> None:
+    """Backward-compat: первые девять колонок в прежнем порядке, ровно 10 в строке."""
+    seed_observations(client)
+
+    rows = read_csv(
+        client.post("/api/matrix/export", params={"format": "csv"}, headers=auth()).content
+    )
+
+    assert rows[0][: len(MATRIX_HEADER)] == MATRIX_HEADER
+    assert rows[0][len(MATRIX_HEADER) :] == ["momentum_30d"]
+    assert all(len(row) == len(MATRIX_EXPORT_HEADER) for row in rows)

@@ -15,7 +15,14 @@ import time
 
 import pytest
 
-from app.store import SCHEMA_VERSION, Store, SqliteCache, migrate_1, utcnow_iso
+from app.store import (
+    SCHEMA_VERSION,
+    Store,
+    SqliteCache,
+    migrate_1,
+    migrate_2,
+    utcnow_iso,
+)
 
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
@@ -29,6 +36,9 @@ ALL_TABLES = {
     "catalogs",
     "catalog_items",
     "schedules",
+    # таблицы миграции 3 (шаг P4c):
+    "concept_packages",
+    "signal_observations",
 }
 
 
@@ -81,10 +91,10 @@ def store():
 # --- миграции -----------------------------------------------------------------
 
 
-def test_migration_creates_all_tables_and_version_2(store: Store) -> None:
+def test_migration_creates_all_tables_and_version_3(store: Store) -> None:
     assert store.conn is not None
-    assert schema_version(store) == "2"
-    assert SCHEMA_VERSION == 2
+    assert schema_version(store) == "3"
+    assert SCHEMA_VERSION == 3
     # meta + 8 таблиц миграции 1; sqlite_sequence (AUTOINCREMENT) не наша.
     assert ALL_TABLES <= table_names(store)
 
@@ -93,9 +103,9 @@ def test_second_enter_on_file_db_is_idempotent(tmp_path) -> None:
     db = tmp_path / "twice.db"
     with Store(db) as first:
         first.record_observation(observation(), run_id="r1", measured_at="2026-10-19T10:00:00Z")
-        assert schema_version(first) == "2"
+        assert schema_version(first) == "3"
     with Store(db) as second:
-        assert schema_version(second) == "2"
+        assert schema_version(second) == "3"
         assert count(second, "observations") == 1
 
 
@@ -108,7 +118,7 @@ def test_migrate_from_version_zero_without_meta(tmp_path) -> None:
     raw.commit()
     raw.close()
     with Store(db) as store:
-        assert schema_version(store) == "2"
+        assert schema_version(store) == "3"
         assert "observations" in table_names(store)
 
 
@@ -132,8 +142,9 @@ def test_migrate_1_to_2_adds_url_column_keeping_old_rows(tmp_path) -> None:
     raw.commit()
     raw.close()
 
+    # Store доводит БД до текущей версии схемы (3), не останавливаясь на 2.
     with Store(db) as store:
-        assert schema_version(store) == "2"
+        assert schema_version(store) == "3"
         assert "url" in {
             row[1] for row in conn_of(store).execute("PRAGMA table_info(catalog_items)")
         }
@@ -176,7 +187,7 @@ def test_reenter_version_2_db_does_not_rerun_migration(tmp_path) -> None:
         first.record_catalog_items("c1", [{"name": "owner/repo", "url": "https://x"}])
 
     with Store(db) as second:
-        assert schema_version(second) == "2"
+        assert schema_version(second) == "3"
         assert second.get_catalog_items("c1")[0]["url"] == "https://x"
 
 
@@ -1194,3 +1205,181 @@ def test_delete_catalog_removes_catalog_and_items(store: Store) -> None:
     assert store.get_catalog("cat-2") is not None
     assert count(store, "catalogs") == 1
     assert count(store, "catalog_items") == 1
+
+
+
+# --- миграция 3 и концепты/сигналы (шаг P4c) ---------------------------------
+
+
+def test_migrate_1_to_3_creates_concept_tables(tmp_path) -> None:
+    """БД версии 1 поднимается до 3: новые таблицы есть, старые данные целы.
+
+    Версия 1 создаётся вручную (``migrate_1`` + строка в ``meta``) — так
+    выглядит БД, сделанная приложением до шага 3c. Наблюдение, записанное до
+    миграции, обязано остаться: миграция 3 не трогает старые таблицы.
+    """
+    db = tmp_path / "v1-to-v3.db"
+    raw = sqlite3.connect(db)
+    raw.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    migrate_1(raw)
+    raw.execute(
+        "INSERT INTO observations(run_id, name, adoption_week, measured_at) "
+        "VALUES('r1', 'requests', 100, '2026-10-19T10:00:00Z')"
+    )
+    raw.commit()
+    raw.close()
+
+    with Store(db) as store:
+        assert schema_version(store) == "3"
+        assert {"concept_packages", "signal_observations"} <= table_names(store)
+        assert count(store, "observations") == 1
+
+
+def test_migrate_2_to_3_creates_concept_tables(tmp_path) -> None:
+    """БД версии 2 (3c) поднимается до 3 — тот же путь, что у БД пользователя."""
+    db = tmp_path / "v2-to-v3.db"
+    raw = sqlite3.connect(db)
+    raw.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    migrate_1(raw)
+    migrate_2(raw)
+    raw.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', '2') "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    )
+    raw.commit()
+    assert raw.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='concept_packages'"
+    ).fetchone() is None
+    raw.close()
+
+    with Store(db) as store:
+        assert schema_version(store) == "3"
+        assert {"concept_packages", "signal_observations"} <= table_names(store)
+
+
+def test_reenter_version_3_db_does_not_rerun_migration(tmp_path) -> None:
+    """Повторное открытие БД v3 — без «table already exists» (идемпотентность).
+
+    Проверяется на файле: миграция видит применённую схему только по
+    ``meta.schema_version`` — файл это и проверяет (gotcha 49).
+    """
+    db = tmp_path / "twice-v3.db"
+    with Store(db) as first:
+        first.record_concept_package(concept="vector-db", ecosystem="pypi", package="chromadb")
+        assert schema_version(first) == "3"
+
+    with Store(db) as second:
+        assert schema_version(second) == "3"
+        assert second.get_concept_packages(concept="vector-db")[0]["package"] == "chromadb"
+
+
+def test_record_concept_package_round_trip(store: Store) -> None:
+    """Запись → чтение: все три поля на месте, порядок детерминирован."""
+    store.record_concept_package(concept="vector-db", ecosystem="pypi", package="chromadb")
+    store.record_concept_package(concept="vector-db", ecosystem="npm", package="chromadb")
+
+    rows = store.get_concept_packages(concept="vector-db")
+
+    assert rows == [
+        {"concept": "vector-db", "ecosystem": "npm", "package": "chromadb"},
+        {"concept": "vector-db", "ecosystem": "pypi", "package": "chromadb"},
+    ]
+
+
+def test_record_concept_package_is_idempotent(store: Store) -> None:
+    """Повторная запись той же тройки — одна строка: загрузка concepts.json
+    на каждом старте не плодит дубли."""
+    for _ in range(3):
+        store.record_concept_package(concept="vector-db", ecosystem="pypi", package="chromadb")
+
+    assert count(store, "concept_packages") == 1
+
+
+def test_get_concept_packages_filters(store: Store) -> None:
+    """Фильтры по concept/package/ecosystem — по одному и в комбинации."""
+    store.record_concept_package(concept="vector-db", ecosystem="pypi", package="chromadb")
+    store.record_concept_package(concept="vector-db", ecosystem="npm", package="chromadb")
+    store.record_concept_package(concept="llm-framework", ecosystem="pypi", package="langchain")
+
+    assert len(store.get_concept_packages(concept="vector-db")) == 2
+    assert [row["concept"] for row in store.get_concept_packages(package="chromadb")] == [
+        "vector-db",
+        "vector-db",
+    ]
+    assert store.get_concept_packages(ecosystem="npm") == [
+        {"concept": "vector-db", "ecosystem": "npm", "package": "chromadb"}
+    ]
+    assert store.get_concept_packages(
+        concept="vector-db", ecosystem="pypi", package="chromadb"
+    ) == [{"concept": "vector-db", "ecosystem": "pypi", "package": "chromadb"}]
+    # без фильтров — весь mapping
+    assert len(store.get_concept_packages()) == 3
+
+
+def test_list_concepts_counts_and_ecosystems(store: Store) -> None:
+    """Уникальные концепты с числом пакетов и списком экосистем."""
+    store.record_concept_package(concept="vector-db", ecosystem="pypi", package="chromadb")
+    store.record_concept_package(concept="vector-db", ecosystem="npm", package="chromadb")
+    store.record_concept_package(concept="vector-db", ecosystem="github", package="chroma/chroma")
+    store.record_concept_package(concept="llm-framework", ecosystem="pypi", package="langchain")
+
+    concepts = store.list_concepts()
+
+    assert concepts == [
+        {
+            "concept": "llm-framework",
+            "n_packages": 1,
+            "ecosystems": ["pypi"],
+        },
+        {
+            "concept": "vector-db",
+            "n_packages": 3,
+            "ecosystems": ["github", "npm", "pypi"],
+        },
+    ]
+
+
+def test_delete_concept_returns_count(store: Store) -> None:
+    """Удаление концепта: число удалённых строк, повтор — 0, чтение пусто."""
+    store.record_concept_package(concept="vector-db", ecosystem="pypi", package="chromadb")
+    store.record_concept_package(concept="vector-db", ecosystem="npm", package="chromadb")
+    store.record_concept_package(concept="llm-framework", ecosystem="pypi", package="langchain")
+
+    assert store.delete_concept("vector-db") == 2
+    assert store.get_concept_packages(concept="vector-db") == []
+    assert store.delete_concept("vector-db") == 0
+    assert len(store.list_concepts()) == 1
+
+
+def test_signal_observation_round_trip(store: Store) -> None:
+    """Запись → чтение: value, detail (JSON → dict), measured_at новые сверху."""
+    identifier = store.record_signal_observation(
+        package="chromadb",
+        signal_kind="jobs",
+        value=42.0,
+        detail={"countries": {"de": 12, "uk": 30}},
+        measured_at="2026-10-19T10:00:00Z",
+    )
+    assert identifier > 0
+    store.record_signal_observation(
+        package="chromadb",
+        signal_kind="jobs",
+        value=None,
+        measured_at="2026-10-20T10:00:00Z",
+    )
+    store.record_signal_observation(
+        package="chromadb", signal_kind="patents", value=7.5, measured_at="2026-10-18T10:00:00Z"
+    )
+
+    rows = store.get_signal_observations("chromadb")
+
+    assert len(rows) == 3
+    assert rows[0]["measured_at"] == "2026-10-20T10:00:00Z"
+    assert rows[0]["value"] is None
+    assert rows[1]["detail"] == {"countries": {"de": 12, "uk": 30}}
+    patents = store.get_signal_observations("chromadb", signal_kind="patents")
+    assert len(patents) == 1
+    assert patents[0]["signal_kind"] == "patents"
+    assert patents[0]["value"] == 7.5
+    assert store.get_signal_observations("unknown") == []
+    assert len(store.get_signal_observations("chromadb", limit=1)) == 1

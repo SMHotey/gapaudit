@@ -617,3 +617,22 @@ a:hover { color: var(--accent-hover); }
   margin-right: 5px;
   vertical-align: middle;
 }
+
+/* Блок «Cross-ecosystem» в карточке пакета (шаг P4c): таблица «3 полосы» —
+   пакет + соседи по концепту в других экосистемах. Строка self подсвечена
+   фоном, чтобы глаз сразу находил «свой» ряд. */
+.cross-eco-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.cross-eco-table th,
+.cross-eco-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.cross-eco-table th { color: var(--text-dim); font-weight: 500; }
+.cross-eco-table .self { background: var(--bg-elev); }
+.card-cross-eco { margin: 8px 0; }

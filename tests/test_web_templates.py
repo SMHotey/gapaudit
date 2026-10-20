@@ -433,6 +433,27 @@ def test_card_script_renders_momentum_block(client: TestClient) -> None:
     assert "Мало данных" in script
 
 
+def test_card_script_renders_cross_ecosystem_block(client: TestClient) -> None:
+    """Карточка пакета рисует «3 полосы» cross-ecosystem из signals (шаг P4c)."""
+    script = client.get("/static/card.js").text
+
+    assert "card-cross-eco" in script
+    assert "cross-eco-table" in script
+    assert "signals.cross_ecosystem" in script
+    assert "self_momentum_30d" in script
+    # имя пакета и числа — только textContent (gotcha 37): innerHTML допустим
+    # лишь для статической шапки таблицы без данных
+    assert "tdName.textContent = r.name" in script
+
+
+def test_style_has_cross_eco_table_rules(client: TestClient) -> None:
+    """Стили таблицы cross-ecosystem подключены: класс из card.js есть в CSS."""
+    stylesheet = client.get("/static/style.css").text
+
+    assert ".cross-eco-table" in stylesheet
+    assert ".cross-eco-table .self" in stylesheet
+
+
 def test_settings_tabs_switch(client: TestClient) -> None:
     """Две вкладки настроек: активная ровно одна, переключение — классом.
 

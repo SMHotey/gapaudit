@@ -184,6 +184,8 @@ README «Установка на чистой машине», API Keys Store (и
 коллекторов), momentum, cross_ecosystem. P4 не добавляет новых экранов, кроме
 блока «Сигналы» в карточке пакета.
 
+Статус P4b (закрыт 2026-10-20): momentum, 839 тестов.
+
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
 (Adzuna), patents (PatentsView), funding (SEC EDGAR), search_interest
@@ -269,7 +271,9 @@ gh_search отдаёт `html_url`, `npm_search_full` — `pkg.links.npm`, рее
 Правило: схема версионируется в `meta.schema_version`, миграции — маленькие функции `migrate_N()`.
 Версию пишет сам `migrate()` после каждой ступени (а не `migrate_1`), и каждая миграция
 идемпотентна — иначе повторный старт на той же БД падает на «duplicate column» (AGENTS gotcha 49).
-Текущая версия схемы — 2 (колонка `catalog_items.url`).
+Текущая версия схемы — 3 (концепты и сигналы: `concept_packages`,
+`signal_observations`, миграция 3; до этого — 2, колонка
+`catalog_items.url`).
 
 Миграция 3 (P4): `signal_observations` и `concept_packages` — состояние схемы
 становится 3. Правило прежнее: версию пишет `migrate()` после каждой ступени,
@@ -355,10 +359,13 @@ KIND_REQUIRED_KEYS — подмножество обязательных клю�
 | GET | `/api/compare` | сравнение 2–3 пакетов (шаг 3c): `names=a,b,c`; ответ `{packages: [{name, source, version, released_at, adoption_month, adoption_week, flag, flag_label, verdict, measured_at}], missing: [имена без наблюдений]}`. 400 — имён не 2–3 после дедупликации, 404 — ни одного имени в Store |
 | POST | `/api/compare/export?format=csv&names=a,b` | выгрузка сравнения (шаг 3c): строка на пакет, колонки как у матрицы; 400/404 те же, что у `GET /api/compare` |
 | POST | `/api/events/export?format=csv\|json&kind=&name=&since=&limit=` | выгрузка событий (шаг 3c): ВСЕ события под фильтрами, без пагинации; CSV `id,kind,name,detail,at,run_id` (`utf-8-sig`), JSON `{"events": [...]}`; `limit` 1..50000 (10000), `limit` больше потолка — 400 |
-| POST | `/api/matrix/export?format=csv` | выгрузка точек матрицы (шаг 3c): те же точки, что у `GET /api/matrix` (общий `_matrix_points`), CSV `name,source,version,released_at,adoption_week,adoption_month,flag,verdict,measured_at`, `flag` — 0/1 |
+| POST | `/api/matrix/export?format=csv` | выгрузка точек матрицы (шаг 3c): те же точки, что у `GET /api/matrix` (общий `_matrix_points`), CSV `name,source,version,released_at,adoption_week,adoption_month,flag,verdict,measured_at,momentum_30d`, `flag` — 0/1; `momentum_30d` — десятая колонка с P4c (пусто при нехватке истории). `POST /api/compare/export` остаётся с прежними девятью колонками |
 | GET/PUT | `/api/settings` | пороги, ключевые слова, TTL, лимиты (шаг 2c). GET отдаёт `settings` + `readonly` (`data_dir`, `db_path`, `version`, `api_token_required`) + `editable_keys` (10 ключей); PUT валидирует тип/диапазон/инвариант `alive_weekly >= dead_weekly`, пишет `<data_dir>/settings.json` и возвращает `warnings`. `data_dir` и `language` через API не меняются — это readonly |
 | GET | `/api/signals/{package}` | все сигналы по пакету (P4/P5): `{momentum, cross_ecosystem, jobs, patents, funding, search_interest, gap_score}`; каждый сигнал — `{status: "ok"\|"not_configured"\|"error", value, detail}` |
 | POST | `/api/signals/collect` | собрать сигналы: kind `signals.collect` (P4/P5). Тело `{package, kinds[]}`; 202 `{job_id}` |
+| GET | `/api/concepts` | список концептов (P4c): `{concepts: [{concept, n_packages, ecosystems}]}`. Чтение `concept_packages`, без расчёта |
+| POST | `/api/concepts` | добавить привязку (P4c): тело `{concept, ecosystem, package}`; 202 `{ok: true}`; 400 при пустых полях или `ecosystem` вне `{pypi,npm,github}`. `INSERT OR IGNORE` — повтор не создаёт дублей |
+| DELETE | `/api/concepts/{concept}` | удалить концепт целиком (P4c): `{deleted: N}`; 404 — концепта не было |
 | GET | `/api/gap-score?names=a,b,c` | gap_score по списку пакетов (P5): `{names, scores: [{name, score, breakdown}]}` |
 | POST | `/api/niche/find` | Niche Finder (P5): тело `{q, filters, limit}`; 202 `{job_id}` — работа идёт задачей |
 | GET | `/api/niche/result/{job_id}` | результат Niche Finder: `{q, total, results: [{name, gap_score, momentum_30d, flag, adoption_week, jobs_total, patents_percent, funding_count}]}` |
@@ -739,7 +746,8 @@ Hermes не подключается к живому приложению — о
   те же прогоны давали 69–75 с полного при тех же 18–19 с быстрого: медленные
   тесты шага — не они, а `test_jobs_recover` и compat-L2 (gotcha 29).
 
-  P4 (в работе): полный ≤ 90 с, быстрый ≤ 45 с. Факт (P4a): 36.26 / 19.90.
+  P4 (в работе): полный ≤ 90 с, быстрый ≤ 45 с. Факт (P4b): 49.15 /
+  29.07–34.67 (P4a: 36.26 / 19.90).
   P4b добавил momentum (3 часа + тесты): core/collectors/momentum.py,
   /api/signals/{package}, поля точки матрицы, UI карточки и матрицы.
   Все тесты шага in-memory, ни одного подпроцесса.
@@ -802,6 +810,8 @@ momentum, cross-ecosystem), из них половина — P0–P1, то ес�
 13–14 дней, до P6 — ещё 3–5.
 
 P4a (закрыт 2026-10-20) — API Keys Store, 792 теста.
+
+P4b (закрыт 2026-10-20) — momentum, 839 тестов.
 
 ## 14. Риски и что с ними делать
 
@@ -976,8 +986,32 @@ Fernet с ключом, производным от machine-id. Честно д�
 **Источник:** таблица `concept_packages` (mapping вручную или через эвристику)
 + существующие observations.
 
+**Формула (уточнение P4c, реализовано в `core/collectors/cross_ecosystem.py`):**
+для пакета `p` с concept `C`:
+
+- найти все пакеты `p'` в **других экосистемах** с тем же concept `C`
+  (`concept_packages`; своя экосистема — не соперник, иначе «PyPI обгоняет
+  npm» мерялось бы с другим PyPI-пакетом);
+- для каждого `p'` вычислить momentum (7/30/90 через `compute_momentum` из
+  observations); у `p'` без истории — `momentum_30d: null`, а не 0;
+- `cross_ecosystem = {concept, ecosystem (своя), peers: [{name, ecosystem,
+  momentum_30d, adoption_week}], comparison, self_momentum_30d,
+  self_adoption_week}` — свои значения (`self_*`) отдаются в том же объекте,
+  чтобы карточка рисовала «3 полосы» одним ответом;
+- `comparison` — **сравнение относительных momentum, не деление на ноль**:
+  `faster` если `momentum_30d(p) > max(peers) + 5`, `slower` если
+  `momentum_30d(p) < min(peers) − 5`, `same` в пределах порога ±5 (шум, как в
+  momentum), `unknown` — если ни у пакета, ни у соседей momentum не посчитан.
+  В UI токены переводятся: `faster` → «растёт быстрее всех», `slower` →
+  «отстаёт»;
+- у пакета **нет concept** → `cross_ecosystem = None` (сигнал «не настроен»);
+  concept есть, но соседей нет → объект с пустым `peers` и
+  `comparison = "unknown"` (сигнал «мало данных» — показывать таблицу с одной
+  своей строкой честнее, чем прятать блок).
+
 **UI:** в карточке пакета — 3 полосы (PyPI/npm/GitHub) с Δ adoption. В
-`GET /api/signals/{package}` — поле `cross_ecosystem`.
+`GET /api/signals/{package}` и в signals карточки (`GET /api/packages/{name}`)
+— поле `cross_ecosystem`.
 
 **Стоимость:** 1–2 дня (mapping + UI).
 **Без ключа:** работает всегда (данные из observations).
@@ -1097,7 +1131,7 @@ jobs/patents/funding/search_interest.
 | Этап | Что | Оценка |
 |---|---|---|
 | P4a | API Keys Store (файл, base64, UI, тесты) — ЗАКРЫТ 2026-10-20 | 1 день |
-| P4b | Momentum (core + UI + matrix) | 3 часа |
+| P4b | Momentum (core + UI + matrix) — ЗАКРЫТ 2026-10-20 | 3 часа |
 | P4c | Cross-ecosystem (mapping + UI) | 1–2 дня |
 | P5a | Jobs (Adzuna) | 2 дня |
 | P5b | Patents (PatentsView) | 2–3 дня |
