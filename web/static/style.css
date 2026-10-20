@@ -748,3 +748,18 @@ a:hover { color: var(--accent-hover); }
 }
 .si-table th { color: var(--text-dim); font-weight: 500; }
 .si-table td.mono { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Экран «Поиск ниши» (шаг P5f-1, DEVPLAN §19): форма конвейера и таблица
+   ранжирования. Форма — вертикальная (пять полей + чекбоксы сигналов):
+   горизонтальная строка из восьми контролов не влезает в окно 1280 px и
+   обрезает «Найти». Таблица — обычный .table; колонка Gap моноширинная и
+   выделена, потому что это главное число экрана. */
+.niche-form-wrap { max-width: 720px; margin-bottom: 16px; }
+.niche-form-wrap form { display: flex; flex-direction: column; gap: 8px; }
+.niche-form-wrap label { display: flex; align-items: center; gap: 8px; }
+.niche-form-wrap .checkboxes { display: flex; gap: 12px; flex-wrap: wrap; }
+.niche-form-wrap .search-input { flex: 1; }
+.niche-actions { display: flex; gap: 8px; align-items: center; }
+.niche-progress { margin: 12px 0; }
+.niche-progress progress { width: 100%; max-width: 400px; }
+.niche-table td.gap-cell { font-weight: 600; color: var(--accent); }

@@ -19,6 +19,7 @@ import csv
 import io
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import app_state, auth
@@ -36,8 +37,9 @@ MATRIX_HEADER = [
 ]
 
 # Шапка экспорта матрицы с P4c: momentum_30d десятой колонкой (§0.1 шага).
+# С P5f-1 одиннадцатая — gap_score (то же число, что размер точки на экране).
 # Сравнение (/api/compare/export) использует прежние девять — MATRIX_HEADER.
-MATRIX_EXPORT_HEADER = MATRIX_HEADER + ["momentum_30d"]
+MATRIX_EXPORT_HEADER = MATRIX_HEADER + ["momentum_30d", "gap_score"]
 
 
 def observation(
@@ -253,7 +255,7 @@ def test_matrix_export_momentum_filled_for_points_with_history(
 def test_matrix_export_keeps_legacy_nine_columns_first(
     client: TestClient,
 ) -> None:
-    """Backward-compat: первые девять колонок в прежнем порядке, ровно 10 в строке."""
+    """Backward-compat: первые девять колонок в прежнем порядке, ровно 11 в строке."""
     seed_observations(client)
 
     rows = read_csv(
@@ -261,5 +263,32 @@ def test_matrix_export_keeps_legacy_nine_columns_first(
     )
 
     assert rows[0][: len(MATRIX_HEADER)] == MATRIX_HEADER
-    assert rows[0][len(MATRIX_HEADER) :] == ["momentum_30d"]
+    assert rows[0][len(MATRIX_HEADER) :] == ["momentum_30d", "gap_score"]
     assert all(len(row) == len(MATRIX_EXPORT_HEADER) for row in rows)
+
+
+def test_matrix_export_gap_score_matches_api_matrix_points(
+    client: TestClient,
+) -> None:
+    """Одиннадцатая колонка (P5f-1): gap_score заполнен и равен точке API.
+
+    Экспорт не пересчитывает score своей копией формулы: он зовёт тот же
+    ``_attach_gap_scores``, что ``GET /api/matrix``. Иначе число в файле и
+    число на экране разошлись бы при первой правке формулы — а файл сверяют с
+    картинкой (та же логика, что у ``momentum_30d`` в P4c).
+    """
+    seed_observations(client)
+
+    response = client.post("/api/matrix/export", params={"format": "csv"}, headers=auth())
+    rows = read_csv(response.content)
+    points = client.get("/api/matrix", headers=auth()).json()["points"]
+    by_name = {point["name"]: point for point in points}
+
+    gap_index = MATRIX_EXPORT_HEADER.index("gap_score")
+    assert gap_index == 10
+    assert len(rows) == 1 + len(points)
+    for row in rows[1:]:
+        point = by_name[row[0]]
+        assert point["gap_score"] is not None, row[0]
+        # CSV пишет float как есть; сравнение — по числу, не по формату
+        assert float(row[gap_index]) == pytest.approx(point["gap_score"])

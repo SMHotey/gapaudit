@@ -364,3 +364,22 @@ def test_put_gap_weight_rejects_nan_and_infinity(client: TestClient) -> None:
 
     # ни одно из значений не записалось
     assert get_settings(client)["settings"]["gap_weight_adoption"] == 1.0
+
+
+def test_put_any_float_setting_rejects_nan_and_infinity(client: TestClient) -> None:
+    """NaN/inf отбиваются во ВСЕХ float-полях, а не только в весах Score (§0.5).
+
+    ``_FLOAT_SETTING_BOUNDS`` проверяет границы, но сравнение с NaN всегда
+    ложно: без отдельной проверки конечности ``cache_ttl_hours: NaN`` проходил
+    бы мимо границ и попадал в файл настроек (математика кэша после этого
+    бессмысленна). Тест держит одно поле из этого набора — механизм общий.
+    """
+    for field in ("cache_ttl_hours", "adoption_delta_pct"):
+        for literal in ("NaN", "Infinity", "-Infinity"):
+            response = client.put(
+                "/api/settings",
+                headers={**auth(), "Content-Type": "application/json"},
+                content=('{"' + field + '": ' + literal + "}").encode(),
+            )
+            assert response.status_code == 400, (field, literal)
+            assert field in response.json()["detail"]

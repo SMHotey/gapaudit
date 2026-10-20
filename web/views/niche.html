@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Поиск ниши — GapAudit{% endblock %}
+{% block content %}
+{# Экран «Поиск ниши» (шаг P5f-1, DEVPLAN §19). Сквозной workflow: фраза →
+   ранжированный список подсфер по Gap Score. Работа целиком в задаче
+   `niche.find` (POST /api/niche/find → 202 job_id), результат — файл
+   result.json, который отдаёт GET /api/niche/result/{job_id}, пока задача
+   идёт — 202 со статусом. Таблицу целиком рисует niche.js: строки — данные
+   из подпроцесса и в разметку не впечатываются (gotcha 37). #}
+<section class="toolbar">
+  <h2>Поиск ниши</h2>
+</section>
+
+<section class="niche-form-wrap">
+  <form id="niche-form">
+    <label>Фраза:
+      <input type="text" name="query" required class="search-input"
+             placeholder="vector database">
+    </label>
+    <label>Мин. звёзд:
+      <input type="number" name="min_stars" value="20" min="0">
+    </label>
+    <label>Страниц на фразу:
+      <input type="number" name="pages" value="2" min="1" max="10">
+    </label>
+    <label>Лимит результатов:
+      <input type="number" name="limit" value="50" min="1" max="500">
+    </label>
+    <label>Сигналы (какие собирать):
+      <span class="checkboxes">
+        <label><input type="checkbox" name="signal_jobs" value="jobs"> jobs</label>
+        <label><input type="checkbox" name="signal_patents" value="patents"> patents</label>
+        <label><input type="checkbox" name="signal_funding" value="funding"> funding</label>
+        <label><input type="checkbox" name="signal_search" value="search_interest"> search_interest</label>
+      </span>
+    </label>
+    <div class="niche-actions">
+      <button type="submit" class="btn btn-primary">Найти</button>
+      <button type="button" class="btn" id="refresh">Обновить</button>
+    </div>
+    <div class="muted">
+      Сигналы собираются только для настроенных ключей (Настройки → API-ключи);
+      без них Gap Score считается по adoption и признаку ниши.
+    </div>
+  </form>
+  <div id="niche-msg" class="settings-msg" hidden></div>
+</section>
+
+<section id="niche-progress" class="niche-progress" hidden>
+  <div class="muted" id="niche-progress-text">—</div>
+  <progress id="niche-progress-bar" max="1" value="0"></progress>
+</section>
+
+<section>
+  <div class="toolbar">
+    <span id="niche-counter" class="muted">—</span>
+  </div>
+  <table class="table niche-table" id="niche-table">
+    <thead><tr>
+      <th>Пакет</th>
+      <th>Gap</th>
+      <th>Momentum</th>
+      <th>MCP</th>
+      <th>Adoption/нед</th>
+      <th>Вердикт</th>
+    </tr></thead>
+    <tbody id="niche-body">
+      <tr><td colspan="6"><div class="empty">Введите фразу и нажмите «Найти»</div></td></tr>
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/niche.js"></script>
+{% endblock %}

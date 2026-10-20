@@ -47,6 +47,7 @@ RENDERED_FILES = (
     WEB / "static" / "jobs.js",
     WEB / "static" / "matrix.js",
     WEB / "static" / "monitor.js",
+    WEB / "static" / "niche.js",
     WEB / "static" / "packages.js",
     WEB / "static" / "settings.js",
     WEB / "static" / "sse.js",
@@ -64,13 +65,14 @@ NAV_ROUTES = {
     "Мониторинг": "/monitor",
     "Каталоги": "/catalogs",
     "Сравнение": "/compare",
+    "Поиск ниши": "/niche",
     "Настройки": "/settings",
 }
 
 #: Порядок пунктов в шапке — часть контракта: он совпадает с §9 DEVPLAN.
 NAV_ORDER = [
     "Задачи", "Сейчас решать", "Пакеты", "Мониторинг",
-    "Каталоги", "Сравнение", "Настройки",
+    "Каталоги", "Сравнение", "Поиск ниши", "Настройки",
 ]
 
 _ANCHOR = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.DOTALL)
@@ -109,7 +111,7 @@ def test_no_501_in_any_rendered_file(client: TestClient) -> None:
         assert "501" not in path.read_text(encoding="utf-8"), path
 
     for url in ("/", "/matrix", "/packages", "/monitor", "/catalogs", "/compare",
-                "/settings"):
+                "/niche", "/settings"):
         response = client.get(url)
         assert response.status_code == 200, url
         assert "501" not in response.text, url
@@ -133,7 +135,7 @@ def test_matrix_page_keeps_its_containers(client: TestClient) -> None:
 
 
 def test_navigation_has_no_disabled_items(client: TestClient) -> None:
-    """Все семь пунктов шапки — живые ссылки: P3 закрыт, выключенных нет.
+    """Все восемь пунктов шапки — живые ссылки: выключенных нет (P5f-1: niche).
 
     Тест держит обе стороны одной ошибки: забытая активация (пункт остался
     ``disabled``) и ссылка на несуществующий маршрут (``href`` без страницы) —
@@ -152,7 +154,7 @@ def test_navigation_has_no_disabled_items(client: TestClient) -> None:
 
     assert [label for _, label in nav] == [
         "Задачи", "Сейчас решать", "Пакеты", "Мониторинг", "Каталоги",
-        "Сравнение", "Настройки",
+        "Сравнение", "Поиск ниши", "Настройки",
     ]
     assert others == [], "в шапке не осталось выключенных пунктов (3c закрыл P3)"
     for attrs, label in nav:
@@ -210,7 +212,7 @@ def test_card_overlay_exists_once_on_every_screen(client: TestClient) -> None:
     первую, а вторая остаётся висеть поверх страницы.
     """
     for url in ("/", "/matrix", "/packages", "/monitor", "/catalogs", "/compare",
-                "/settings"):
+                "/niche", "/settings"):
         page = client.get(url).text
         assert page.count('id="card-overlay"') == 1, url
         assert page.count('id="card-content"') == 1, url

@@ -276,6 +276,27 @@ SIGNAL_COLLECT_KINDS: frozenset[str] = frozenset(
     {"jobs", "patents", "funding", "search_interest"}
 )
 
+#: Источники каталога для Niche Finder (шаг P5f-1) — те же три, что у
+#: ``catalog.build`` (``core.catalog.SOURCE_ORDER``). Дубль ``cli.niche.SOURCES``
+#: осознанно, как у :data:`SIGNAL_COLLECT_KINDS`: ``app/`` не импортирует
+#: ``cli/``, а «согласие слоёв» держит отдельный тест.
+NICHE_SOURCES: frozenset[str] = frozenset(("github", "npm", "registry"))
+
+#: Виды сигналов Niche Finder — дубль ``cli.niche.NICHE_SIGNAL_KINDS`` и тот же
+#: набор, что у ``POST /api/signals/collect``: оба эндпоинта запускают одну и ту
+#: же машинерию коллекторов.
+NICHE_SIGNAL_KINDS: frozenset[str] = SIGNAL_COLLECT_KINDS
+
+#: Границы параметров ``POST /api/niche/find`` (шаг P5f-1). Страниц — как у
+#: сборки каталога (10 страниц × 10 фраз = 300 запросов к GitHub Search при
+#: лимите 30/мин); limit — 1..500, как у прочих списков экранов.
+NICHE_PAGES_MIN, NICHE_PAGES_MAX = 1, 10
+NICHE_LIMIT_MIN, NICHE_LIMIT_MAX = 1, 500
+NICHE_MIN_STARS_MIN = 0
+NICHE_LIMIT_DEFAULT = 50
+NICHE_PAGES_DEFAULT = 2
+NICHE_MIN_STARS_DEFAULT = 20
+
 #: Какой провайдер API-ключей собирает вид (дубль ``cli.signals.KIND_TO_PROVIDER``,
 #: тот же тест согласия). Нужен здесь без наблюдения различать §0.3:
 #: «ключ не настроен» (``not_configured``) против «ключ есть, но не
@@ -604,6 +625,25 @@ def _param_errors(kind: str, params: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _range_error(params: dict[str, Any], key: str, low: int, high: int) -> str | None:
+    """Сообщение о выходе целочисленного параметра за границы; ``None`` — в норме.
+
+    Общий помощник для эндпоинтов, у которых границы известны только им
+    (``pages``/``limit`` у Niche Finder): ``KIND_PARAM_TYPES`` проверяет лишь
+    тип, и ``pages: 99`` дошло бы до подпроцесса, где обернулось бы пустым
+    каталогом через полчаса. Значение чужого типа здесь не проверяется — это
+    уже сделал :func:`_param_errors`.
+    """
+    if key not in params:
+        return None
+    value = params[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < low or value > high:
+        return f"{key}: допустимо {low}..{high}, пришло {value}"
+    return None
+
+
 def _job_public(job: Job) -> dict[str, Any]:
     """Публичная проекция задачи: без ``log_path`` и ``pid`` (внешний каталог)."""
     return {
@@ -850,11 +890,12 @@ MATRIX_CSV_HEADER = (
 )
 
 #: Десятая колонка экспорта матрицы (шаг P4c): ``momentum_30d`` — то же поле,
-#: что на экране (точки матрицы несут его с P4b). Отдельный кортеж, а не
-#: расширение ``MATRIX_CSV_HEADER``: сравнение (``/api/compare/export``) свою
-#: историю не считает и остаётся с прежними девятью колонками — иначе шапка
-#: обещала бы колонку, которой в строках нет.
-MATRIX_EXPORT_CSV_HEADER = MATRIX_CSV_HEADER + ("momentum_30d",)
+#: что на экране (точки матрицы несут его с P4b). Одиннадцатая (P5f-1,
+#: §0.1): ``gap_score`` — то же число, что размер точки на экране. Оба поля
+#: живут в отдельном кортеже, а не в ``MATRIX_CSV_HEADER``: сравнение
+#: (``/api/compare/export``) их не считает и остаётся с прежними девятью
+#: колонками — иначе шапка обещала бы колонку, которой в строках нет.
+MATRIX_EXPORT_CSV_HEADER = MATRIX_CSV_HEADER + ("momentum_30d", "gap_score")
 
 
 def _csv_body(header: tuple[str, ...], rows: list[list[Any]]) -> bytes:
@@ -1279,8 +1320,9 @@ def _attach_gap_scores(
 
     Правит точки на месте — по той же причине, что и ``_attach_momentum``:
     ``_matrix_points`` общий с ``POST /api/matrix/export``, и колонки экспорта
-    (девять прежних + ``momentum_30d``) не должны меняться от того, что экран
-    получил новое поле.
+    не должны меняться от того, что экран получил новое поле. С P5f-1 экспорт
+    зовёт эту функцию сам (одиннадцатая колонка ``gap_score``) — по-прежнему
+    тем же расчётом, а не своей копией.
 
     Нормировка — по самим точкам матрицы: только у них ``adoption_week > 0``,
     и включение в min/max пакета с нулевым adoption сдвинуло бы все score
@@ -1428,8 +1470,11 @@ def _settings_problem(key: str, value: Any) -> str | None:
         return None
 
     if key in _FLOAT_SETTING_BOUNDS:
-        if not _is_number(value):
-            return f"{key}: ожидалось число"
+        # Конечность обязательна и здесь (P5f-1, §0.5): json.loads разбирает
+        # NaN/Infinity штатно, а сравнение NaN с границами ложно — без этой
+        # проверки NaN проходил бы мимо границ и сохранялся в файл.
+        if not _is_number(value) or not math.isfinite(float(value)):
+            return f"{key}: ожидалось конечное число"
         low_f, strict, message = _FLOAT_SETTING_BOUNDS[key]
         if value < low_f or (strict and value <= low_f):
             return f"{key}: {message}"
@@ -2434,6 +2479,12 @@ def create_app(
         разные ответы. Первые девять колонок — в прежнем порядке
         (``MATRIX_EXPORT_CSV_HEADER[:9] == MATRIX_CSV_HEADER``): файлы,
         собранные до P4c, читаются теми же скриптами.
+
+        Одиннадцатая колонка (P5f-1, §0.1) — ``gap_score``: то же число, что
+        размер точки на экране. Считается тем же ``_attach_gap_scores``, что у
+        ``GET /api/matrix`` (нормировка min-max по этим же точкам), а не
+        пересчитывается здесь: два расчёта одного score разошлись бы при
+        первой правке формулы. Пакет без score — пустая строка.
         """
         export_format = (request.query_params.get("format") or "csv").strip().lower()
         if export_format != "csv":
@@ -2449,6 +2500,7 @@ def create_app(
         observations = store.get_latest_observations()
         points, _quadrants = _matrix_points(observations, int(settings.alive_weekly))
         _attach_momentum(store, points)
+        _attach_gap_scores(store, points, settings)
         rows = [
             [
                 point.get("name"),
@@ -2461,6 +2513,7 @@ def create_app(
                 point.get("verdict") or "",
                 point.get("measured_at") or "",
                 "" if point.get("momentum_30d") is None else point.get("momentum_30d"),
+                "" if point.get("gap_score") is None else point.get("gap_score"),
             ]
             for point in points
         ]
@@ -2500,6 +2553,119 @@ def create_app(
             "scores": [score.as_dict() for score in scores],
             "missing": missing,
         }
+
+    # --- Niche Finder (шаг P5f-1) --------------------------------------------
+
+    @application.post("/api/niche/find", status_code=202)
+    def niche_find(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        """Поиск ниши по фразе: ``202 {"job_id", "status"}`` (DEVPLAN §19).
+
+        Тело: ``{"query": "vector database", "min_stars": 20, "pages": 2,
+        "sources": ["github", "npm", "registry"],
+        "signal_kinds": ["jobs", "patents"], "limit": 50}``.
+
+        Валидация двухслойная, как у ``/api/jobs`` и ``/api/signals/collect``:
+        сначала таблицы ``app/jobs.py`` (:func:`_param_errors` — ключи, типы,
+        обязательный ``query``), затем границы, которые знает только этот
+        эндпоинт: ``min_stars >= 0``, ``pages`` 1..10, ``limit`` 1..500 и
+        значения ``sources``/``signal_kinds`` по наборам
+        :data:`NICHE_SOURCES` / :data:`NICHE_SIGNAL_KINDS`. Задача с
+        ``signal_kinds=["evil"]`` умерла бы argparse'ом в подпроцессе — это
+        400 до постановки в очередь (fail fast), а не ``failed`` через секунду.
+
+        Работа целиком в подпроцессе (инвариант 6): обработчик только
+        проверяет тело и ставит задачу. Ключи сигналов читает сам CLI из
+        ``<data_dir>/api_keys.json`` — в теле задачи их нет.
+        """
+        params: dict[str, Any] = {"query": str(payload.get("query") or "").strip()}
+        for key in ("min_stars", "pages", "limit"):
+            if key in payload:
+                params[key] = payload[key]
+        for key in ("sources", "signal_kinds"):
+            if key in payload and payload[key] is not None:
+                params[key] = payload[key]
+
+        errors = _param_errors("niche.find", params)
+        if "min_stars" in params and isinstance(params["min_stars"], int) and not isinstance(
+            params["min_stars"], bool
+        ):
+            if params["min_stars"] < NICHE_MIN_STARS_MIN:
+                errors.append(
+                    f"min_stars: не может быть меньше {NICHE_MIN_STARS_MIN}, "
+                    f"пришло {params['min_stars']}"
+                )
+        for key, low, high in (
+            ("pages", NICHE_PAGES_MIN, NICHE_PAGES_MAX),
+            ("limit", NICHE_LIMIT_MIN, NICHE_LIMIT_MAX),
+        ):
+            message = _range_error(params, key, low, high)
+            if message is not None:
+                errors.append(message)
+
+        raw_sources = params.get("sources")
+        if isinstance(raw_sources, list):
+            unknown = sorted({str(item) for item in raw_sources} - NICHE_SOURCES)
+            if unknown:
+                errors.append(f"sources: неизвестный источник: {', '.join(unknown)}")
+        raw_kinds = params.get("signal_kinds")
+        if isinstance(raw_kinds, list):
+            unknown = sorted({str(item) for item in raw_kinds} - NICHE_SIGNAL_KINDS)
+            if unknown:
+                errors.append(f"signal_kinds: неизвестный вид сигнала: {', '.join(unknown)}")
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+
+        job_id = _queue(request).submit("niche.find", params)
+        return {"job_id": job_id, "status": "queued"}
+
+    @application.get("/api/niche/result/{job_id}")
+    def niche_result(job_id: str, request: Request) -> Any:
+        """Результат поиска ниши: ``result.json`` задачи (DEVPLAN §19.4).
+
+        * задачи нет — 404;
+        * задача не завершена (``status != "done"``) — **202** с ``status``,
+          ``progress`` и ``message``: экран поллит этот же адрес и по коду
+          ответа отличает «ещё идёт» от готового результата. Терминальные
+          статусы (``failed``/``cancelled``/``interrupted``) отдаются так же —
+          с ``error``, чтобы экран показал причину и перестал поллить;
+        * задача ``done``, файла нет — 500: это баг хука/задачи, а не
+          «ничего не нашли» (пустой результат — валидный JSON с ``items: []``);
+        * иначе — содержимое ``result.json`` как есть (200).
+
+        Читается файл, а не SQLite: результат задачи — артефакт подпроцесса
+        (``--json-out``), и в Store он не пишется (``niche.find`` не входит в
+        ``_POST_PROCESS_KINDS``: наблюдения он не собирает, а только читает
+        существующие сигналы).
+        """
+        job = _queue(request).get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"задача {job_id} не найдена")
+        if job.status != "done":
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": job.status,
+                    "progress": job.progress,
+                    "message": job.message,
+                    "error": job.error,
+                },
+            )
+        data_dir = Path(str(getattr(request.app.state, "data_dir", "")))
+        result_path = data_dir / "jobs" / f"{job_id}.result.json"
+        if not result_path.is_file():
+            logger.error("нет result.json для задачи %s (niche.find)", job_id)
+            raise HTTPException(
+                status_code=500,
+                detail=f"результат задачи {job_id} не найден (result.json отсутствует)",
+            )
+        try:
+            return json.loads(result_path.read_text(encoding="utf-8"))
+        except ValueError as error:
+            logger.error("битый result.json задачи %s: %s", job_id, error)
+            raise HTTPException(
+                status_code=500,
+                detail=f"результат задачи {job_id} не читается: {error}",
+            ) from None
 
     # --- сравнение (шаг 3c) ---------------------------------------------------
 
@@ -3025,6 +3191,18 @@ def create_app(
         """
         return templates.TemplateResponse(
             request=request, name="compare.html", context={"version": VERSION}
+        )
+
+    @application.get("/niche")
+    async def niche_screen(request: Request):
+        """Экран «Поиск ниши» (шаг P5f-1): форма и таблица ранжирования.
+
+        Шаблон отдаёт только форму и пустую таблицу: пакеты, score и вердикты
+        приходят из ``GET /api/niche/result/{job_id}`` и рисуются
+        ``niche.js`` — данные из задачи не попадают в разметку (gotcha 37).
+        """
+        return templates.TemplateResponse(
+            request=request, name="niche.html", context={"version": VERSION}
         )
 
     @application.get("/settings")

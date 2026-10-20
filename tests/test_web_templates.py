@@ -189,7 +189,8 @@ def test_f5_refresh_hook_is_wired_on_every_screen(client: TestClient) -> None:
     for script_path in ("/static/jobs.js", "/static/matrix.js",
                         "/static/settings.js", "/static/packages.js",
                         "/static/monitor.js", "/static/catalogs.js",
-                        "/static/catalog_detail.js", "/static/compare.js"):
+                        "/static/catalog_detail.js", "/static/compare.js",
+                        "/static/niche.js"):
         script = client.get(script_path).text
         assert "window.__gapauditRefresh = load" in script, script_path
 
@@ -695,3 +696,64 @@ def test_other_docs_files_are_not_served(client: TestClient) -> None:
     """``/docs/{file}`` — белый список: остальные файлы ``docs/`` отдают 404."""
     assert client.get("/docs/DEVPLAN.md").status_code == 404
     assert client.get("/docs/screenshots/step-p4b-matrix-momentum.png").status_code == 404
+
+
+# --- экран «Поиск ниши» (шаг P5f-1, DEVPLAN §19) -----------------------------
+
+
+def test_niche_screen_renders_form_and_table(client: TestClient) -> None:
+    """GET /niche: форма конвейера, тело таблицы, прогресс, скрипт экрана.
+
+    Поля перечислены по именам: ``niche.js`` читает их через
+    ``form.elements.<name>``, и переименование дало бы форму, которая молча
+    отправляет пустое тело.
+    """
+    response = client.get("/niche")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<a href="/niche" class="active">Поиск ниши</a>' in response.text
+    assert response.text.count('class="active"') == 1
+    for element_id in ("niche-form", "niche-body", "niche-progress",
+                       "niche-progress-bar", "niche-msg", "niche-counter",
+                       "refresh"):
+        assert f'id="{element_id}"' in response.text, element_id
+    for name in ("query", "min_stars", "pages", "limit",
+                 "signal_jobs", "signal_patents", "signal_funding", "signal_search"):
+        assert f'name="{name}"' in response.text, name
+    assert "/static/niche.js" in response.text
+    # card.js общий и подключён в base.html — второй раз его быть не должно
+    assert response.text.count("/static/card.js") == 1
+
+
+def test_niche_js_is_served_and_polls_job_status(client: TestClient) -> None:
+    """Скрипт экрана: постановка задачи, поллинг статуса, чтение результата.
+
+    Прогресс должен идти из ``GET /api/jobs/{id}`` (как у остальных экранов), а
+    результат — из ``GET /api/niche/result/{id}``; данные (имена, вердикты)
+    рисуются DOM-методами и textContent (gotcha 37).
+    """
+    script = client.get("/static/niche.js").text
+
+    assert "/api/niche/find" in script
+    assert "/api/niche/result/" in script
+    assert "/api/jobs/" in script
+    assert "startPolling" in script
+    assert "createElement" in script
+    assert "textContent" in script
+    # для данных innerHTML не используется вообще — ни присваивания, ни чтения
+    # (слово может встречаться только в комментарии о самом правиле)
+    assert ".innerHTML" not in script
+    assert "innerHTML =" not in script
+    # терминальные статусы останавливают поллинг, а не крутят его вечно
+    assert "'failed'" in script and "'cancelled'" in script
+    assert "clearInterval" in script
+
+
+def test_niche_styles_are_connected(client: TestClient) -> None:
+    """Стили формы и таблицы ранжирования подключены (классы из шаблона и JS)."""
+    stylesheet = client.get("/static/style.css").text
+
+    assert ".niche-form-wrap" in stylesheet
+    assert ".niche-progress" in stylesheet
+    assert ".niche-table td.gap-cell" in stylesheet

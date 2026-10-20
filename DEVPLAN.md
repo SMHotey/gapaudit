@@ -209,11 +209,19 @@ points; "not_configured" если ни один источник не настр
 если не собирали. Wordstat: regions — список чисел, client_id не в запросе,
 trend_pct = None (динамика в /v1/dynamics, follow-up).
 
-P5e (сдан на ревью 2026-10-20): Gap Score — `core/signals.py` (GapScore,
+P5e (закрыт 2026-10-20): Gap Score — `core/signals.py` (GapScore,
 GapWeights, Normalizer, compute_gap_score/batch), веса `gap_weight_*` в
 Settings и форме настроек, `gap_score`/`gap_breakdown` в точках
 `/api/matrix` и карточке, новый `GET /api/gap-score?names=a,b`, размер точки
-на матрице = score. 1118 тестов (было 1068).
+на матрице = score. 1118 тестов (было 1068). Нормировка — линейный min-max.
+Усечение 0..100 при отрицательных весах. Вырожденный диапазон (min == max) -> 0.5.
+
+P5f-1 (закрыт 2026-10-20): Niche Finder, первая итерация — сквозной workflow
+«фраза → ранжированный список подсфер». Новый `cli/niche.py` (конвейер
+`catalog.build` → `packages.check` → `signals.collect` → `gap_score`, единый
+`result.json`), kind `niche.find` в `app/jobs.py`, `POST /api/niche/find` +
+`GET /api/niche/result/{job_id}`, экран `/niche` (форма, прогресс, таблица),
+11-я колонка `gap_score` в экспорте матрицы. 1163 теста (было 1118).
 
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
@@ -834,6 +842,10 @@ Hermes не подключается к живому приложению — о
   (77.97 / 64.08) тоже холодная, поэтому сравнивать можно только «холодный с
   холодным», а тёплые цифры — то, что видит цикл разработки. Оба гейта
   (120/60) пройдены с запасом.
+  Факт (P5f-1): 95.38 / 48.47 (тёплый прогон, 1163 теста, +45: cli niche 21,
+  web niche 15, default_runner +4, шаблоны 3, экспорт +1, настройки +1).
+  База перед шагом (HEAD fb5005e, холодный прогон): 95.52 / 69.57. Гейты 120/60
+  пройдены; быстрый цикл не вырос — «тёплый» на 21 с быстрее холодной базы.
 
 Коллекторы сигналов (P4/P5):
 
@@ -899,7 +911,12 @@ P5c (закрыт 2026-10-20) — funding (SEC EDGAR).
 
 P5d (закрыт 2026-10-20) — search_interest (Wordstat + Apify).
 
-P5e (сдан на ревью 2026-10-20) — Gap Score (веса в Settings + UI, размер точки).
+P5e (закрыт 2026-10-20) — Gap Score (веса в Settings + UI, размер точки).
+
+P5f-1 (закрыт 2026-10-20) — Niche Finder, первая итерация: `cli/niche.py`
+(`kind = niche.find`), `POST /api/niche/find`, `GET /api/niche/result/{job_id}`,
+экран `/niche`, 11-я колонка `gap_score` в экспорте матрицы. Фильтры, карточка
+и экспорт из Niche Finder — P5f-2.
 
 ## 14. Риски и что с ними делать
 
@@ -1347,13 +1364,30 @@ jobs/patents/funding/search_interest.
   `test_score_matches_matrix_point`);
 - **`no_flag` не нормируется** (1.0 / 0.0 / None): это булев признак, а не ряд.
 
+**Известное ограничение линейного min-max (уточнено в P5f-1).** Выброс в
+adoption (fastmcp 12000/нед против ruff 1000/нед) прижимает остальных к нулю:
+на выборках меньше ~50 пакетов один outlier делает метрику почти бинарной.
+Опция `normalization: "minmax" | "rank"` в Settings — P6, если пользователь
+попросит: ранговый перцентиль устойчивее к выбросам, но менее чувствителен к
+абсолютным значениям. В P5e/P5f формула не меняется — только min-max.
+
+**Почему усечение и что значит ноль (уточнено в P5f-1).** Минимум при
+дефолтных весах — −0.8/5.6 ≈ −14 баллов, а шкала обещана 0..100, поэтому
+результат усечён снизу: ноль означает «занято по всем штрафным компонентам»,
+а не «данных нет» (последнее — `null`). Вырожденный диапазон (min == max)
+даёт `norm = 0.5`, а не деление на ноль. «Первый непустой источник»
+`search_interest` — источник с `error` пропускается: его `None` означает
+«данных нет», а не «интерес не растёт» (gotcha 66).
+
 **API (P5e):** в точках `GET /api/matrix` появились `gap_score` (float|null) и
 `gap_breakdown` (семь компонентов + `weights_used` + `components_available`);
 карточка `GET /api/packages/{name}` отдаёт те же два поля; новый
 `GET /api/gap-score?names=a,b` (2–3 имени, как `/api/compare`) возвращает
 `{scores: […], missing: […]}` с нормировкой по всем пакетам. Экспорт матрицы
-(`POST /api/matrix/export`) колонок не изменил: gap_score — про экран, а CSV
-читают скрипты, собранные до P4c.
+(`POST /api/matrix/export`) в P5e колонок не менял; в P5f-1 добавлена
+одиннадцатая колонка `gap_score` (§0.1 того шага): число в файле — то же, что
+размер точки на экране (тот же `_attach_gap_scores`), пакет без score — пустая
+строка. Первые девять колонок и десятая (`momentum_30d`) не сдвинулись.
 
 **UI (P5e):** размер точки `r = 4 + gap/20` (4..9 px; без score — прежние 6),
 в `<title>` точки «gap 87»; легенда под матрицей «● размер = gap score (0..100) ·
@@ -1372,8 +1406,9 @@ jobs/patents/funding/search_interest.
 | P5b | Patents (PatentsView) — ЗАКРЫТ 2026-10-20 | 2–3 дня |
 | P5c | Funding (SEC EDGAR) — ЗАКРЫТ 2026-10-20 | 3–5 дней |
 | P5d | Search interest (Yandex Wordstat + Google Trends/Apify) — ЗАКРЫТ 2026-10-20 | 3–4 дня |
-| P5e | Gap Score (Settings веса + UI) — СДАН НА РЕВЬЮ 2026-10-20 | 1–2 дня |
-| P5f | Niche Finder (экран + конвейер задач) | 3–4 дня |
+| P5e | Gap Score (Settings веса + UI) — ЗАКРЫТ 2026-10-20 | 1–2 дня |
+| P5f-1 | Niche Finder, первая итерация (конвейер + эндпоинты + экран) — ЗАКРЫТ 2026-10-20 | 3–4 дня |
+| P5f | Niche Finder (фильтры, карточка, экспорт) | 3–4 дня |
 | P6 | MCP-сервер, расписание, уведомления | 2–3 дня |
 
 ### 18.5. Безопасность ключей
@@ -1385,6 +1420,12 @@ jobs/patents/funding/search_interest.
 - При экспорте БД ключи не попадают в экспорт (в SQLite их нет вообще).
 - Честно документировать: «шифрование — base64, защита — права файла, не
   криптография».
+- **Валидация NaN/inf — во всех float-полях Settings (P5f-1, §0.5).**
+  `json.loads` штатно разбирает `NaN`/`Infinity`, поэтому «битое значение в
+  файле» — общая проблема, а не только у `gap_weight_*`: `math.isfinite` в
+  `core/settings._coerce` отбрасывает нечисловые значения при загрузке, а
+  `PUT /api/settings` отвечает 400 на NaN/inf в любом float-поле (тело
+  приходится слать сырым: `httpx` отказывается сериализовать `NaN`).
 - **`get` vs `public_meta` (уточнено в P5c).** `get(provider)` домешивает
   `public_meta` для несекретных полей (`edgar.user_agent`,
   `yandex_wordstat.client_id`, `apify.actor_id`) и возвращает полный набор
@@ -1461,13 +1502,23 @@ SSE.
 
 ### 19.4. Эндпоинты
 
-- `POST /api/niche/find` — тело `{"q": "vector database",
-  "filters": {"momentum_positive": true, "no_flag": true, "no_funding": true},
-  "limit": 50}`; ответ `202 {"job_id"}`. Валидация: `q` — непустая строка,
-  `filters` — объект из известных ключей, `limit` — 1..200 (50).
-- `GET /api/niche/result/{job_id}` — `{"q", "total", "results": [{name,
-  gap_score, momentum_30d, flag, adoption_week, jobs_total, patents_percent,
-  funding_count}]}`. Неизвестный/незавершённый job — 404/409.
+Реализовано в P5f-1 (форма тела отличается от первоначального наброска ниже —
+см. §19.7):
+
+- `POST /api/niche/find` — тело `{"query": "vector database", "min_stars": 20,
+  "pages": 2, "sources": ["github","npm","registry"],
+  "signal_kinds": ["jobs","patents","funding","search_interest"], "limit": 50}`;
+  ответ `202 {"job_id", "status": "queued"}`. Валидация: `query` — непустая
+  строка, `min_stars >= 0`, `pages` 1..10, `limit` 1..500, значения `sources`
+  и `signal_kinds` — по наборам `NICHE_SOURCES` / `NICHE_SIGNAL_KINDS`
+  (`app/web.py`); всё остальное — 400 до постановки задачи.
+- `GET /api/niche/result/{job_id}` — `result.json` задачи (`{query, items,
+  stats}`, items отсортированы по `gap_score` DESC). Задача идёт — `202
+  {status, progress, message, error}`; задачи нет — 404; задача `done` без
+  файла — 500 (баг задачи, а не «ничего не нашли»).
+- Первоначальный набросок (`"q"`, `filters`, ответ `{q, total, results}`) не
+  реализован: фильтры — P5f-2, а имя `query` совпадает с полем `result.json`
+  и параметром `cli.niche` (одна правда вместо трёх имён одного значения).
 
 ### 19.5. Стоимость
 
@@ -1479,3 +1530,41 @@ SSE.
 Работает частично: momentum + cross_eco + flag + adoption. Jobs/patents/
 funding/search_interest показывают «не настроен», но gap_score считается (с
 меньшим числом компонент, честно помеченным — «учтено 3 из 7 компонент»).
+
+### 19.7. Реализовано в P5f-1 и осознанные упрощения
+
+**Что сделано (первая итерация):** `cli/niche.py` (kind `niche.find`),
+таблицы `app/jobs.py`, `POST /api/niche/find`, `GET /api/niche/result/{job_id}`,
+экран `/niche` (`web/views/niche.html`, `web/static/niche.js`), пункт навигации
+«Поиск ниши», 11-я колонка `gap_score` в `POST /api/matrix/export`, 4 шага
+прогресса (`catalog.build` → `packages.check` → `signals.collect <вид>` →
+`gap_score` → `done`). Не в этом шаге: кнопка «Собрать» в карточке, фильтры
+экрана, экспорт CSV/MD из Niche Finder — P5f-2.
+
+**Упрощения и ограничения (каждое — решение, а не недоделка):**
+
+1. **momentum в CLI = `None`.** Momentum считается по истории наблюдений
+   (`Store`), а CLI его не имеет. Компонент честно недоступен: он не входит ни
+   в сумму, ни в знаменатель, поэтому score Niche Finder ниже матричного у
+   пакетов с историей. P5f-2: подключить Store к CLI либо считать momentum по
+   result.json прошлого прогона.
+2. **cross_ecosystem не собирается.** Его нет в формуле §18.3, а без `Store`
+   считать его не из чего; сигнал остаётся экранным (карточка, матрица).
+3. **Проверяются первые 50 строк каталога по звёздам** (`CHECK_LIMIT`).
+   Живой прогон по фразе «test impact analysis»: 130 найденных строк, проверка
+   всех упирается в лимиты PyPI/npm/pypistats — adoption не приходит ни у одной
+   строки, все score равны 100 и ранжирования нет. `stats.found` считает весь
+   каталог, `stats.checked` — сколько реально проверено. P5f-2: батчи с паузой
+   или проверка по требованию.
+4. **Имена для реестров — имя репозитория, не `owner/repo`.** У GitHub-строки
+   id — полный путь, и запрос `pypi/<owner>/<repo>` всегда 404 (adoption
+   терялся целиком). `cli.niche._registry_name` берёт последний сегмент;
+   scoped-имена npm (`@scope/pkg`) не трогает. Отображение в результате —
+   по-прежнему id каталога.
+5. **Сортировка при равном score:** измеренная ниша выше неизмеренной
+   (`adoption_week is None`), затем имя. Без этого верх списка занимали строки
+   со score 100 по единственной компоненте «MCP нет» и реальные данные уезжали
+   вниз.
+6. **`niche.find` не пишет в observations** (не входит в `_POST_PROCESS_KINDS`):
+   он читает существующие сигналы и складывает результат в `result.json`
+   задачи. Запись наблюдений — дело `packages.check`/`signals.collect`.

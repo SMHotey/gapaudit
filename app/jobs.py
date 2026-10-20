@@ -739,6 +739,7 @@ _KIND_TO_MODULE: dict[str, str] = {
     "github.verify": "cli.verify",
     "monitor.diff": "cli.check_predecessors",
     "signals.collect": "cli.signals",
+    "niche.find": "cli.niche",
 }
 
 #: Whitelist ключей ``params`` на каждый kind — ЕДИНСТВЕННЫЙ источник правды о
@@ -751,6 +752,9 @@ KIND_PARAM_KEYS: dict[str, frozenset[str]] = {
     "github.verify": frozenset({"targets", "keyword"}),
     "monitor.diff": frozenset({"diff_from"}),
     "signals.collect": frozenset({"package", "kinds"}),
+    "niche.find": frozenset(
+        {"query", "min_stars", "pages", "sources", "signal_kinds", "limit"}
+    ),
 }
 
 #: Обязательные ключи: без них задача бессмысленна. Проверяется и в API (400),
@@ -765,6 +769,7 @@ KIND_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "github.verify": frozenset({"targets"}),
     "monitor.diff": frozenset({"diff_from"}),
     "signals.collect": frozenset({"package"}),
+    "niche.find": frozenset({"query"}),
 }
 
 #: Типы значений ``params`` — для той же валидации в API (неизвестный ключ
@@ -782,6 +787,14 @@ KIND_PARAM_TYPES: dict[str, dict[str, type | tuple[type, ...]]] = {
     "github.verify": {"targets": list, "keyword": str},
     "monitor.diff": {"diff_from": str},
     "signals.collect": {"package": str, "kinds": list},
+    "niche.find": {
+        "query": str,
+        "min_stars": int,
+        "pages": int,
+        "sources": list,
+        "signal_kinds": list,
+        "limit": int,
+    },
 }
 
 #: Источники каталога по умолчанию: отсутствие в ``params["sources"]`` даёт
@@ -833,6 +846,14 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
       Подкоманда ``collect`` идёт ПЕРЕД флагами — так устроен argparse
       ``cli.signals``. Белый список видов здесь не дублируется: его проверяет
       ``POST /api/signals/collect`` по ``SIGNAL_COLLECT_KINDS`` (gotcha 54).
+    * ``niche.find``: ``query`` (обязателен), ``min_stars``, ``pages``,
+      ``sources`` (список), ``signal_kinds`` (список видов) и ``limit``.
+      Подкоманда ``run`` — первая позиционная (gotcha 62): ``cli.niche``
+      разбирает её как необязательный позиционный аргумент, поэтому порядок
+      флагов задачи вокруг неё значения не имеет. Значения ``sources`` и
+      ``signal_kinds`` проверяет ``POST /api/niche/find`` (свои наборы, как у
+      ``signals.collect``): здесь они просто уезжают в argv, а argparse
+      подпроцесса добивает недопустимое значение кодом 2.
 
     Ошибки — только ``ValueError`` и только до ``subprocess``: задача,
     которая заведомо не запустится, не должна создавать процесс. Обязательные
@@ -895,6 +916,25 @@ def _params_to_argv(kind: str, params: dict) -> list[str]:
         # местом правды рядом с SIGNAL_KINDS и SIGNAL_COLLECT_KINDS).
         for signal_kind in _str_list(params.get("kinds")):
             argv += ["--kind", signal_kind]
+        return argv
+
+    if kind == "niche.find":
+        # Подкоманда run — первая позиционная; cli.niche разбирает её как
+        # необязательный позиционный аргумент, поэтому флаги задачи
+        # (--job-json, --json-out) спокойно стоят перед ней.
+        argv = ["run", "--query", str(params["query"])]
+        if "min_stars" in params:
+            argv += ["--min-stars", str(int(params["min_stars"]))]
+        if "pages" in params:
+            argv += ["--pages", str(int(params["pages"]))]
+        sources = _str_list(params.get("sources"))
+        if sources:
+            argv += ["--sources", *sources]
+        signal_kinds = _str_list(params.get("signal_kinds"))
+        if signal_kinds:
+            argv += ["--signal-kinds", *signal_kinds]
+        if "limit" in params:
+            argv += ["--limit", str(int(params["limit"]))]
         return argv
 
     # monitor.diff — единственный оставшийся kind: сравнение с прошлым прогоном.

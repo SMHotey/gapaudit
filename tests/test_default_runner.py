@@ -174,6 +174,80 @@ def test_signals_collect_missing_package_raises() -> None:
         _params_to_argv("signals.collect", {"kinds": ["jobs"]})
 
 
+# --- niche.find (шаг P5f-1) ---------------------------------------------------
+
+
+def test_niche_find_minimal_argv() -> None:
+    """Минимум: подкоманда run и обязательная фраза (остальное — дефолты CLI)."""
+    assert _params_to_argv("niche.find", {"query": "vector database"}) == [
+        "run", "--query", "vector database",
+    ]
+
+
+def test_niche_find_flags_follow_query() -> None:
+    """Флаги идут после --query: пары «флаг, значение» — как ждёт argparse."""
+    assert _params_to_argv(
+        "niche.find", {"query": "x", "min_stars": 20, "signal_kinds": ["jobs"]}
+    ) == ["run", "--query", "x", "--min-stars", "20", "--signal-kinds", "jobs"]
+
+    assert _params_to_argv(
+        "niche.find",
+        {
+            "query": "x",
+            "pages": 1,
+            "sources": ["github", "npm"],
+            "signal_kinds": ["jobs", "patents"],
+            "limit": 10,
+        },
+    ) == [
+        "run", "--query", "x", "--pages", "1",
+        "--sources", "github", "npm",
+        "--signal-kinds", "jobs", "patents",
+        "--limit", "10",
+    ]
+
+
+def test_niche_find_missing_query_raises() -> None:
+    """query обязателен — та же missing_required, что в API (400 там, ValueError здесь)."""
+    assert missing_required("niche.find", {}) == ["query"]
+    with pytest.raises(ValueError, match="query"):
+        _params_to_argv("niche.find", {"min_stars": 20})
+
+
+def test_default_runner_niche_find_argv_has_run_as_first_positional(
+    popen: PopenRecorder, tmp_path: Path
+) -> None:
+    """Регрессия gotcha 62 для niche.find: подкоманда run — первая ПОЗИЦИОННАЯ.
+
+    ``_default_runner`` ставит флаги задачи перед params-argv, поэтому
+    проверять ``argv[3]`` нельзя: важно, что первый позиционный токен —
+    ``run``, а ``--query`` со своим значением идёт следом. Именно это держит
+    ``cli.niche`` (подкоманда — необязательный позиционный аргумент).
+    """
+    _default_runner(
+        make_job(
+            "niche.find",
+            {
+                "query": "test impact analysis",
+                "min_stars": 20,
+                "pages": 1,
+                "signal_kinds": ["jobs"],
+            },
+        ),
+        tmp_path,
+    )
+
+    assert len(popen.calls) == 1
+    argv, kwargs = popen.calls[0]
+    assert argv[:3] == [jobs_module.sys.executable, "-m", "cli.niche"]
+    assert "--job-json" in argv
+    assert any(token.startswith("--json-out=") for token in argv)
+    positionals = [token for token in argv[3:] if not token.startswith("-")]
+    assert positionals[0] == "run"
+    assert "test impact analysis" in positionals
+    assert kwargs["cwd"] == str(jobs_module._PROJECT_ROOT)
+
+
 def test_monitor_diff_without_diff_from_raises() -> None:
     with pytest.raises(ValueError, match="diff_from"):
         _params_to_argv("monitor.diff", {})
