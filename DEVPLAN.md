@@ -265,6 +265,14 @@ P4d-3 (закрыт 2026-10-21): диспетчер CLI в `desktop.py` (`_dispa
 `niche.find`), `signals.collect` → `done`, `niche.find` → результат с
 items. P4 ЗАКРЫТ.
 
+P4d-4 (закрыт 2026-10-21): единый источник версии через
+`importlib.metadata.version("gapaudit")`, fallback `"0.0.0-dev"` для source
+без install. `/api/health` отдаёт `VERSION` из `pyproject.toml` (раньше —
+хардкод `"0.1.0"` в `app/web.py`, который пережил смену версии на 0.2.0 в
+P4d-3: `.exe` отдавал 0.1.0 при пакете 0.2.0). Тесты версии импортируют
+`VERSION` из `app.web` и сверяют его с `[project].version` (`tomllib`) —
+правка хардкода ловится гейтом. Версия 0.2.0. P4 ЗАКРЫТ.
+
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
 (Adzuna), patents (PatentsView), funding (SEC EDGAR), search_interest
@@ -931,6 +939,17 @@ Hermes не подключается к живому приложению — о
   (быстрый тёплый, cap 60). Baseline быстрого цикла до правок: 43.93 с —
   тренд +9.3% (норма, в пределах +25% под нагрузкой). Сборка `.exe` 1 м 34 с,
   `dist/gapaudit/` **37 МБ**. `compat_check` exit 0, `mypy desktop.py` чист.
+  P4 (закрыт): full ≤90, fast ≤45 (P5 caps 120/60). Факт (P4d-4): **1213
+  passed, 2 skipped за 66.48 с** (полный; +2 теста версии: эндпоинт и сверка
+  `VERSION` с `pyproject.toml`) и **1193 passed, 2 skipped, 20 deselected за
+  36.12 с** (быстрый, одиночный тёплый прогон — 61.93 с первым замером сделан
+  при занятой машине: параллельно шли `compat_check` и PyInstaller, цифра не
+  показательна). 36.12 с проходит и P4-гейт 45, и P5-гейт 60. Сборка `.exe`
+  24 с (до правки spec) и **26 с** (после `copy_metadata`), `dist/gapaudit/`
+  **37 МБ**. `compat_check` exit 0 (L1 — 124 passed), `mypy app/web.py` —
+  чист. Мутационная проверка: `VERSION` переведён на хардкод `"0.0.0"` →
+  `test_health_version_equals_package_version` красный (`'0.0.0' == '0.2.0'`),
+  восстановлено — зелёный.
 
 Коллекторы сигналов (P4/P5):
 
@@ -1001,6 +1020,23 @@ Hermes не подключается к живому приложению — о
    и «→» (`core/catalog.py:350`) падал с `UnicodeEncodeError` — в source этого
    нет, поэтому баг виден только в frozen. `hiddenimports` в целом —
    `collect_submodules("cli")` + `collect_submodules("core.collectors")`.
+
+   P4d-4 (закрыт 2026-10-21): версия — единый источник.
+   `importlib.metadata.version("gapaudit")` из `pyproject.toml`
+   (`app/web.py`); в source без `pip install -e .` — fallback
+   `"0.0.0-dev"`. **В .exe PyInstaller метаданные сам НЕ кладёт**: в
+   `_internal` есть dist-info зависимостей (click, pydantic, markupsafe), но
+   `gapaudit-0.2.0.dist-info` отсутствует, `version("gapaudit")` падает в
+   `PackageNotFoundError` — первая сборка P4d-4 отдавала `/api/health`
+   `"0.0.0-dev"`. Фикс — `*copy_metadata("gapaudit")` в `datas`
+   `gapaudit.spec` (согласовано с пользователем в этом шаге: spec входил в
+   список нетронутых файлов). Пересборка: `rm -rf dist/gapaudit
+   build/gapaudit` → `uv run pyinstaller gapaudit.spec` — exit 0, **26 с**,
+   `dist/gapaudit/` **37 МБ**, в `_internal` появился
+   `gapaudit-0.2.0.dist-info`. Проверка «чистой машины» (копия в отдельный
+   каталог, `gapaudit.exe --browser --port 8828 --demo` с
+   `GAPAUDIT_NO_BROWSER=1`): `/api/health` 200 (`db_ok: true`,
+   **`version 0.2.0`**).
 
 4. Зависимость на WebView2 Runtime: на этой машине есть, на чужой может не быть — либо требование
    в README, либо установщик Evergreen Runtime как шаг установки.
@@ -1081,6 +1117,20 @@ P4d-3 (закрыт 2026-10-21) — фикс frozen-сборки, **P4 закр�
 `done`. 7 тестов `_dispatch_cli` (`tests/test_desktop_dispatch.py`), мутационная
 проверка: снята проверка `frozen` — тест source-режима покраснел, восстановлено
 — зелёный.
+
+P4d-4 (закрыт 2026-10-21) — единый источник версии, **P4 закрыт**: `VERSION`
+через `importlib.metadata.version("gapaudit")` в `app/web.py` (fallback
+`"0.0.0-dev"` для source без `pip install -e .`), `/api/health` отдаёт
+`VERSION` (был хардкод `"0.1.0"`, переживший переход на 0.2.0). Тесты
+версии импортируют `VERSION` и сверяют его с `[project].version` через
+`tomllib`. 1213 passed / 2 skipped (66.48 с), быстрый 36.12 с;
+`compat_check` exit 0; `mypy app/web.py` чист. `.exe` пересобран —
+`/api/health` 200, `version 0.2.0`; метаданные пакета в сборку добавлены
+`copy_metadata("gapaudit")` в `gapaudit.spec` — **согласованное отклонение**
+(spec входил в список нетронутых файлов шага, разрешение получено явно).
+Мутационная проверка: `VERSION` на хардкод `"0.0.0"` →
+`test_health_version_equals_package_version` красный, восстановлено —
+зелёный.
 
 ## 14. Риски и что с ними делать
 
@@ -1585,6 +1635,7 @@ degradation на уровне задачи, §18.1). UI после «Задач�
 | P5f-2 | Niche Finder: momentum из Store, checked/found, фильтры, экспорт CSV/MD, «Собрать» — ЗАКРЫТ 2026-10-21 | 3–4 дня |
 | P4d-2 | Пересборка `.exe` (промежуточно) — НЕ ЗАКРЫТ (P4d-3) 2026-10-21 | 1 час |
 | P4d-3 | Фикс frozen-сборки (диспетчер CLI, utf-8, hiddenimports, 0.2.0) — ЗАКРЫТ 2026-10-21, P4 закрыт | 1 час |
+| P4d-4 | Единый источник версии (`importlib.metadata`, `/api/health` = 0.2.0) — ЗАКРЫТ 2026-10-21, P4 закрыт | 30 мин |
 | P6 | MCP-сервер, расписание, уведомления — **ОТЛОЖЕН в долгосрочный план (2026-10-21)** | 2–3 дня |
 
 ### 18.5. Безопасность ключей

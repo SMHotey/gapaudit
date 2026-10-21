@@ -20,7 +20,7 @@ onefile: предсказуемая распаковка и загрузка Web
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 #: Каталог проекта: spec лежит в корне, поэтому SPECPATH — он же.
 ROOT = Path(SPECPATH)
@@ -30,6 +30,10 @@ datas = [
     (str(ROOT / "web" / "static"), "web/static"),
     (str(ROOT / "docs" / "API-KEYS.md"), "docs"),
     (str(ROOT / "tests" / "fixtures"), "tests/fixtures"),
+    # Метаданные самого пакета: без них importlib.metadata.version("gapaudit")
+    # в frozen падает в PackageNotFoundError, и /api/health отдаёт "0.0.0-dev"
+    # (P4d-4: единственный источник версии — импортируемый metadata).
+    *copy_metadata("gapaudit"),
 ]
 
 hiddenimports = [

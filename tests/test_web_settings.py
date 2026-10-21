@@ -103,7 +103,7 @@ def test_readonly_db_path_points_to_sqlite_file(client: TestClient) -> None:
 
 def test_readonly_version_matches_app_version(client: TestClient) -> None:
     """Версия — одна на всё приложение (не литерал в шаблоне)."""
-    assert get_settings(client)["readonly"]["version"] == VERSION == "0.1.0"
+    assert get_settings(client)["readonly"]["version"] == VERSION
 
 
 # --- PUT: успешный путь ------------------------------------------------------

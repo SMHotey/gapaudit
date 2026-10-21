@@ -522,6 +522,25 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     Пример: P4d-2, `.exe` не выполнял ни одной задачи, только экраны.
     Симптом в UI: задача 202 → через 3 с `failed`, `error="exit code 2"`,
     лог пустой.
+76. Frozen-сборка (PyInstaller onedir, console=False):
+    stdout/stderr дочернего процесса — cp1251 strict, а не
+    utf-8. Прогресс с юникодом (→ в core/catalog.py:350,
+    ←/→ в других) падает с 'charmap' codec can't encode.
+    Фикс — в desktop.py::_dispatch_cli: переоткрыть
+    sys.stdout/sys.stderr в utf-8 (io.TextIOWrapper с
+    encoding="utf-8", errors="replace") до вызова
+    mod.main(). Родительский Popen читает utf-8 — кодировки
+    согласованы. Пример: P4d-3, niche.find падал на «→»,
+    signals.collect проходил (ASCII). Без этого половина
+    задач в .exe падает.
+77. Единый источник версии (P4d-4): `app/web.py` берёт версию через
+    `importlib.metadata.version("gapaudit")`, fallback `"0.0.0-dev"` для
+    source без `pip install -e .`. Во frozen-сборке PyInstaller **сам не
+    кладёт dist-info собственного пакета**: без `*copy_metadata("gapaudit")`
+    в `datas` `gapaudit.spec` `/api/health` отдаёт `"0.0.0-dev"` при пакете
+    0.2.0 (dist-info зависимостей при этом в `_internal` есть — иллюзия, что
+    метаданные «попадают сами»). Версию менять только в `pyproject.toml`;
+    source подхватывает её сразу, `.exe` — после пересборки.
 
 ---
 

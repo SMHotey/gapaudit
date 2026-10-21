@@ -15,6 +15,7 @@ import socket
 
 from fastapi.testclient import TestClient
 
+from app.web import VERSION
 from desktop import free_port
 
 
@@ -24,7 +25,7 @@ def test_health_is_open_and_reports_version(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["version"] == "0.1.0"
+    assert payload["version"] == VERSION
 
 
 def test_foreign_host_and_origin_are_forbidden(client: TestClient) -> None:

@@ -146,7 +146,15 @@ from core.signals import (
     default_weights_from_settings,
 )
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("gapaudit")
+except PackageNotFoundError:
+    # source-режим без `pip install -e .`: версия есть в pyproject.toml,
+    # но не установлена в site-packages — честный маркер «не установлено»,
+    # а не устаревший хардкод.
+    __version__ = "0.0.0-dev"
 
 #: Логгер этого модуля: в ``lifespan`` он сообщает, какие задачи восстановлены
 #: после падения приложения (шаг 3c). ``print`` в ``web.py`` запрещён —
