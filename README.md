@@ -4,7 +4,7 @@
 `ecosystem-gap-audit`: очередь длинных задач с прогрессом, накопленная история
 замеров, сравнение ниш, каталоги, мониторинг изменений.
 
-**Текущее состояние — P4 закрыт (шаг P4d-2, 2026-10-21), P5 закрыт.** Работают все
+**Текущее состояние — версия 0.2.0; P4 закрыт (шаг P4d-3, 2026-10-21), P5 закрыт.** Работают все
 экраны (Задачи, Сейчас решать, Пакеты, Мониторинг, Каталоги, Сравнение, Поиск
 ниши, Настройки), очередь задач с прогрессом через SSE, история замеров в
 SQLite, вердикты, каталоги, мониторинг, экспорт (CSV/MD/JSON), шесть сигналов
@@ -44,11 +44,16 @@ Gap Score и Niche Finder. Собран `.exe` (PyInstaller onedir) с этим�
 API-ключи). Инструкции — [docs/API-KEYS.md](docs/API-KEYS.md). Без ключей
 работает всё, кроме сигналов.
 
-## Что нового (P4d-2, 2026-10-21)
+## Что нового (P4d-3, 2026-10-21)
 
-Релиз собирается как версия 0.2.0; номер пакета в `pyproject.toml` пока
-`0.1.0` — в шаге P4d-2 код и конфиг не менялись (только пересборка `.exe`),
-поднять номер — одна строка в следующем шаге.
+Релиз — версия 0.2.0 (все шесть сигналов + Gap Score + Niche Finder +
+рабочая упаковка).
+
+- **Задачи в `.exe` работают (P4d-3):** диспетчер CLI в `desktop.py`
+  перехватывает `-m` в frozen-сборке (у `gapaudit.exe` нет флага `-m`), плюс
+  utf-8 для stdout/stderr подпроцесса. `packages.check`, `catalog.build`,
+  `registry.scan`, `github.verify`, `monitor.diff`, `signals.collect`,
+  `niche.find` — выполняются из упакованного приложения.
 
 - Шесть сигналов ниш: momentum, cross-ecosystem, jobs (Adzuna), patents
   (PatentsView), funding (SEC EDGAR), search interest (Yandex Wordstat /
@@ -128,16 +133,12 @@ Python и `uv` для запуска `.exe` не нужны.
 Проверка собранного пакета: `gapaudit.exe --browser --port 8790` — сервер
 отвечает на `http://127.0.0.1:8790/api/health`, окно не открывается.
 
-**Известное ограничение собранного `.exe` (проверено в P4d-2):** задачи,
-которые выполняются подпроцессом (`packages.check`, `catalog.build`,
-`registry.scan`, `github.verify`, `monitor.diff`, `signals.collect`,
-`niche.find`), в упакованном приложении завершаются `failed` с `exit code 2`.
-Причина: `app/jobs.py` запускает `sys.executable -m cli.<модуль>`, а внутри
-`.exe` `sys.executable` — это сам `gapaudit.exe` (у него нет флага `-m`).
-Экраны, матрица, история, настройки, API-ключи и demo-режим работают; задачи
-и Niche Finder — пока только из исходников (`uv run python desktop.py`).
-Лечится диспетчером CLI в `desktop.py` для frozen-сборки (перехват `-m` до
-`argparse`), это отдельный шаг с пересборкой. Записано в `DEVPLAN.md` §12.
+**Собранный `.exe` работает полностью (проверено в P4d-3 живым прогоном из
+отдельного каталога):** все экраны и все задачи, включая `signals.collect`
+и `niche.find`. Диспетчер CLI в `desktop.py` перехватывает `-m` в
+frozen-сборке (у `gapaudit.exe` нет такого флага) и вызывает `main()`
+нужного модуля; stdout/stderr подпроцесса переоткрыты в utf-8. Записано в
+`DEVPLAN.md` §12, `AGENTS.md` gotcha 75.
 
 ### Demo-режим
 
@@ -257,7 +258,7 @@ gapaudit.spec         сборка PyInstaller onedir (dist/gapaudit/)
 | Этап | Состояние |
 |---|---|
 | P0–P3 | закрыты (каркас, `core`, SQLite, очередь + SSE, экраны, экспорт) |
-| P4 | **закрыт (P4d-2, 2026-10-21)**: P4a API Keys Store, P4b momentum, P4c cross-ecosystem, P4d упаковка, sync со скиллом, demo-режим, CI, README; P4d-2 — пересборка `.exe` со всеми фичами P5f-2 и проверка на чистой машине |
+| P4 | **закрыт (P4d-3, 2026-10-21)**: P4a API Keys Store, P4b momentum, P4c cross-ecosystem, P4d упаковка, sync со скиллом, demo-режим, CI, README; P4d-2 — пересборка `.exe` со всеми фичами P5f-2; **P4d-3 — рабочие задачи в `.exe` (диспетчер CLI, utf-8, hiddenimports), версия 0.2.0** |
 | P5 | **закрыт (2026-10-21)**: P5a jobs, P5b patents, P5c funding, P5d search_interest, P5e Gap Score, P5f-1 Niche Finder, **P5f-2 — фильтры/экспорт Niche Finder, кнопка «Собрать», momentum в CLI** |
 | P6 | **отложен в долгосрочный план (2026-10-21)**: MCP-сервер, расписание, уведомления, батчи с паузами, UX-полировка `signals.collect`. Причина — сначала прожить месяц с упакованным приложением |
 

@@ -512,6 +512,16 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     показывает «Ошибка: …» внутри блока сигнала. В P6 — различать «собрано»
     и «собрано с ошибкой» в UI (перечитывать карточку после `done`).
     Семантику задачи не менять — только UX.
+75. Frozen-сборка (PyInstaller onedir): `sys.executable` = сам `.exe`, у которого
+    нет `-m`. `app/jobs.py::_default_runner` собирает argv как
+    `[sys.executable, "-m", module, ...]`, и в frozen это падает с `exit code 2`.
+    НЕ менять `_default_runner` (в source он правильный). Фикс — в
+    `desktop.py::_dispatch_cli`: если frozen и `argv[:1] == ["-m"]`, импортировать
+    модуль и вызвать `main()`. Плюс в `gapaudit.spec` `hiddenimports` для всех
+    `cli.*` (иначе `importlib.import_module` не найдёт модуль в сборке).
+    Пример: P4d-2, `.exe` не выполнял ни одной задачи, только экраны.
+    Симптом в UI: задача 202 → через 3 с `failed`, `error="exit code 2"`,
+    лог пустой.
 
 ---
 

@@ -45,6 +45,11 @@ hiddenimports = [
     # Коллекторы сигналов: перечисляются поимённо, иначе PyInstaller их не увидит
     # (AGENTS gotcha 59 — та же ловушка, что и в pyproject).
     *collect_submodules("core.collectors"),
+    # Все cli-модули: в frozen их импортирует desktop._dispatch_cli через
+    # importlib.import_module (gotcha 75), а PyInstaller не видит импорты
+    # за importlib — без этого списка модуль не попадёт в сборку и задача
+    # упадёт с «не удалось импортировать».
+    *collect_submodules("cli"),
 ]
 
 a = Analysis(

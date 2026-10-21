@@ -375,8 +375,69 @@ def seed_demo(application: Any) -> dict[str, int]:
     return seed_demo_store(store)
 
 
+def _dispatch_cli(argv: list[str]) -> int | None:
+    """В frozen-сборке ``sys.executable`` = ``gapaudit.exe``. Если argv
+    начинается с ``-m <module>``, импортировать модуль и вызвать ``main()``.
+    Возвращает exit code или None (не CLI-режим).
+
+    В source (не frozen) — возвращает None сразу: обычный
+    ``python -m cli.*`` работает без этого диспетчера.
+
+    Используется ``app/jobs.py::_default_runner``, который в frozen-сборке
+    собирает ``[sys.executable, "-m", module, ...]``, то есть тот же argv,
+    что и в source. Диспетчер перехватывает ``-m`` до argparse
+    (AGENTS gotcha 75).
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    if len(argv) < 2 or argv[0] != "-m":
+        return None
+    # stdout/stderr у windowed-сборки без консоли — кодировка локали (cp1251)
+    # в strict-режиме, а JSON-протокол и прогресс CLI содержат кириллицу и «→»
+    # (core/catalog.py:350): без utf-8 первая же не-ASCII строка даёт
+    # UnicodeEncodeError (пойман в P4d-3: niche.find падал на catalog.build).
+    # Родитель (app/jobs.py::Popen) читает оба потока как utf-8 — кодировки
+    # согласованы. В source dispatch не вызывается, потоки не трогаются.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 - поток уже закрыт/не TextIO
+                pass
+    module_name = argv[1]
+    rest = argv[2:]
+    try:
+        import importlib
+
+        mod = importlib.import_module(module_name)
+    except Exception as e:
+        print(
+            f"[gapaudit] не удалось импортировать {module_name}: {e}",
+            file=sys.stderr,
+        )
+        return 2
+    if not hasattr(mod, "main"):
+        print(f"[gapaudit] {module_name} не имеет main()", file=sys.stderr)
+        return 2
+    try:
+        return mod.main(rest)
+    except SystemExit as e:
+        return int(e.code) if e.code is not None else 0
+    except Exception as e:
+        print(f"[gapaudit] ошибка в {module_name}: {e}", file=sys.stderr)
+        return 2
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    # Frozen-сборка: задачи шлют argv как [sys.executable, "-m", module, ...],
+    # а sys.executable = сам .exe без -m (gotcha 75). Диспетчер перехватывает
+    # "-m" до argparse; в source возвращает None — путь не меняется.
+    effective = sys.argv[1:] if argv is None else argv
+    cli_exit = _dispatch_cli(effective)
+    if cli_exit is not None:
+        return cli_exit
+    args = build_parser().parse_args(effective)
 
     demo_dir: Path | None = None
     if args.demo:

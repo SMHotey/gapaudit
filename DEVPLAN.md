@@ -250,9 +250,20 @@ P6 (MCP, расписание, уведомления) — отложен в д�
 Статус P4 (на момент закрытия P5f-2): P4d-1 закрыт, P4d-2 (пересборка `.exe`
 после P5f-2) — следующий шаг.
 
-P4d-2 (закрыт 2026-10-21): пересборка `.exe` после P5f-2, проверка на чистой
-машине (health, matrix, niche, signals.collect, niche.export), README
-обновлён. P4 закрыт. Код не менялся — только упаковка из HEAD `24d7e69`.
+P4d-2 (2026-10-21, промежуточно): `.exe` пересобран после P5f-2 (37 МБ), но
+НЕ выполнял задачи: в frozen-сборке `sys.executable` = `gapaudit.exe`, у
+которого нет `-m`, все задачи падали с `exit code 2`. Экраны, матрица,
+история, настройки, ключи, demo-режим — работали.
+
+P4d-3 (закрыт 2026-10-21): диспетчер CLI в `desktop.py` (`_dispatch_cli`
+перехватывает `-m` в frozen до argparse и вызывает `main()` модуля;
+`app/jobs.py::_default_runner` не менялся — в source он правильный),
+`hiddenimports` для всех `cli.*` в `gapaudit.spec` (`collect_submodules("cli")`),
+переоткрытие stdout/stderr в utf-8 (окно-сборка без консоли даёт cp1251 и
+`UnicodeEncodeError` на «→» в прогрессе каталога), версия пакета 0.2.0.
+`.exe` выполняет все задачи: `packages.check`, `catalog.build` (внутри
+`niche.find`), `signals.collect` → `done`, `niche.find` → результат с
+items. P4 ЗАКРЫТ.
 
 Статус P5 (план): сигналы ниш. Уровень 1 (без ключей): momentum,
 cross_ecosystem — работают на существующих данных. Уровень 2 (ключи): jobs
@@ -914,6 +925,12 @@ Hermes не подключается к живому приложению — о
   (полный, cap 120) и **1184 passed, 2 skipped, 20 deselected за 35.08 с**
   (быстрый, cap 60). 1206 собранных тестов. Код не менялся, поэтому цифры
   P5f-2 и P4d-2 сравнимы напрямую — тренда нет.
+  P4d-3 (закрыт 2026-10-21) — фикс frozen (desktop.py + spec + pyproject):
+  **1211 passed, 2 skipped за 66.66 с** (полный, cap 120; +7 тестов
+  `_dispatch_cli`) и **1191 passed, 2 skipped, 20 deselected за 48.03 с**
+  (быстрый тёплый, cap 60). Baseline быстрого цикла до правок: 43.93 с —
+  тренд +9.3% (норма, в пределах +25% под нагрузкой). Сборка `.exe` 1 м 34 с,
+  `dist/gapaudit/` **37 МБ**. `compat_check` exit 0, `mypy desktop.py` чист.
 
 Коллекторы сигналов (P4/P5):
 
@@ -974,9 +991,16 @@ Hermes не подключается к живому приложению — о
    `packages.check`, `catalog.build`, `registry.scan`, `github.verify`,
    `monitor.diff`, `signals.collect`, `niche.find` (всё, что идёт
    подпроцессом). Экраны, матрица, история, настройки, API-ключи и demo-режим
-   работают. Фикс — диспетчер CLI в `desktop.main()` до `argparse` для
-   frozen-сборки (перехват `-m` и вызов `main()` модуля) + тест + пересборка;
-   отдельный шаг (P4d-3/P6), в P4d-2 не делался — правка кода была запрещена.
+   работают. **Исправлено в P4d-3:** `desktop._dispatch_cli` в frozen
+   перехватывает argv, начинающийся с `-m`, и вызывает `main()` модуля;
+   `_default_runner` не менялся — в source он правильный («argv правильный,
+   фикс в desktop» — gotcha 75). В `gapaudit.spec` добавлен
+   `*collect_submodules("cli")` (PyInstaller не видит импорты за
+   `importlib`). Плюс переоткрытие stdout/stderr в utf-8: окно-сборка без
+   консоли даёт cp1251 в strict-режиме, и JSON-протокол/прогресс с кириллицей
+   и «→» (`core/catalog.py:350`) падал с `UnicodeEncodeError` — в source этого
+   нет, поэтому баг виден только в frozen. `hiddenimports` в целом —
+   `collect_submodules("cli")` + `collect_submodules("core.collectors")`.
 
 4. Зависимость на WebView2 Runtime: на этой машине есть, на чужой может не быть — либо требование
    в README, либо установщик Evergreen Runtime как шаг установки.
@@ -1039,12 +1063,24 @@ P5f-2 (закрыт 2026-10-21) — Niche Finder до конца: momentum из 
 карточке для несобранных сигналов, 503 для `/api/niche/find` в demo-режиме,
 job `build` в CI (windows-latest, PyInstaller + smoke-тест по `/api/health`).
 
-P4d-2 (закрыт 2026-10-21) — пересборка `.exe`, **P4 закрыт**: сборка из HEAD
-`24d7e69` (внутри — все фичи P5f-2), проверка в отдельном каталоге
+P4d-2 (промежуточно 2026-10-21) — пересборка `.exe`, **P4 не закрыт**: сборка
+из HEAD `24d7e69` (внутри — все фичи P5f-2), проверка в отдельном каталоге
 (`/api/health` c `db_ok: true`, `/api/matrix` — 6 точек с `gap_score`, `/niche`
 200, `POST /api/signals/collect` → 202, `POST /api/niche/find` → 503 в демо,
-`POST /api/niche/export` с чужим `job_id` → 404), README обновлён («P4 закрыт»,
-«P5 закрыт», что нового). Код не менялся — только упаковка.
+`POST /api/niche/export` с чужим `job_id` → 404), README обновлён. Код не
+менялся — только упаковка. **Но задачи в `.exe` падают (`exit code 2`):
+`sys.executable` в frozen = сам `gapaudit.exe` без `-m` (§12). Фикс — P4d-3.**
+
+P4d-3 (закрыт 2026-10-21) — фикс frozen-сборки, **P4 закрыт**: диспетчер
+`desktop._dispatch_cli` (перехват `-m` в frozen), `hiddenimports` для `cli.*`
+в `gapaudit.spec`, utf-8 для stdout/stderr подпроцесса, версия 0.2.0.
+Проверено живым прогоном `.exe` из отдельного каталога: `/api/health` 200
+(`db_ok: true`), `POST /api/signals/collect` → 202 → `done` (не `exit code 2`),
+`POST /api/niche/find` → 202 → `GET /api/niche/result/{id}` 200 с 9 items
+(gh и PyPI — реальные ответы), `POST /api/jobs` `packages.check` → 202 →
+`done`. 7 тестов `_dispatch_cli` (`tests/test_desktop_dispatch.py`), мутационная
+проверка: снята проверка `frozen` — тест source-режима покраснел, восстановлено
+— зелёный.
 
 ## 14. Риски и что с ними делать
 
@@ -1547,7 +1583,8 @@ degradation на уровне задачи, §18.1). UI после «Задач�
 | P5f-1 | Niche Finder, первая итерация (конвейер + эндпоинты + экран) — ЗАКРЫТ 2026-10-20 | 3–4 дня |
 | P4d-1 | Упаковка (промежуточно): onedir, sync, demo, CI — ЗАКРЫТ 2026-10-21 | 1 день |
 | P5f-2 | Niche Finder: momentum из Store, checked/found, фильтры, экспорт CSV/MD, «Собрать» — ЗАКРЫТ 2026-10-21 | 3–4 дня |
-| P4d-2 | Пересборка `.exe` после P5f-2, закрытие P4 — ЗАКРЫТ 2026-10-21 | 1 час |
+| P4d-2 | Пересборка `.exe` (промежуточно) — НЕ ЗАКРЫТ (P4d-3) 2026-10-21 | 1 час |
+| P4d-3 | Фикс frozen-сборки (диспетчер CLI, utf-8, hiddenimports, 0.2.0) — ЗАКРЫТ 2026-10-21, P4 закрыт | 1 час |
 | P6 | MCP-сервер, расписание, уведомления — **ОТЛОЖЕН в долгосрочный план (2026-10-21)** | 2–3 дня |
 
 ### 18.5. Безопасность ключей
