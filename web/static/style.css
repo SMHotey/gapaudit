@@ -348,6 +348,8 @@ a:hover { color: var(--accent-hover); }
 .card-events li:last-child { border-bottom: none; }
 
 .card-actions { display: flex; gap: 8px; margin-top: 12px; }
+/* P5f-2: «Собрать» под сообщением «Ещё не собирали» — не прилипает к тексту. */
+.card-collect { margin-top: 6px; }
 
 /* --- экран «Настройки» (шаг 2c) ------------------------------------------- */
 
@@ -763,3 +765,8 @@ a:hover { color: var(--accent-hover); }
 .niche-progress { margin: 12px 0; }
 .niche-progress progress { width: 100%; max-width: 400px; }
 .niche-table td.gap-cell { font-weight: 600; color: var(--accent); }
+/* P5f-2: «проверено N из M» и фильтры результата — та же плотность, что у
+   прочих подписей экрана; поля фильтров не растягиваются на всю ширину. */
+.niche-stats { margin: 8px 0; font-size: 13px; }
+.niche-filters { display: flex; gap: 16px; margin: 8px 0; font-size: 13px; }
+.niche-filters label { display: flex; align-items: center; gap: 4px; }

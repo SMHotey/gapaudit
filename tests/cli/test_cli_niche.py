@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import pathlib
 from typing import Any
 
@@ -534,3 +535,140 @@ def test_github_ids_are_checked_by_repo_name(
     items = json.loads(out_path.read_text(encoding="utf-8"))["items"]
     assert [item["name"] for item in items] == ["@scope/pkg", "pytest-dev/pytest"]
     assert all(item["adoption_week"] == 5000 for item in items)
+
+
+# --- momentum из Store и прозрачность имён (P5f-2) -----------------------------
+
+
+def seed_history(rows: dict[str, tuple[int, int]]) -> pathlib.Path:
+    """Положить в ``<data_dir>/gapaudit.db`` два замера на имя: давний и сейчас.
+
+    ``rows``: имя -> (старый adoption_week, текущий). Старый замер пишется
+    25 дней назад, а не 30: окно momentum — ``[now-30д, now]``, и замер ровно
+    на границе выпадает из него (разница в доли секунды между записью и
+    расчётом), оставляя одну точку и ``None`` вместо дельты.
+    Замеры пишутся тем же ``Store.record_observation``, что и хуки задач, —
+    значит CLI читает ровно ту форму, которую оставляет приложение.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.store import Store
+
+    data_dir = pathlib.Path(os.environ["GAPAUDIT_DATA_DIR"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    with Store(data_dir / "gapaudit.db") as store:
+        for name, (old_week, new_week) in rows.items():
+            for shift, week in ((timedelta(days=25), old_week), (timedelta(), new_week)):
+                store.record_observation(
+                    {
+                        "name": name,
+                        "src": "pypi",
+                        "ver": "1.0",
+                        "date": "2026-10-01",
+                        "age_days": 5,
+                        "summary": "demo",
+                        "home": "",
+                        "flag": False,
+                        "mcp": False,
+                        "month": week * 4,
+                        "week": week,
+                        "verdict": "ЖИВОЙ",
+                    },
+                    run_id="seed",
+                    measured_at=(now - shift).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+    return data_dir
+
+
+def run_niche(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    ids: tuple[str, ...],
+    rows: dict[str, dict],
+    extra: tuple[str, ...] = (),
+) -> dict:
+    """Прогнать конвейер с фейковым каталогом и вернуть разобранный result.json."""
+    monkeypatch.setattr(niche, "build_catalog", fake_catalog(*ids))
+    monkeypatch.setattr(niche, "check_many", fake_checks(rows))
+    out_path = tmp_path / "niche.json"
+    code = niche.main([
+        "run", "--query", "test impact analysis", "--json-out", str(out_path), *extra,
+    ])
+    assert code == 0
+    return json.loads(out_path.read_text(encoding="utf-8"))
+
+
+def test_momentum_is_read_from_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """История наблюдений даёт momentum_30d: (1500-1000)/1000 = +50%."""
+    seed_history({"alpha": (1000, 1500)})
+
+    payload = run_niche(
+        monkeypatch, tmp_path, ("alpha",), {"alpha": {"week": 1500, "flag": False}}
+    )
+    capsys.readouterr()
+
+    item = payload["items"][0]
+    assert item["momentum_30d"] == 50.0
+    assert item["components_available"] >= 3  # adoption + momentum + «MCP нет»
+
+
+def test_momentum_is_none_without_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Базы нет (CLI без приложения) — momentum ``None``, а не 0 и не падение."""
+    payload = run_niche(
+        monkeypatch, tmp_path, ("alpha",), {"alpha": {"week": 1500, "flag": False}}
+    )
+    capsys.readouterr()
+
+    assert payload["items"][0]["momentum_30d"] is None
+
+
+def test_cli_does_not_create_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Чтение Store не создаёт ``gapaudit.db``: momentum — сигнал, а не запись."""
+    run_niche(monkeypatch, tmp_path, ("alpha",), {"alpha": {"week": 1500}})
+    capsys.readouterr()
+
+    data_dir = pathlib.Path(os.environ["GAPAUDIT_DATA_DIR"])
+    assert not (data_dir / "gapaudit.db").exists()
+
+
+def test_broken_database_degrades_gracefully(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Битый файл базы — код 0, momentum ``None`` и объяснение в stderr."""
+    data_dir = pathlib.Path(os.environ["GAPAUDIT_DATA_DIR"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "gapaudit.db").write_bytes(b"not a sqlite database")
+
+    payload = run_niche(
+        monkeypatch, tmp_path, ("alpha",), {"alpha": {"week": 1500, "flag": False}}
+    )
+    captured = capsys.readouterr()
+
+    assert payload["items"][0]["momentum_30d"] is None
+    assert "momentum" in captured.err
+
+
+def test_items_report_registry_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``registry_name`` — под каким именем пакет искали в реестрах (не owner/repo)."""
+    payload = run_niche(
+        monkeypatch, tmp_path, ("acme/alpha",), {"alpha": {"week": 10, "flag": True}}
+    )
+    capsys.readouterr()
+
+    item = payload["items"][0]
+    assert item["name"] == "acme/alpha"
+    assert item["registry_name"] == "alpha"

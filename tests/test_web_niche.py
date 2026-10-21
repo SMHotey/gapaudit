@@ -315,3 +315,216 @@ def test_niche_sets_agree_between_web_and_cli() -> None:
     assert set(web_module.NICHE_SOURCES) == set(niche_cli.SOURCES)
     assert set(web_module.NICHE_SIGNAL_KINDS) == set(niche_cli.NICHE_SIGNAL_KINDS)
     assert web_module.NICHE_SIGNAL_KINDS == web_module.SIGNAL_COLLECT_KINDS
+
+
+# --- экспорт результата (P5f-2) -----------------------------------------------
+
+
+def test_niche_export_csv_returns_file_with_bom(client: TestClient) -> None:
+    """CSV: 200, ``text/csv``, BOM (иначе Excel ломает кириллицу), колонки P5f-2."""
+    job_id = "e" * 32
+    create_job(client, job_id, status="done", progress=1.0)
+    write_result(client, job_id, RESULT)
+
+    response = client.post(
+        "/api/niche/export", params={"job_id": job_id, "format": "csv"}, headers=auth()
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers["content-disposition"]
+    assert f'filename="niche-{job_id}.csv"' in response.headers["content-disposition"]
+    assert response.content.startswith(b"\xef\xbb\xbf")
+    lines = response.content.decode("utf-8-sig").splitlines()
+    assert lines[0] == (
+        "name,gap_score,momentum_30d,flag,adoption_week,verdict,registry_name"
+    )
+    assert "pytest-testmon" in lines[1]
+    assert lines[1].endswith("ЖИВО,")  # registry_name пустой: в RESULT его нет
+
+
+def test_niche_export_md_returns_markdown_table(client: TestClient) -> None:
+    """Markdown: 200, ``text/markdown``, шапка отчёта и таблица с подписями."""
+    job_id = "f" * 32
+    create_job(client, job_id, status="done", progress=1.0)
+    write_result(client, job_id, RESULT)
+
+    response = client.post(
+        "/api/niche/export", params={"job_id": job_id, "format": "md"}, headers=auth()
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    text = response.text
+    assert "# Поиск ниши: «test impact analysis»" in text
+    assert "| Пакет | Gap |" in text
+    assert "pytest-testmon" in text
+    assert "87.0" in text
+
+
+def test_niche_export_unknown_format_is_400(client: TestClient) -> None:
+    """Формат не csv/md — 400 до чтения файла (fail fast)."""
+    job_id = "a" * 32
+    create_job(client, job_id, status="done", progress=1.0)
+    write_result(client, job_id, RESULT)
+
+    response = client.post(
+        "/api/niche/export", params={"job_id": job_id, "format": "xml"}, headers=auth()
+    )
+
+    assert response.status_code == 400
+    assert "csv" in response.json()["detail"]
+
+
+def test_niche_export_unknown_job_is_404(client: TestClient) -> None:
+    """Задачи нет — 404; задача есть, файла нет — тоже 404 (не 500)."""
+    response = client.post(
+        "/api/niche/export", params={"job_id": "0" * 32, "format": "csv"}, headers=auth()
+    )
+    assert response.status_code == 404
+
+    create_job(client, "1" * 32, status="done", progress=1.0)
+    response = client.post(
+        "/api/niche/export", params={"job_id": "1" * 32, "format": "csv"}, headers=auth()
+    )
+    assert response.status_code == 404
+    assert "result.json" in response.json()["detail"]
+
+
+# --- демо-режим (P5f-2) --------------------------------------------------------
+
+
+def test_niche_find_in_demo_mode_is_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """В демо-режиме задачи не ставятся: Niche Finder требует подпроцесс.
+
+    UI получает 503 с объяснением и не начинает поллинг; в Store не появляется
+    задача, которая заведомо не запустится.
+    """
+    before = len(app_state(client).store.list_jobs(limit=1000))
+    monkeypatch.setenv("GAPAUDIT_DEMO", "1")
+
+    response = client.post(
+        "/api/niche/find", json={"query": "test impact analysis"}, headers=auth()
+    )
+
+    assert response.status_code == 503
+    assert "demo" in response.json()["detail"].lower()
+    assert len(app_state(client).store.list_jobs(limit=1000)) == before
+
+
+# --- совпадение с матрицей (P5f-2, §6.8) ---------------------------------------
+
+
+def test_niche_momentum_and_score_match_matrix(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """momentum и gap_score из Niche Finder совпадают с ``/api/matrix``.
+
+    Обе стороны берут momentum одной функцией из одной истории, а score — одним
+    нормализатором по одному набору (здесь наборы совпадают: матрица видит те же
+    два пакета, что и Niche Finder). Разные числа означали бы вторую формулу.
+    """
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    from tests.conftest import TOKEN
+
+    store = app_state(client).store
+    now = datetime.now(timezone.utc)
+    seeded = {"alpha": (1000, 1500), "beta": (5000, 5200)}
+    for name, (old_week, new_week) in seeded.items():
+        for shift, week in ((timedelta(days=25), old_week), (timedelta(), new_week)):
+            store.record_observation(
+                {
+                    "name": name,
+                    "src": "pypi",
+                    "ver": "1.0",
+                    "date": "2026-10-01",
+                    "age_days": 5,
+                    "summary": "demo",
+                    "home": "",
+                    "flag": False,
+                    "mcp": False,
+                    "month": week * 4,
+                    "week": week,
+                    "verdict": "ЖИВОЙ",
+                },
+                run_id="seed",
+                measured_at=(now - shift).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+
+    monkeypatch.setattr(
+        niche_cli,
+        "build_catalog",
+        lambda phrases, **kwargs: {
+            "items": [
+                {"id": name, "sources": ["github"], "stars": 100} for name in seeded
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        niche_cli,
+        "check_many",
+        lambda names, client_, **kwargs: [
+            {
+                "name": name,
+                "week": seeded[name][1],
+                "month": seeded[name][1] * 4,
+                "flag": False,
+                "verdict": "ЖИВОЙ",
+            }
+            for name in names
+        ],
+    )
+    out_path = tmp_path / "niche.json"
+    monkeypatch.setenv("GAPAUDIT_DATA_DIR", str(app_state(client).data_dir))
+    assert os.environ["GAPAUDIT_DATA_DIR"] == str(app_state(client).data_dir)
+    code = niche_cli.main([
+        "run", "--query", "test impact analysis", "--json-out", str(out_path)
+    ])
+    assert code == 0
+    result = json.loads(out_path.read_text(encoding="utf-8"))
+
+    matrix = client.get("/api/matrix", headers=auth(token=TOKEN)).json()
+    points = {point["name"]: point for point in matrix["points"]}
+    by_name = {item["name"]: item for item in result["items"]}
+
+    assert set(points) == set(by_name) == set(seeded)
+    for name in seeded:
+        assert by_name[name]["momentum_30d"] == points[name]["momentum_30d"], name
+        assert by_name[name]["momentum_30d"] is not None, name
+        assert by_name[name]["gap_score"] == points[name]["gap_score"], name
+
+
+def test_niche_export_md_escapes_pipe_and_skips_broken_items(client: TestClient) -> None:
+    """Markdown: ``|`` в имени не рвёт строку таблицы, не-объекты пропускаются.
+
+    Имя пакета приходит из репозитория, и одна вертикальная черта сделала бы из
+    строки две — таблица разъехалась бы, а данные «потерялись» в пустой ячейке.
+    """
+    job_id = "2" * 32
+    create_job(client, job_id, status="done", progress=1.0)
+    write_result(
+        client,
+        job_id,
+        {
+            "query": "pipe",
+            "items": [
+                {"name": "a|b", "gap_score": 12.5, "flag": True, "verdict": "ЖИВО"},
+                "не объект",
+            ],
+            "stats": {"found": 2, "checked": 2, "with_gap": 1, "signals_used": []},
+        },
+    )
+
+    response = client.post(
+        "/api/niche/export", params={"job_id": job_id, "format": "md"}, headers=auth()
+    )
+
+    assert response.status_code == 200
+    table_rows = [line for line in response.text.splitlines() if line.startswith("| a")]
+    assert len(table_rows) == 1
+    assert "a\\|b" in table_rows[0]
+    assert "не объект" not in response.text

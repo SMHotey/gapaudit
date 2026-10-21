@@ -482,6 +482,23 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     запросами к `/api/health` (порт из лога или фиксированный `--port`), а
     гасится `taskkill /PID`; PID берётся из `tasklist /FO CSV` (в git-bash
     `/FI` отдаёт заголовки в OEM-кодировке, парсить их нельзя).
+72. Demo-режим (`GAPAUDIT_DEMO=1` / `--demo`, с P4d-1):
+    - все HTTP-ответы — из `tests/fixtures`, сеть выключена; `gh` подменён
+      снимком (`tools.demo_mode.install_demo_gh`), `settings.json` и
+      `api_keys.json` не читаются;
+    - каталог данных — **временный** (создаёт `desktop.prepare_demo`, удаляет
+      при выходе), а не `:memory:`: lifespan живёт в `app/web.py`, а правка
+      `web.py` была вне списка шага. `%USERPROFILE%\GapAudit-data` не читается
+      и не пишется — проверять по `data_dir` из `/api/health`;
+    - `POST /api/niche/find` в демо отвечает **503**: Niche Finder — это
+      CLI-подпроцесс с сетью, демо его запускать не может. Экран показывает
+      причину и не начинает поллинг (P5f-2); тест — `test_niche_find_in_demo_mode_is_503`;
+    - у собранного `.exe` (`console=False`) stdout не читается вообще —
+      проверять только HTTP-ответами (`/api/health`, `/api/matrix`), процесс
+      гасить `taskkill` (это же — gotcha 71);
+    - значение переменной продублировано константой в двух слоях
+      (`cli/_common.ENV_DEMO` и `app/web.DEMO_ENV`): `app/` не импортирует
+      `cli/`. Меняя имя, менять оба (и `desktop.DEMO_ENV`).
 
 ---
 

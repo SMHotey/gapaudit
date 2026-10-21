@@ -757,3 +757,54 @@ def test_niche_styles_are_connected(client: TestClient) -> None:
     assert ".niche-form-wrap" in stylesheet
     assert ".niche-progress" in stylesheet
     assert ".niche-table td.gap-cell" in stylesheet
+
+
+def test_niche_screen_has_stats_filters_and_export(client: TestClient) -> None:
+    """P5f-2: строка «Проверено N из M», фильтры результата и кнопки экспорта.
+
+    Контейнеры обязаны существовать до первого результата (``hidden``), иначе
+    ``niche.js`` упал бы на ``null.hidden`` при отрисовке.
+    """
+    response = client.get("/niche")
+
+    assert response.status_code == 200
+    assert 'id="niche-stats"' in response.text
+    assert 'id="niche-filters"' in response.text
+    assert 'id="filter-momentum-positive"' in response.text
+    assert 'id="filter-no-flag"' in response.text
+    assert 'id="filter-gap-min"' in response.text
+    assert 'id="niche-export-csv" disabled' in response.text
+    assert 'id="niche-export-md" disabled' in response.text
+
+
+def test_niche_js_has_filters_and_export(client: TestClient) -> None:
+    """Скрипт экрана: клиентские фильтры и POST на экспорт, без innerHTML."""
+    script = client.get("/static/niche.js").text
+
+    assert "function applyFilters" in script
+    assert "/api/niche/export" in script
+    assert "renderStats" in script
+    assert "filter-momentum-positive" in script
+    # условия фильтров — часть контракта экрана: убранная строка (или перевёрнутое
+    # сравнение) означает фильтр, который молча перестал фильтровать. Гейт
+    # текстовый, как и остальные проверки статики в этом файле: JS-движка в
+    # проекте нет (Node.js запрещён), поведение проверяется живым прогоном.
+    assert "if (momentumPos && !(it.momentum_30d > 0)) return false;" in script
+    assert "if (noFlag && it.flag) return false;" in script
+    assert "if (gapMin > 0 && !(it.gap_score >= gapMin)) return false;" in script
+    # 503 демо-режима показывается текстом, а не «Ошибка: 503: ...»
+    assert "e.status === 503" in script
+    assert ".innerHTML" not in script
+
+
+def test_card_js_has_collect_button(client: TestClient) -> None:
+    """Карточка: «Собрать» ставит ``signals.collect`` по одному виду (P5f-2)."""
+    script = client.get("/static/card.js").text
+
+    assert "Собрать" in script
+    assert "kinds: [kind]" in script
+    assert "/api/signals/collect" in script
+    assert "collectButton(payload, 'jobs'" in script
+    assert "collectButton(payload, 'patents'" in script
+    assert "collectButton(payload, 'funding'" in script
+    assert "collectButton(payload, 'search_interest'" in script

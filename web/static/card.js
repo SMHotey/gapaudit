@@ -49,6 +49,35 @@
     parent.appendChild(valueEl);
   }
 
+  /* Кнопка «Собрать» (P5f-2, §0.4) для сигнала, который ещё не собирали:
+     ставит задачу signals.collect ровно по одному виду. Пока задача ставится,
+     кнопка заблокирована; ошибка возвращает её в рабочее состояние и
+     показывает причину. Имя пакета — из payload.package (оно уже в DOM через
+     textContent), в запрос уходит как есть. */
+  function collectButton(payload, kind, label) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn card-collect';
+    btn.textContent = 'Собрать';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = 'Ставим задачу…';
+      try {
+        await api('POST', '/api/signals/collect', {
+          package: (payload.package && payload.package.name) || '',
+          kinds: [kind],
+        });
+        btn.textContent = 'Задача создана';
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Собрать';
+        alert('Ошибка: ' + e.message);
+      }
+    });
+    btn.setAttribute('aria-label', 'Собрать сигнал ' + label);
+    return btn;
+  }
+
   /* Мини-график adoption по истории. История приходит новыми сверху —
      для линии разворачиваем: время слева направо. */
   function miniGraph(observations) {
@@ -370,6 +399,23 @@
       const anchor1 = card.querySelector('.card-graph');
       if (anchor1) card.insertBefore(div, anchor1);
       else card.appendChild(div);
+    } else if (payload.signals_status &&
+               payload.signals_status.jobs === 'not_collected') {
+      /* Ключ есть, но сигнал не собирали (P5f-2): «Собрать» ставит задачу. */
+      const div = document.createElement('div');
+      div.className = 'card-jobs card-jobs-empty';
+      const label = document.createElement('div');
+      label.className = 'muted';
+      label.textContent = 'Jobs · спрос на труд';
+      const msg = document.createElement('div');
+      msg.className = 'muted';
+      msg.textContent = 'Ещё не собирали';
+      div.appendChild(label);
+      div.appendChild(msg);
+      div.appendChild(collectButton(payload, 'jobs', 'jobs'));
+      const anchorJobs = card.querySelector('.card-graph');
+      if (anchorJobs) card.insertBefore(div, anchorJobs);
+      else card.appendChild(div);
     }
 
     /* Patents (шаг P5b, §18.3): патентный импульс PatentsView — таблица по
@@ -429,10 +475,12 @@
           'см. Настройки → API-ключи';
         div.appendChild(msg);
       } else {
+        /* Ключ есть, но сигнал не собирали — «Собрать» ставит задачу (P5f-2). */
         const msg = document.createElement('div');
         msg.className = 'muted';
         msg.textContent = 'Ещё не собирали';
         div.appendChild(msg);
+        div.appendChild(collectButton(payload, 'patents', 'patents'));
       }
       const anchor2 = card.querySelector('.card-graph');
       if (anchor2) card.insertBefore(div, anchor2);
@@ -495,10 +543,12 @@
           'см. Настройки → API-ключи';
         div.appendChild(msg);
       } else {
+        /* Ключ есть, но сигнал не собирали — «Собрать» ставит задачу (P5f-2). */
         const msg = document.createElement('div');
         msg.className = 'muted';
         msg.textContent = 'Ещё не собирали';
         div.appendChild(msg);
+        div.appendChild(collectButton(payload, 'funding', 'funding'));
       }
       const anchor3 = card.querySelector('.card-graph');
       if (anchor3) card.insertBefore(div, anchor3);
@@ -599,10 +649,12 @@
           'см. Настройки → API-ключи';
         div.appendChild(msg);
       } else {
+        /* Источники настроены, но сигнал не собирали — «Собрать» (P5f-2). */
         const msg = document.createElement('div');
         msg.className = 'muted';
         msg.textContent = 'Ещё не собирали';
         div.appendChild(msg);
+        div.appendChild(collectButton(payload, 'search_interest', 'search_interest'));
       }
       const anchor4 = card.querySelector('.card-graph');
       if (anchor4) card.insertBefore(div, anchor4);

@@ -297,6 +297,36 @@ NICHE_LIMIT_DEFAULT = 50
 NICHE_PAGES_DEFAULT = 2
 NICHE_MIN_STARS_DEFAULT = 20
 
+#: Переменная окружения демо-режима (шаг P4d). Дубль ``cli._common.ENV_DEMO``
+#: осознанно: ``app/`` не импортирует ``cli/``, а значение одно на весь проект.
+DEMO_ENV = "GAPAUDIT_DEMO"
+
+#: Форматы экспорта Niche Finder (P5f-2): CSV для таблицы, MD для отчёта.
+NICHE_EXPORT_FORMATS: frozenset[str] = frozenset({"csv", "md"})
+
+#: Колонки CSV/MD результата Niche Finder. Порядок — от «главного числа» к
+#: проясняющим: gap, momentum, признак ниши, adoption, вердикт, имя в реестре.
+NICHE_EXPORT_COLUMNS: tuple[str, ...] = (
+    "name",
+    "gap_score",
+    "momentum_30d",
+    "flag",
+    "adoption_week",
+    "verdict",
+    "registry_name",
+)
+
+#: Подписи колонок для Markdown-отчёта (CSV пишет машинные имена).
+NICHE_EXPORT_LABELS: dict[str, str] = {
+    "name": "Пакет",
+    "gap_score": "Gap",
+    "momentum_30d": "Momentum, %/30д",
+    "flag": "MCP",
+    "adoption_week": "Adoption/нед",
+    "verdict": "Вердикт",
+    "registry_name": "Имя в реестре",
+}
+
 #: Какой провайдер API-ключей собирает вид (дубль ``cli.signals.KIND_TO_PROVIDER``,
 #: тот же тест согласия). Нужен здесь без наблюдения различать §0.3:
 #: «ключ не настроен» (``not_configured``) против «ключ есть, но не
@@ -934,6 +964,63 @@ def _attachment(
 def _export_date() -> str:
     """Дата в имени файла выгрузки (UTC, ``YYYY-MM-DD``)."""
     return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _niche_cell(item: dict[str, Any], column: str) -> Any:
+    """Одна ячейка выгрузки Niche Finder: ``None`` -> пустая строка.
+
+    ``flag`` пишется как 0/1, как в экспорте матрицы: колонку считают
+    формулами в Excel, а текст «да» в числовом столбце ломает сумму.
+    """
+    value = item.get(column)
+    if column == "flag":
+        return 1 if value else 0
+    return "" if value is None else value
+
+
+def _niche_export_rows(items: list[Any]) -> list[list[Any]]:
+    """Строки выгрузки: порядок колонок — :data:`NICHE_EXPORT_COLUMNS`."""
+    return [
+        [_niche_cell(item, column) for column in NICHE_EXPORT_COLUMNS]
+        for item in items
+        if isinstance(item, dict)
+    ]
+
+
+def _niche_markdown(payload: dict[str, Any]) -> str:
+    """Markdown-отчёт по результату Niche Finder (P5f-2).
+
+    Шапка — фраза и статистика («найдено / проверено»), дальше таблица тех же
+    колонок, что в CSV. ``|`` в значениях экранируется: имя пакета приходит из
+    репозитория, и одна вертикальная черта сломала бы строку таблицы.
+    """
+    items = [item for item in (payload.get("items") or []) if isinstance(item, dict)]
+    stats = payload.get("stats") or {}
+
+    def cell(value: Any, column: str) -> str:
+        if column == "flag":
+            return "есть" if value else "нет"
+        if value is None or value == "":
+            return "—"
+        if column in ("gap_score", "momentum_30d"):
+            return f"{float(value):.1f}"
+        return str(value)
+
+    lines = [
+        f"# Поиск ниши: «{payload.get('query') or ''}»",
+        "",
+        f"Найдено {stats.get('found', len(items))}, проверено "
+        f"{stats.get('checked', len(items))}, в отчёте {len(items)}, "
+        f"со score {stats.get('with_gap', 0)}.",
+        "",
+        "| " + " | ".join(NICHE_EXPORT_LABELS[column] for column in NICHE_EXPORT_COLUMNS) + " |",
+        "|" + "|".join("---" for _ in NICHE_EXPORT_COLUMNS) + "|",
+    ]
+    for item in items:
+        cells = [cell(item.get(column), column) for column in NICHE_EXPORT_COLUMNS]
+        lines.append("| " + " | ".join(text.replace("|", "\\|") for text in cells) + " |")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _compare_names(raw: str) -> list[str]:
@@ -2576,7 +2663,21 @@ def create_app(
         Работа целиком в подпроцессе (инвариант 6): обработчик только
         проверяет тело и ставит задачу. Ключи сигналов читает сам CLI из
         ``<data_dir>/api_keys.json`` — в теле задачи их нет.
+
+        В демо-режиме (``GAPAUDIT_DEMO=1``, шаг P4d) — 503: Niche Finder целиком
+        живёт в CLI-подпроцессе, а демо сеть и подпроцессы не запускает
+        (данные только из фикстур). Сообщение объясняет это пользователю;
+        экран его показывает и не начинает поллинг (P5f-2).
         """
+        if os.environ.get(DEMO_ENV) == "1":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Niche Finder недоступен в demo-режиме: ему нужен "
+                    "CLI-подпроцесс и сеть, а демо работает на фикстурах. "
+                    "Запустите приложение без --demo."
+                ),
+            )
         params: dict[str, Any] = {"query": str(payload.get("query") or "").strip()}
         for key in ("min_stars", "pages", "limit"):
             if key in payload:
@@ -2666,6 +2767,61 @@ def create_app(
                 status_code=500,
                 detail=f"результат задачи {job_id} не читается: {error}",
             ) from None
+
+    @application.post("/api/niche/export")
+    def niche_export(
+        request: Request, job_id: str = "", format: str = "csv"
+    ) -> Response:
+        """Экспорт результата Niche Finder: CSV или Markdown (P5f-2, DEVPLAN §19.4).
+
+        Читается тот же артефакт задачи, что отдаёт ``GET /api/niche/result``:
+        ``<data_dir>/jobs/<job_id>.result.json``. Экспорт — «сохранить то, что
+        видно на экране», поэтому фильтры экрана сюда не переносятся (то же
+        правило, что у экспорта каталога, §7): фильтр — это взгляд, а не данные.
+
+        Коды: 200 — файл (``Content-Disposition: attachment``), 400 — формат не
+        ``csv``/``md``, 404 — задачи нет или её ``result.json`` не найден или не
+        читается. 500 здесь был бы неверен: экспорт запрашивает пользователь, и
+        «нет файла» — ожидаемый ответ, а не сбой сервера.
+
+        CSV — ``utf-8-sig`` через :func:`_csv_body` (без BOM Excel показывает
+        кириллицу как cp1251); колонки — :data:`NICHE_EXPORT_COLUMNS`.
+        """
+        export_format = (format or "csv").strip().lower()
+        if export_format not in NICHE_EXPORT_FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"format: допустимо csv или md, пришло {format!r}",
+            )
+        job = _queue(request).get(job_id) if job_id else None
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"задача {job_id or '—'} не найдена")
+        data_dir = Path(str(getattr(request.app.state, "data_dir", "")))
+        result_path = data_dir / "jobs" / f"{job_id}.result.json"
+        if not result_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"результат задачи {job_id} не найден (result.json отсутствует)",
+            )
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except ValueError as error:
+            raise HTTPException(
+                status_code=404,
+                detail=f"результат задачи {job_id} не читается: {error}",
+            ) from None
+        if not isinstance(payload, dict):
+            payload = {"items": [], "stats": {}}
+        if export_format == "csv":
+            body = _csv_body(
+                NICHE_EXPORT_COLUMNS, _niche_export_rows(payload.get("items") or [])
+            )
+            return _attachment(body, filename=f"niche-{job_id}.csv")
+        return _attachment(
+            _niche_markdown(payload).encode("utf-8"),
+            filename=f"niche-{job_id}.md",
+            media_type="text/markdown; charset=utf-8",
+        )
 
     # --- сравнение (шаг 3c) ---------------------------------------------------
 

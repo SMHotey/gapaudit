@@ -9,6 +9,15 @@
      прогрессом, если задача ещё идёт (защита от гонки: done пришёл, а файл
      пишется следующим шагом).
 
+   P5f-2 добавил три вещи, каждая — про «что я реально вижу»:
+   * строку «Проверено N из M» (stats.checked / stats.found): проверяются
+     первые CHECK_LIMIT строк каталога по звёздам, и без этой строки список
+     выглядел полным;
+   * фильтры результата (momentum > 0, без MCP, gap >= X) — чисто клиентские,
+     перерисовка из уже полученного result.json, без новых запросов;
+   * экспорт CSV/MD — POST /api/niche/export?job_id=...&format=..., файл
+     скачивается браузером (Blob + <a download>).
+
    Данные (имена пакетов, вердикты, числа) рисуются только DOM-методами и
    textContent (gotcha 37): имя пакета с кавычкой не должно ломать вёрстку.
    innerHTML здесь нет вовсе — даже для пустого состояния строка собирается
@@ -21,7 +30,9 @@
   const TERMINAL = ['failed', 'cancelled', 'interrupted'];
 
   let pollTimer = null;
-  let currentJobId = null;
+  let currentJobId = null;   /* задача, за которой идёт поллинг */
+  let lastResult = null;     /* последний result.json — источник перерисовки фильтров */
+  let resultJobId = null;    /* чей это результат: нужен экспорту после остановки поллинга */
 
   /* Тело POST /api/niche/find: только известные поля; пустые чекбоксы
      означают «сигналы не собирать» (score по adoption + признаку ниши). */
@@ -73,6 +84,40 @@
     return arrow + Number(value).toFixed(1) + '%';
   }
 
+  /* Фильтры результата (P5f-2). Ни одно условие не выключено по умолчанию:
+     пустые чекбоксы и gap = 0 — «показать всё». */
+  function applyFilters(items) {
+    const momentumPos = $('filter-momentum-positive').checked;
+    const noFlag = $('filter-no-flag').checked;
+    const gapMin = parseFloat($('filter-gap-min').value) || 0;
+    return items.filter((it) => {
+      if (momentumPos && !(it.momentum_30d > 0)) return false;
+      if (noFlag && it.flag) return false;
+      if (gapMin > 0 && !(it.gap_score >= gapMin)) return false;
+      return true;
+    });
+  }
+
+  /* Строка «Проверено N из M»: M — весь каталог, N — то, что реально проверено
+     (CHECK_LIMIT строк по звёздам). Если чисел нет (старый result.json) —
+     строка не показывается, а не врёт нулями. */
+  function renderStats(data) {
+    const stats = data.stats || {};
+    const box = $('niche-stats');
+    if (stats.checked == null || stats.found == null) {
+      box.hidden = true;
+      return;
+    }
+    box.textContent = 'Проверено ' + stats.checked + ' из ' + stats.found +
+      ' по звёздам. Увеличьте лимит или проверяйте по требованию.';
+    box.hidden = false;
+  }
+
+  function setExportEnabled(enabled) {
+    $('niche-export-csv').disabled = !enabled;
+    $('niche-export-md').disabled = !enabled;
+  }
+
   function emptyRow(text, rows) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
@@ -86,13 +131,22 @@
   }
 
   function render(data) {
-    const items = data.items || [];
+    /* Источник перерисовки — последний result.json: фильтры меняют только
+       представление, новый запрос к серверу не нужен. */
+    lastResult = data;
+    renderStats(data);
+    const all = data.items || [];
+    const items = applyFilters(all);
+    $('niche-filters').hidden = all.length === 0;
     const tbody = $('niche-body');
     tbody.replaceChildren();
     if (!items.length) {
-      tbody.appendChild(emptyRow(
-        'Ничего не найдено. Проверьте фразу или увеличьте страницы.', 6));
-      $('niche-counter').textContent = '0 результатов';
+      tbody.appendChild(emptyRow(all.length
+        ? 'Под фильтры ничего не подошло — ослабьте условия.'
+        : 'Ничего не найдено. Проверьте фразу или увеличьте страницы.', 6));
+      $('niche-counter').textContent = all.length
+        ? '0 из ' + all.length + ' результатов'
+        : '0 результатов';
       return;
     }
     items.forEach((item, index) => {
@@ -109,8 +163,38 @@
     });
     const stats = data.stats || {};
     const used = (stats.signals_used || []).join(', ');
-    $('niche-counter').textContent = items.length + ' результатов'
+    const shown = items.length === all.length ? '' : ' из ' + all.length;
+    $('niche-counter').textContent = items.length + shown + ' результатов'
       + (used ? ' · сигналы: ' + used : ' · сигналы: нет (ключи не настроены)');
+  }
+
+  /* Экспорт (P5f-2): POST /api/niche/export читает result.json задачи и отдаёт
+     файл. Токен — заголовком (тот же запасной путь, что у api()): cookie
+     HttpOnly, JS её не видит. Скачивание — Blob + временный <a download>. */
+  async function downloadExport(fmt) {
+    if (!resultJobId) return;
+    const url = '/api/niche/export?job_id=' + encodeURIComponent(resultJobId) +
+      '&format=' + fmt;
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'X-GapAudit-Token': window.GapAudit.token },
+      });
+      if (!resp.ok) {
+        showMsg('Ошибка экспорта: ' + resp.status, 'err');
+        return;
+      }
+      const blob = await resp.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'niche-' + resultJobId + '.' + fmt;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+    } catch (e) {
+      showMsg('Ошибка экспорта: ' + e.message, 'err');
+    }
   }
 
   function finishWithError(text) {
@@ -134,9 +218,11 @@
       }
       stopPolling();
       currentJobId = null;
+      resultJobId = jobId;
       $('niche-progress').hidden = true;
       $('niche-progress-bar').value = 1;
       render(data || {});
+      setExportEnabled(true);
     } catch (e) {
       finishWithError('Ошибка результата: ' + e.message);
     }
@@ -197,14 +283,39 @@
         showMsg('Введите фразу', 'err');
         return;
       }
+      /* Новый поиск: прошлый результат больше не «текущий» — экспорт и фильтры
+         относятся к нему, пока не пришёл новый. */
+      lastResult = null;
+      resultJobId = null;
+      setExportEnabled(false);
+      $('niche-filters').hidden = true;
+      $('niche-stats').hidden = true;
       try {
         const resp = await api('POST', '/api/niche/find', payload);
         startPolling(resp.job_id);
       } catch (e) {
-        showMsg('Ошибка: ' + e.message, 'err');
+        /* 503 — демо-режим: Niche Finder там недоступен (P5f-2). Поллинг не
+           начинается: задачи нет, ждать нечего — показываем причину как есть. */
+        const text = String((e && e.message) || '');
+        if (e && e.status === 503) {
+          showMsg(text.replace(/^503:\s*/, ''), 'err');
+        } else {
+          showMsg('Ошибка: ' + text, 'err');
+        }
       }
     });
 
     $('refresh').addEventListener('click', load);
+
+    /* Фильтры — перерисовка из уже полученного результата. */
+    ['filter-momentum-positive', 'filter-no-flag', 'filter-gap-min']
+      .forEach((id) => {
+        $(id).addEventListener('change', () => {
+          if (lastResult) render(lastResult);
+        });
+      });
+
+    $('niche-export-csv').addEventListener('click', () => downloadExport('csv'));
+    $('niche-export-md').addEventListener('click', () => downloadExport('md'));
   });
 })();

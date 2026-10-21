@@ -23,12 +23,17 @@ Pipeline — четыре шага, каждый следующий читает
 Результат — единый ``result.json`` (его читает ``GET /api/niche/result``)::
 
     {"query": "...",
-     "items": [{"name": "chromadb", "gap_score": 87.0, "momentum_30d": null,
+     "items": [{"name": "chromadb", "registry_name": "chromadb",
+                "gap_score": 87.0, "momentum_30d": 12.5,
                 "flag": false, "adoption_week": 2100000, "verdict": "ЖИВО",
                 "funding_total": 0, "patents_impulse_pct": 5.0,
                 "jobs_total": 1200, "search_interest_trend": 12.5,
                 "sources": ["github", "npm"], ...}],
-     "stats": {"total": N, "with_gap": M, "signals_used": ["jobs"]}}
+     "stats": {"total": N, "found": F, "checked": C, "with_gap": M,
+               "signals_used": ["jobs"]}}
+
+``found`` — сколько строк нашёл каталог, ``checked`` — сколько из них реально
+проверено (``CHECK_LIMIT``): экран показывает «Проверено 50 из 139».
 
 Подкоманда ``run`` — единственная; она разбирается как необязательный
 позиционный аргумент (``nargs="?"``), поэтому работает при любом порядке
@@ -38,16 +43,22 @@ Pipeline — четыре шага, каждый следующий читает
 первый ПОЗИЦИОННЫЙ токен, и ``--query run`` подкомандой не считается
 (argparse сам знает, что ``run`` — значение ``--query``).
 
-Осознанные упрощения P5f-1 (P5f-2 может их снять):
+Осознанные упрощения (P5f-1, часть снята в P5f-2):
 
-* **momentum = None.** В CLI нет ``Store``, а momentum считается по истории
-  наблюдений. Поэтому score из Niche Finder не равен в точности score на
-  матрице (там momentum есть): компонент честно помечен недоступным, а не
-  подменён нулём (ноль понизил бы балл — «нет данных» ≠ «не растёт»).
-* **cross_ecosystem не собирается.** В формуле §18.3 его нет, а считать его
-  без ``Store`` не из чего — сигнал остаётся экранным (карточка, матрица).
+* **momentum читается из ``Store`` (P5f-2).** CLI открывает
+  ``<data_dir>/gapaudit.db`` только на чтение истории наблюдений
+  (``get_observations_history``) и считает ту же
+  :func:`core.collectors.momentum.compute_momentum`, что и матрица — поэтому
+  ``momentum_30d`` пакета совпадает с ``/api/matrix``. Базы нет или она битая —
+  сигнал честно недоступен (``None``), а не подменён нулём: «нет данных» ≠ «не
+  растёт» (graceful degradation, §18.1).
+* **cross_ecosystem не собирается.** Его нет в формуле §18.3, а история
+  наблюдений не даёт соседей по концепту — сигнал остаётся экранным
+  (карточка, матрица).
 * **CLI-подпроцесс, а не in-process pipeline**: все задачи проекта — CLI
   (шаг 3d-a), и Niche Finder не исключение.
+* **Проверяются первые ``CHECK_LIMIT`` строк каталога** (P5f-2 показывает
+  пользователю «проверено N из M»; батчи с паузами — P6, отложен).
 
 Сеть — только в этом подпроцессе (её инициирует пользователь). Тесты
 подменяют коллекторы и каталожные клиенты: ни одного запроса (gotcha 61).
@@ -74,6 +85,7 @@ from core.api_keys import ApiKeysStore
 from core.catalog import build_catalog
 from core.collectors.funding import compute_funding, default_transport as funding_transport
 from core.collectors.jobs import compute_jobs, default_transport as jobs_transport
+from core.collectors.momentum import compute_momentum
 from core.collectors.patents import compute_patents, default_post_transport as patents_transport
 from core.collectors.search_interest import (
     compute_search_interest,
@@ -362,30 +374,93 @@ def _search_trend(signals: dict[str, Any]) -> float | None:
     return None
 
 
+def _momentum_from_store(names: list[str], settings: Settings) -> dict[str, float | None]:
+    """``momentum_30d`` по истории наблюдений из Store (P5f-2).
+
+    База только читается: ``Store`` открывается на ``<data_dir>/gapaudit.db``
+    (``resolve_data_dir`` — тот же путь, что у приложения), из неё берётся
+    ``get_observations_history`` по каждому имени и считается **та же**
+    :func:`compute_momentum`, что в ``/api/matrix``. Поэтому число в Niche
+    Finder совпадает с матрицей по смыслу, а не «примерно».
+
+    Три состояния вместо падения (graceful degradation, §18.1):
+
+    * базы нет (CLI запускали без приложения) — ``{}``, momentum не учтён;
+    * база битая/несовместимая/занята — строка в stderr и ``{}``: задача
+      не должна умирать из-за сигнала, который лишь уточняет score;
+    * история короче двух замеров — ``None`` для имени (окно 30 дней пустое:
+      «Δ по одному замеру» было бы выдумкой, см. ``core.collectors.momentum``).
+
+    ``names`` — имена, по которым лежат наблюдения (:func:`_registry_name`),
+    а не id строк каталога: ``packages.check`` писал наблюдения под именем
+    реестра.
+    """
+    wanted = [name for name in dict.fromkeys(names) if name]
+    if not wanted:
+        return {}
+    store: Any = None
+    try:
+        db_path = resolve_data_dir(settings) / "gapaudit.db"
+        if not db_path.is_file():
+            return {}
+        # Импорт локальный: ``app/`` — персистентность, и CLI без приложения
+        # (чистая машина, скилл) должен работать и без него.
+        from app.store import Store
+
+        store = Store(db_path)
+        store.__enter__()
+        momentums: dict[str, float | None] = {}
+        for name in wanted:
+            history = store.get_observations_history(name, limit=100)
+            momentums[name] = (
+                compute_momentum(history).delta_30d if history else None
+            )
+        return momentums
+    except Exception as error:  # noqa: BLE001 - сигнал не должен убивать задачу
+        print(
+            f"[gapaudit] momentum: история наблюдений недоступна ({error}) — "
+            "сигнал не учтён",
+            file=sys.stderr,
+        )
+        return {}
+    finally:
+        if store is not None:
+            try:
+                store.close()
+            except Exception:  # noqa: BLE001 - закрытие битой базы не наша беда
+                pass
+
+
 def _gap_rows(
     names: list[str],
     lookups: list[str],
     checks: list[dict[str, Any]],
     signals_by_name: dict[str, dict[str, Any]],
     sources: list[list[str]],
+    momentums: dict[str, float | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Строки входа Gap Score + поля результата одним проходом.
 
-    ``momentum_30d`` — ``None``: в CLI нет ``Store`` с историей наблюдений
-    (упрощение P5f-1, см. докстринг модуля). Компонент не входит ни в сумму,
-    ни в знаменатель — score честно считается по доступным данным.
+    ``momentum_30d`` — из ``momentums`` (по имени реестра, :func:`_momentum_from_store`);
+    ``None`` — истории нет или она короче двух замеров. Компонент с ``None``
+    не входит ни в сумму, ни в знаменатель — score честно считается по
+    доступным данным.
 
     ``names`` — id строк каталога (они же имена в результате), ``lookups`` —
-    имена, по которым собирались наблюдения и сигналы (см. :func:`_registry_name`).
+    имена, по которым собирались наблюдения и сигналы (см. :func:`_registry_name`);
+    ``registry_name`` в строке — это ``lookup``, чтобы пользователь видел, под
+    каким именем пакет искали в реестрах (``owner/repo`` ≠ имя проекта).
     """
+    deltas = momentums or {}
     rows: list[dict[str, Any]] = []
     for name, lookup, check, item_sources in zip(names, lookups, checks, sources):
         signals = signals_by_name.get(lookup, {})
         rows.append(
             {
                 "name": name,
+                "registry_name": lookup,
                 "adoption_week": check.get("week"),
-                "momentum_30d": None,
+                "momentum_30d": deltas.get(lookup),
                 "flag": check.get("flag"),
                 "funding_total": _figure(signals, "funding", "total"),
                 "patents_impulse_pct": _figure(signals, "patents", "impulse_pct"),
@@ -478,7 +553,9 @@ def _cmd_run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
     # 1. каталог
     catalog = _catalog(config, on_progress)
     items = catalog.get("items") or []
-    found = len([row for row in items if row.get("id")])
+    # ``found`` — весь каталог (сколько нашлось), ``checked`` — сколько реально
+    # проверено (CHECK_LIMIT). Разницу показывает экран: «Проверено 50 из 139».
+    found = len(items)
     # Проверяем не весь каталог, а первые CHECK_LIMIT строк по звёздам: каждая
     # строка — до трёх запросов к реестрам, а 130 строк упираются в их лимиты
     # (adoption не приходит вовсе, все score равны 100). Отбор — до проверки,
@@ -499,6 +576,10 @@ def _cmd_run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
     # 2. проверка пакетов
     checks = _checks(lookups, config, on_progress) if names else []
 
+    # 2b. momentum из истории наблюдений (P5f-2): только чтение Store, при
+    # отсутствии базы — пусто, и компонент честно не участвует в score.
+    momentums = _momentum_from_store(lookups, settings) if names else {}
+
     # 3. сигналы (ключ — имя для поиска, чтобы jobs/patents искали по проекту)
     signals_by_name, kinds_used = (
         _collect_signals(lookups, config, on_progress) if names else ({}, [])
@@ -514,6 +595,7 @@ def _cmd_run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
         checks,
         signals_by_name,
         [sources_by_name.get(name, []) for name in names],
+        momentums,
     )
     scores = compute_gap_scores_batch(rows, weights=weights) if rows else {}
     ranked = _ranked_items(rows, scores, config.limit)

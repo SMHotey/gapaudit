@@ -52,8 +52,23 @@
 </section>
 
 <section>
+  {# P5f-2: сколько реально проверено из найденного. Текст пишет niche.js
+     через textContent — числа приходят из задачи, в разметку не впечатываются
+     (gotcha 37). #}
+  <div class="niche-stats muted" id="niche-stats" hidden></div>
+  <div class="niche-filters" id="niche-filters" hidden>
+    <label><input type="checkbox" id="filter-momentum-positive">
+      только с momentum &gt; 0</label>
+    <label><input type="checkbox" id="filter-no-flag"> без MCP</label>
+    <label>gap ≥ <input type="number" id="filter-gap-min" min="0" max="100"
+                       value="0" style="width:80px"></label>
+  </div>
   <div class="toolbar">
     <span id="niche-counter" class="muted">—</span>
+    <div class="toolbar-right">
+      <button type="button" class="btn" id="niche-export-csv" disabled>CSV</button>
+      <button type="button" class="btn" id="niche-export-md" disabled>Markdown</button>
+    </div>
   </div>
   <table class="table niche-table" id="niche-table">
     <thead><tr>
