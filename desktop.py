@@ -30,11 +30,14 @@ exit 0: незакрытое окно хуже незавершённых про
   python desktop.py --dev        devtools включены, логи uvicorn подробные
   python desktop.py --browser    без окна, открыть системный браузер
   python desktop.py --port 8790  фиксированный порт вместо свободного
+  python desktop.py --demo       демо-режим: данные из фикстур, сеть выключена,
+                                 каталог данных — временный (P4d)
 
-Переменные окружения: ``GAPAUDIT_DATA_DIR`` (каталог данных) и
-``GAPAUDIT_NO_BROWSER`` (не открывать системный браузер в режиме
-``--browser`` — этим пользуется smoke-тест ``tests/test_desktop_browser_smoke``,
-чтобы проверка не открывала пользователю лишнюю вкладку).
+Переменные окружения: ``GAPAUDIT_DATA_DIR`` (каталог данных),
+``GAPAUDIT_DEMO`` (1 — то же, что ``--demo``) и ``GAPAUDIT_NO_BROWSER``
+(не открывать системный браузер в режиме ``--browser`` — этим пользуется
+smoke-тест ``tests/test_desktop_browser_smoke``, чтобы проверка не открывала
+пользователю лишнюю вкладку).
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from __future__ import annotations
 import argparse
 import os
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -80,6 +84,8 @@ E_ABORT_HRESULT_SIGNED = -2147467260
 ACTIVE_STATUSES = ("queued", "running")
 
 NO_BROWSER_ENV = "GAPAUDIT_NO_BROWSER"
+#: Демо-режим (шаг P4d): данные из фикстур, каталог данных — временный.
+DEMO_ENV = "GAPAUDIT_DEMO"
 
 
 def free_port(host: str = HOST) -> int:
@@ -329,11 +335,53 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dev", action="store_true", help="devtools и подробные логи")
     parser.add_argument("--browser", action="store_true", help="без окна, открыть системный браузер")
     parser.add_argument("--port", type=int, default=None, help="фиксированный порт (по умолчанию свободный)")
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="демо-режим: данные из фикстур, сеть выключена, каталог данных временный",
+    )
     return parser
+
+
+def prepare_demo(env: dict[str, str] | None = None) -> Path:
+    """Включить демо-режим: флаг в окружении + временный каталог данных (P4d).
+
+    ``GAPAUDIT_DATA_DIR`` указывает на свежий каталог из ``tempfile``: демо не
+    читает и не засоряет ``%USERPROFILE%\\GapAudit-data``, а ``store`` получает
+    обычный файл (``:memory:`` не годится — ``Store`` открывает ``lifespan``).
+    Возвращённый каталог вызывающий удаляет при выходе.
+    """
+    from tools.demo_mode import make_demo_data_dir
+
+    target = os.environ if env is None else env
+    target[DEMO_ENV] = "1"
+    demo_dir = make_demo_data_dir()
+    target["GAPAUDIT_DATA_DIR"] = str(demo_dir)
+    return demo_dir
+
+
+def seed_demo(application: Any) -> dict[str, int]:
+    """Наполнить ``Store`` демо-данными после готовности health.
+
+    Вызывается между ``wait_health`` и открытием окна: экран матрицы читает
+    уже наполненную базу. Без ``app.state.store`` (приложение не стартовало)
+    возвращает пустой словарь — это не ошибка запуска.
+    """
+    store = getattr(getattr(application, "state", None), "store", None)
+    if store is None:
+        return {}
+    from tools.demo_mode import seed_demo_store
+
+    return seed_demo_store(store)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    demo_dir: Path | None = None
+    if args.demo:
+        demo_dir = prepare_demo()
+    demo = os.environ.get(DEMO_ENV) == "1"
 
     token = secrets.token_urlsafe(32)
     port = args.port or free_port()
@@ -343,7 +391,8 @@ def main(argv: list[str] | None = None) -> int:
     thread = start_server(server)
 
     url = f"http://{HOST}:{port}/?token={token}"
-    print(f"[gapaudit] версия {VERSION}, режим {'браузер' if args.browser else 'окно'}")
+    print(f"[gapaudit] версия {VERSION}, режим {'браузер' if args.browser else 'окно'}"
+          f"{', демо' if demo else ''}")
 
     if not wait_health(port, token):
         print(
@@ -358,6 +407,14 @@ def main(argv: list[str] | None = None) -> int:
     token_path = write_token(data_dir, token)
     print(f"[gapaudit] бэкенд готов: {url}")
     print(f"[gapaudit] токен для внешних клиентов: {token_path}")
+
+    if demo:
+        seeded = seed_demo(application)
+        if seeded:
+            print(
+                "[gapaudit] демо: {observations} наблюдений, {events} событий, "
+                "{catalogs} каталога ({items} строк)".format(**seeded)
+            )
 
     stop_titles = threading.Event()
     try:
@@ -409,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         stop_server(server, thread)
         remove_token(data_dir)
+        if demo_dir is not None:
+            # Демо-данные живут один запуск: временный каталог удаляется.
+            shutil.rmtree(demo_dir, ignore_errors=True)
     return 0
 
 

@@ -4,12 +4,14 @@
 `ecosystem-gap-audit`: очередь длинных задач с прогрессом, накопленная история
 замеров, сравнение ниш, каталоги, мониторинг изменений.
 
-**Текущее состояние — P3 закрыт (шаг 3c).** Работают все семь экранов
-(Задачи, Сейчас решать, Пакеты, Мониторинг, Каталоги, Сравнение, Настройки),
-очередь задач с прогрессом через SSE, история замеров в SQLite, вердикты,
-каталоги, мониторинг и экспорт (CSV/MD/JSON). В плане — сигналы ниш
-(momentum, cross-ecosystem, jobs, patents, funding, поисковый интерес,
-Gap Score) и экран «Поиск ниши». `DEVPLAN.md` — источник истины по объёму работ.
+**Текущее состояние — P4 закрыт (шаг P4d), P5 закрыт по сигналам.** Работают все
+экраны (Задачи, Сейчас решать, Пакеты, Мониторинг, Каталоги, Сравнение, Поиск
+ниши, Настройки), очередь задач с прогрессом через SSE, история замеров в
+SQLite, вердикты, каталоги, мониторинг, экспорт (CSV/MD/JSON), шесть сигналов
+ниш (momentum, cross-ecosystem, jobs, patents, funding, поисковый интерес),
+Gap Score и Niche Finder. P4d добавил упаковку в `.exe` (PyInstaller onedir),
+синхронизацию со скиллом, demo-режим и CI. `DEVPLAN.md` — источник истины по
+объёму работ.
 
 ## Возможности
 
@@ -25,7 +27,7 @@ Gap Score) и экран «Поиск ниши». `DEVPLAN.md` — источн�
 - Настройки: пороги, ключевые слова, TTL кэша, лимиты.
 - CLI остаётся автономным: те же команды, те же коды выхода, работа без БД и UI.
 
-Сигналы ниш (P4/P5, в плане):
+Сигналы ниш (P4/P5, работают; внешние источники — при наличии ключа):
 
 - Momentum: Δ adoption за 7/30/90 дней — растёт или падает.
 - Cross-ecosystem: сравнение PyPI/npm/GitHub для одного концепта.
@@ -80,6 +82,59 @@ python desktop.py
 `python -c "import pywebview"` из DEVPLAN.md §12 выдаёт `ModuleNotFoundError`.
 Это особенность самого пакета, а не ошибка окружения.
 
+### Установка из .exe (Windows)
+
+1. Соберите пакет (один раз ставится PyInstaller):
+
+   ```
+   uv pip install -e ".[packaging]"
+   uv run pyinstaller gapaudit.spec
+   ```
+
+   Результат — `dist\gapaudit\` (`gapaudit.exe` + папка `_internal\`).
+
+2. Скопируйте **всю папку** `dist\gapaudit\` на целевую машину и запустите
+   `gapaudit.exe`. Папку `_internal\` не переставляйте и не чистите: в ней
+   DLL, шаблоны экранов и статика.
+
+3. Данные приложения — в `%USERPROFILE%\GapAudit-data\` (база, логи, каталоги).
+   Ключи внешних API — в `<каталог данных>\api_keys.json`.
+
+Требования на целевой машине: Windows 10/11 и WebView2 Runtime (в системе он
+обычно уже есть; если окно белое — поставьте
+[Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)).
+Python и `uv` для запуска `.exe` не нужны.
+
+Проверка собранного пакета: `gapaudit.exe --browser --port 8790` — сервер
+отвечает на `http://127.0.0.1:8790/api/health`, окно не открывается.
+
+### Demo-режим
+
+Любые ответы — из `tests/fixtures/`, сеть выключена, данные приложения живут
+во временном каталоге и удаляются при выходе:
+
+```
+uv run python desktop.py --demo          # окно с демо-данными
+uv run python desktop.py --demo --browser --port 8790
+GAPAUDIT_DEMO=1 uv run python -m cli.check_predecessors requests
+```
+
+Демо-данные: 18 наблюдений трёх замеров (momentum), 8 событий, 2 каталога.
+`requests` — снимки настоящих ответов PyPI/npm/pypistats, остальные пакеты
+демо-набора — синтетические числа (в таблице `tools/demo_mode.py`), подобранные
+так, чтобы на матрице были видны рост, спад и стабильность.
+Каталог данных пользователя (`%USERPROFILE%\GapAudit-data`) демо-режим не
+читает и не трогает; `settings.json` и `api_keys.json` не загружаются.
+
+### CI
+
+GitHub Actions на push/PR в `master` (`.github/workflows/ci.yml`): установка
+зависимостей через `uv`, `mypy core/ app/ cli/`, быстрый прогон
+`pytest -q -m "not slow"`, полный `pytest -q` и `python -m tools.compat_check`
+(паритет CLI с `legacy/`). Раннер — `ubuntu-latest`: окно WebView2 в CI не
+открывается, тесты ходят в HTTP через `TestClient`, Windows-only проверки
+помечены `skipif`.
+
 ### API-ключи (необязательно)
 
 Базовые экраны работают без ключей. Чтобы включить сигналы ниш (вакансии,
@@ -114,6 +169,7 @@ uv run python desktop.py               # обычное окно 1280x860
 uv run python desktop.py --dev         # devtools WebView2 и подробные логи uvicorn
 uv run python desktop.py --browser     # без окна, открыть системный браузер
 uv run python desktop.py --port 8790   # фиксированный порт вместо свободного
+uv run python desktop.py --demo        # демо-данные из фикстур, сеть выключена
 ```
 
 Порт выбирает ОС (`socket.bind(("127.0.0.1", 0))`), к URL добавляется сессионный
@@ -152,20 +208,28 @@ app/                  приложение: store.py (SQLite), jobs.py (очер
                       web.py (FastAPI, /api/*, SSE)
 web/views/            Jinja2-шаблоны экранов
 web/static/           локальная статика: CSS, JS, без CDN
-tools/                служебные скрипты проекта (sync_skill.py, compat_check.py и др.)
+tools/                служебные скрипты: compat_check.py (паритет с legacy),
+                      sync_skill.py (копия core/cli в скилл), demo_mode.py
+                      (фикстуры и демо-данные)
 tests/                тесты; tests/fixtures/http/ — реальные ответы API для тестов
 docs/API-KEYS.md      как получить ключи внешних API
 docs/screenshots/     скриншоты проверок шагов (коммитятся)
 data/                 рабочая папка dev-режима (в .gitignore)
 legacy/               6 исходных скриптов скилла, копия байт-в-байт (эталон)
 desktop.py            точка входа: uvicorn в демон-потоке + окно pywebview
+gapaudit.spec         сборка PyInstaller onedir (dist/gapaudit/)
+.github/workflows/    CI: pytest + mypy + compat_check
 ```
 
-## Дальше по плану
+## Статус
 
-Шаг 3c — «Сравнение» и экспорт — закрыт (P3). Дальше: P4 — упаковка (PyInstaller
-onedir), синхронизация со скиллом, demo-режим, README установки, API Keys Store,
-momentum, cross-ecosystem; P5 — сигналы ниш (jobs, patents, funding,
-search_interest, gap_score) и экран «Поиск ниши»; P6 — MCP-сервер, расписание,
-уведомления. `DEVPLAN.md` — источник истины по объёму работ (§18, §19 — сигналы
-и Niche Finder).
+| Этап | Состояние |
+|---|---|
+| P0–P3 | закрыты (каркас, `core`, SQLite, очередь + SSE, экраны, экспорт) |
+| P4 | закрыт: P4a API Keys Store, P4b momentum, P4c cross-ecosystem, **P4d — упаковка, sync со скиллом, demo-режим, CI, README** |
+| P5 | закрыт: P5a jobs, P5b patents, P5c funding, P5d search_interest, P5e Gap Score, P5f-1 Niche Finder |
+| P5f-2 | план: фильтры/экспорт Niche Finder, кнопка «Собрать» в карточке, momentum в CLI Niche Finder |
+| P6 | **отложен в долгосрочный план (2026-10-21)**: MCP-сервер, расписание, уведомления, батчи с паузами. Причина — сначала прожить месяц с упакованным приложением |
+
+`DEVPLAN.md` — источник истины по объёму работ (§4 статусы, §11 бюджеты тестов,
+§12 упаковка, §13 этапы, §18 сигналы, §19 Niche Finder).

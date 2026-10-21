@@ -464,6 +464,24 @@ uv run python -c "import httpx;T='<токен>';print(httpx.get('http://127.0.0.
     на хост): на 130 строках adoption не приходит ни у одной, поэтому проверяются
     первые `CHECK_LIMIT` (50) по звёздам, а `stats.found`/`stats.checked`
     различаются. Итог ранжирования при равном score: измеренная ниша выше.
+70. CI на ubuntu: `pythonnet` — Windows-only (мост к WebView2/.NET), и без
+    маркера в `pyproject.toml` (`"pythonnet>=3.0,<4; sys_platform == 'win32'"`)
+    установка зависимостей падает целиком, до первого теста: сборка пакета под
+    моно/GTK не проходит. `import webview` на Linux при этом работает — платформа
+    выбирается в `webview.start()`, а не на импорте (проверено по исходникам
+    `webview/guilib.py`), поэтому веб-тесты через `TestClient` и
+    `desktop.py --browser` в CI проходят без GUI. Windows-only проверки
+    (`icacls`, биты режима) — `skipif`, как в gotcha 26.
+71. PyInstaller onedir (P4d): в frozen-сборке `Path(__file__).resolve()`
+    у модулей из PYZ ведёт внутрь `_internal/`, а `app/web.py` считает от него
+    `web/views`, `web/static` и `docs/`. Поэтому `datas` в `gapaudit.spec`
+    обязаны повторять структуру проекта один в один (`('web/views','web/views')`,
+    `('docs/API-KEYS.md','docs')`), а `tests/fixtures` нужны в пакете для
+    `--demo` — иначе демо в `.exe` падает на чтении фикстур. `console=False`
+    означает, что stdout у `.exe` не читается вообще: живой прогон проверяется
+    запросами к `/api/health` (порт из лога или фиксированный `--port`), а
+    гасится `taskkill /PID`; PID берётся из `tasklist /FO CSV` (в git-bash
+    `/FI` отдаёт заголовки в OEM-кодировке, парсить их нельзя).
 
 ---
 

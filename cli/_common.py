@@ -47,6 +47,7 @@ from core.settings import (
 from core.github import GhClient
 
 __all__ = [
+    "ENV_DEMO",
     "ENV_FAKE_HTTP",
     "build_argparser",
     "build_job_emitter",
@@ -71,6 +72,9 @@ GH_WARN = (
 
 #: Переменная окружения тестового бэкдора: HTTP-ответы из ``tests/fixtures/http``.
 ENV_FAKE_HTTP = "GAPAUDIT_FAKE_HTTP"
+
+#: Переменная окружения демо-режима (шаг P4d): то же, что флаг ``--demo``.
+ENV_DEMO = "GAPAUDIT_DEMO"
 
 #: Каталог фикстур HTTP — в репозитории, не в каталоге данных.
 FIXTURES_HTTP_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "http"
@@ -111,6 +115,10 @@ def build_argparser(*, prog: str, description: str) -> argparse.ArgumentParser:
         "--job-json", action="store_true",
         help="протокол JSON-lines в stdout для очереди задач (таблицы при этом — в stderr)",
     )
+    common.add_argument(
+        "--demo", action="store_true",
+        help="демо-режим: настройки по умолчанию, HTTP — из tests/fixtures, сеть выключена",
+    )
     common.add_argument("--no-cache", action="store_true", help="обойти кэш (сеть принудительно, без записи)")
     common.add_argument("--quiet", action="store_true", help="не печатать таблицу, только JSON/итог")
     return parser
@@ -122,9 +130,16 @@ def load_runtime(args: argparse.Namespace) -> tuple[Settings, HttpClient]:
     Порядок наложения строго «файл, затем окружение, затем CLI» (DEVPLAN §4):
     UI меняет файл, CI — окружением, разовый прогон — флагами.
 
+    Демо-режим (``--demo`` или ``GAPAUDIT_DEMO=1``, шаг P4d) перебивает всё
+    остальное и ничего не читает с диска: настройки — дефолты, транспорт —
+    фикстуры, кэш — в памяти, ``gh`` — снимок ответа (``tools.demo_mode``).
+
     ``ValueError`` от guard'а ``resolve_data_dir`` (путь указал на корень проекта)
     пробрасывается — обрабатывает вызывающий скрипт.
     """
+    if _demo_enabled(args):
+        return _demo_runtime(args)
+
     data_dir_hint = (getattr(args, "data_dir", None) or "").strip()
     env_data_dir = (os.environ.get(ENV_DATA_DIR) or "").strip()
 
@@ -360,6 +375,43 @@ def make_fake_transport_from_fixtures() -> Transport:
 
 
 # --- внутреннее ---------------------------------------------------------------
+
+
+def _demo_enabled(args: argparse.Namespace) -> bool:
+    """Демо-режим включён флагом ``--demo`` или переменной ``GAPAUDIT_DEMO=1``."""
+    return bool(getattr(args, "demo", False)) or os.environ.get(ENV_DEMO) == "1"
+
+
+def _demo_runtime(args: argparse.Namespace) -> tuple[Settings, HttpClient]:
+    """Рантайм демо-режима (шаг P4d): дефолты, фикстуры, память — без диска.
+
+    Импорт локальный: ``tools/demo_mode.py`` живёт в проекте, а копия
+    ``cli/_common.py`` в скилле — без него. В скилле демо-режима нет, и
+    сообщение об этом должно быть понятным, а не трейсбеком импорта.
+    """
+    try:
+        from tools.demo_mode import (
+            install_demo_gh,
+            make_demo_http_client,
+            make_demo_settings,
+        )
+    except ModuleNotFoundError as error:  # понятная диагностика вместо трейсбека
+        raise SystemExit(
+            f"[gapaudit] демо-режим доступен только в проекте GapAudit "
+            f"(нет tools/demo_mode.py): {error}"
+        ) from error
+
+    install_demo_gh()
+    settings = make_demo_settings()
+    keywords = getattr(args, "keyword", None)
+    if keywords:
+        settings.keywords = tuple(word.lower() for word in keywords)
+    print(
+        f"[gapaudit] демо-режим: данные из фикстур, сеть выключена "
+        f"({FIXTURES_HTTP_DIR.parent})",
+        file=sys.stderr,
+    )
+    return settings, make_demo_http_client(settings)
 
 
 def _apply_env(settings: Settings) -> None:

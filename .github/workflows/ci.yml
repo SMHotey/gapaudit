@@ -1,0 +1,52 @@
+# CI GapAudit (шаг P4d): тесты + mypy + compat_check на push/PR в master.
+#
+# Почему ubuntu-latest: pywebview/WebView2 работают только на Windows, но тесты
+# окно не открывают — они ходят в HTTP через TestClient и запускают desktop.py в
+# режиме --browser. Windows-only проверки (icacls, права файлов) помечены skipif
+# в самих тестах, поэтому Linux-раннер видит тот же набор логики.
+#
+# pythonnet ставится только на Windows (маркер в pyproject.toml) — без маркера
+# установка зависимостей на Linux падала бы целиком.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      # Окружение — как в README: uv venv + editable install. `uv run` дальше
+      # подхватывает созданный .venv, поэтому версии те же, что у разработчика.
+      - name: Install deps
+        run: |
+          uv venv --python 3.11
+          uv pip install -e ".[dev]"
+
+      - name: Lint (mypy)
+        run: uv run mypy core/ app/ cli/ --ignore-missing-imports
+
+      # Быстрый цикл первым: он падает раньше и дешевле, чем полный прогон.
+      - name: Test (fast)
+        run: uv run pytest -q -m "not slow"
+
+      - name: Test (full)
+        run: uv run pytest -q
+
+      # CLI обязан остаться автономным и совпадать с legacy/ (P0+):
+      # зелёный compat_check — условие мержа (AGENTS gotcha 18).
+      - name: compat_check (legacy parity)
+        run: uv run python -m tools.compat_check

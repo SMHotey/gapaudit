@@ -11,6 +11,9 @@ data/*
 *.log
 dist/
 build/
+# Вывод CLI по умолчанию (raw/predecessors.json, raw/catalog_query.json):
+# это рабочие артефакты прогонов, а не исходники.
+raw/
 .pytest_cache/
 .mypy_cache/
 *.egg-info/
